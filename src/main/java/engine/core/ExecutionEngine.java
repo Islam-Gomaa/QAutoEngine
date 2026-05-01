@@ -2,34 +2,26 @@ package engine.core;
 
 import engine.actions.Action;
 import engine.context.ContextEngine;
-import engine.decider.ActionDecider;
-import engine.distribution.DistributionManager;
+import engine.decision.DecisionEngine;
 import engine.goal.GoalEngine;
-import engine.learning.BehaviorGraph;
-import engine.learning.BehaviorStore;
-import engine.learning.LearningEngine;
+import engine.learning.*;
 import engine.state.SessionState;
-import org.openqa.selenium.WebDriver;
+import org.openqa.selenium.*;
 
 import java.util.List;
 
 public class ExecutionEngine {
 
     private final List<Action> actions;
-
-    // 🔥 limits
-    private final int maxSteps = 30;
+    private final int maxSteps = 40;
 
     public ExecutionEngine(List<Action> actions) {
         this.actions = actions;
     }
 
-    // ===================================================
-    // 🚀 AI LOOP
-    // ===================================================
     public void run(WebDriver driver) {
 
-        System.out.println("🧠 Execution Engine START");
+        System.out.println("🧠 AI Execution Engine START");
 
         int step = 0;
 
@@ -39,110 +31,106 @@ public class ExecutionEngine {
 
                 System.out.println("\n🔁 Step: " + (step + 1));
 
-                // ===================================================
-                // 🔍 OBSERVE
-                // ===================================================
-                String currentUrl = driver.getCurrentUrl();
-
-                if (SessionState.isUrlVisited(currentUrl)) {
-
-                    System.out.println("⚠️ Already visited");
-
-                    // 🔥 لو السيستم علق → وقف
-                    if (SessionState.isStuck()) {
-                        System.out.println("🚫 Stuck detected, stopping...");
-                        break;
-                    }
-
-                    // 🔥 غير كده كمل exploration
-                    System.out.println("🔄 Continuing exploration...");
-
-                } else {
-                    // URL جديد → سجله
-                    SessionState.markUrlVisited(currentUrl);
-                }
-
-                // ===================================================
-                // 🧠 CONTEXT + GOAL
-                // ===================================================
-                ContextEngine.ContextType context = ContextEngine.detect(driver);
-
-                System.out.println("🧠 Context: " + context);
-
-                GoalEngine.updateProgress(context);
-
-                if (GoalEngine.isGoalReached(context)) {
-                    System.out.println("🎯 Goal reached → " + GoalEngine.getGoal());
-                    break;
-                }
-
-                System.out.println("🎯 Current Goal: " + GoalEngine.getGoal());
-
-                // ===================================================
-                // 🧠 DECIDE
-                // ===================================================
-                Action nextAction = decideNextAction();
-
-                if (nextAction == null) {
-                    System.out.println("🛑 No more actions to execute");
-                    break;
-                }
-
-                String actionName = nextAction.getClass().getSimpleName();
-
-                System.out.println("🧠 Decided Action: " + actionName);
-
-                // ===================================================
-                // ⚙️ ACT
-                // ===================================================
+                // ================= OBSERVE =================
                 String beforeUrl = driver.getCurrentUrl();
 
-                boolean success = executeWithRetry(driver, nextAction);
+                ContextEngine.ContextType context = ContextEngine.detect(driver);
+                GoalEngine.update(context);
+                GoalEngine.GoalType goal = GoalEngine.getGoal();
 
-                // ===================================================
-                // 🔍 VALIDATE
-                // ===================================================
-                String afterUrl = driver.getCurrentUrl();
-                System.out.println("🔎 Current URL: " + afterUrl);
+                int beforeDom = driver.findElements(By.xpath("//*")).size();
 
-                // ===================================================
-                // 🧠 BEHAVIOR GRAPH
-                // ===================================================
-                BehaviorGraph.record(beforeUrl, actionName, afterUrl);
+                LearningEngine.State prevState =
+                        LearningEngine.buildState(context, beforeUrl, goal, beforeDom);
 
-                if (success) {
-                    BehaviorStore.recordSuccess(actionName);
-                } else {
-                    BehaviorStore.recordFailure(actionName);
+                LoopDetector.record(prevState.toString());
+
+                System.out.println("🧠 State: " + prevState);
+
+                // ================= DECIDE =================
+                Action bestAction = selectBestAction(driver, prevState);
+
+                if (bestAction == null) {
+                    System.out.println("🛑 No action selected");
+                    break;
                 }
 
-                // ===================================================
-                // 📈 LEARNING
-                // ===================================================
-                LearningEngine.learn();
-                LearningEngine.learnPath(afterUrl, success);
-                LearningEngine.decay();
+                String actionName = bestAction.getClass().getSimpleName();
+                System.out.println("🎯 Selected: " + actionName);
 
-                // ===================================================
-                // 🌐 DISTRIBUTION
-                // ===================================================
-                if (DistributionManager.hasNext()) {
+                // ================= EXECUTE =================
+                boolean executed = executeWithRetry(driver, bestAction);
 
-                    String nextUrl = DistributionManager.next();
+                sleep(700);
 
-                    if (nextUrl != null && !SessionState.isUrlVisited(nextUrl)) {
+                // ================= AFTER =================
+                String afterUrl = driver.getCurrentUrl();
+                int afterDom = driver.findElements(By.xpath("//*")).size();
 
-                        System.out.println("🌍 Navigating to next path: " + nextUrl);
+                LearningEngine.State nextState =
+                        LearningEngine.buildState(context, afterUrl, goal, afterDom);
 
-                        driver.navigate().to(nextUrl);
-                    }
+                boolean changed = !beforeUrl.equals(afterUrl)
+                        || beforeDom != afterDom;
+
+                boolean success = executed && changed;
+
+                boolean revisited = SessionState.isUrlVisited(afterUrl);
+
+                // ================= REWARD =================
+                double reward = RewardEngine.calculate(
+                        prevState,
+                        nextState,
+                        actionName,
+                        success,
+                        revisited
+                );
+
+                if (LoopDetector.isLooping(prevState.toString())) {
+                    reward -= 5;
+                    System.out.println("🔁 Loop penalty applied");
+                }
+
+                // ================= LEARNING =================
+                BehaviorGraph.record(
+                        prevState.toString(),
+                        actionName,
+                        nextState.toString(),
+                        afterUrl,
+                        success,
+                        reward
+                );
+
+                BehaviorStore.record(
+                        prevState.toString(),
+                        actionName,
+                        success
+                );
+
+                BehaviorGraph.adjustExploration(success);
+
+                System.out.println("🧠 Reward: " + reward);
+
+                // ================= VISITED =================
+                if (!revisited) {
+                    SessionState.markUrlVisited(afterUrl);
+                }
+
+                // ================= SMART BREAK =================
+                if (GoalEngine.isCompleted(GoalEngine.GoalType.COMPLETE_PAYMENT)) {
+                    System.out.println("🏁 Goal Completed!");
+                    break;
+                }
+
+                if (!changed) {
+                    System.out.println("⚠️ No change → forcing exploration");
                 }
 
                 step++;
 
             } catch (Exception e) {
 
-                System.out.println("❌ Engine crashed at step " + step);
+                System.out.println("❌ Crash at step " + step);
                 recover(driver);
             }
         }
@@ -151,68 +139,72 @@ public class ExecutionEngine {
     }
 
     // ===================================================
-    // 🧠 DECISION
-    // ===================================================
-    private Action decideNextAction() {
+    private Action selectBestAction(WebDriver driver,
+                                    LearningEngine.State state) {
+
+        double bestScore = Double.NEGATIVE_INFINITY;
+        Action best = null;
 
         for (Action action : actions) {
 
-            if (ActionDecider.shouldExecute(action)) {
-                return action;
+            double score = evaluateAction(driver, action, state);
+
+            if (score > bestScore) {
+                bestScore = score;
+                best = action;
             }
         }
 
-        // fallback
-        if (!actions.isEmpty()) {
-            System.out.println("⚠️ Fallback → executing first action");
-            return actions.get(0);
-        }
-
-        return null;
+        return best;
     }
 
-    // ===================================================
-    // 🔁 RETRY + RESULT
+    private double evaluateAction(WebDriver driver,
+                                  Action action,
+                                  LearningEngine.State state) {
+
+        String name = action.getClass().getSimpleName();
+
+        double score = 0;
+
+        // 🧠 Learning memory
+        score += BehaviorStore.getScore(state.toString(), name) * 10;
+
+        // 🧠 Graph knowledge
+        score += BehaviorGraph.getActionScore(state.toString(), name) * 5;
+
+        // 🧠 Decision rules
+        score += DecisionEngine.scoreAction(name, driver, state);
+
+        // 🔥 exploration (controlled)
+        if (Math.random() < 0.15) {
+            score += Math.random();
+        }
+
+        return score;
+    }
+
     // ===================================================
     private boolean executeWithRetry(WebDriver driver, Action action) {
 
         int retries = 2;
-        String actionName = action.getClass().getSimpleName();
-
-        SessionState.recordAction(actionName);
 
         while (retries-- > 0) {
-
             try {
-
-                System.out.println("⚙️ Running: " + actionName);
-
                 action.execute(driver);
-
                 return true;
-
             } catch (Exception e) {
-
-                System.out.println("❌ Failed, retrying...");
-
-                SessionState.recordFailure(actionName);
-
                 recover(driver);
             }
         }
 
-        System.out.println("🚫 Skipped: " + actionName);
-
         return false;
     }
 
-    // ===================================================
-    // 🧯 RECOVERY
-    // ===================================================
     private void recover(WebDriver driver) {
+        try { driver.navigate().back(); } catch (Exception ignored) {}
+    }
 
-        try {
-            driver.navigate().back();
-        } catch (Exception ignored) {}
+    private void sleep(int ms) {
+        try { Thread.sleep(ms); } catch (Exception ignored) {}
     }
 }

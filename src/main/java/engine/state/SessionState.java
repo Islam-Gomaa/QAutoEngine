@@ -2,6 +2,7 @@ package engine.state;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public class SessionState {
 
@@ -11,8 +12,11 @@ public class SessionState {
     private static final Set<String> visitedUrls = ConcurrentHashMap.newKeySet();
     private static final Set<String> visitedElements = ConcurrentHashMap.newKeySet();
 
-    // 🔥 ADVANCED ELEMENT TRACKING
+    // 🔥 frequency tracking
     private static final Map<String, Integer> elementVisitCount =
+            new ConcurrentHashMap<>();
+
+    private static final Map<String, Integer> urlVisitCount =
             new ConcurrentHashMap<>();
 
     // ===================================================
@@ -22,24 +26,27 @@ public class SessionState {
     private static volatile String lastAction = "";
 
     // ===================================================
-    // 📜 HISTORY
+    // 📜 HISTORY (🔥 thread-safe upgrade)
     // ===================================================
-    private static final List<String> actionHistory =
-            Collections.synchronizedList(new ArrayList<>());
-
-    private static final List<String> navigationPath =
-            Collections.synchronizedList(new ArrayList<>());
+    private static final List<String> actionHistory = new CopyOnWriteArrayList<>();
+    private static final List<String> navigationPath = new CopyOnWriteArrayList<>();
 
     // ===================================================
-    // ❌ FAILURES
+    // ❌ FAILURES (🔥 optimized)
     // ===================================================
-    private static final List<String> failures =
-            Collections.synchronizedList(new ArrayList<>());
+    private static final Map<String, Integer> failureCount =
+            new ConcurrentHashMap<>();
 
     // ===================================================
     // 📊 STATS
     // ===================================================
     private static final Map<String, Integer> actionStats =
+            new ConcurrentHashMap<>();
+
+    // ===================================================
+    // 🧠 RL MEMORY
+    // ===================================================
+    private static final Map<String, Double> stateRewards =
             new ConcurrentHashMap<>();
 
     // ===================================================
@@ -53,6 +60,8 @@ public class SessionState {
 
         String n = normalize(url);
 
+        urlVisitCount.merge(n, 1, Integer::sum);
+
         if (visitedUrls.add(n)) {
             navigationPath.add(n);
             currentUrl = n;
@@ -60,6 +69,10 @@ public class SessionState {
         }
 
         return false;
+    }
+
+    public static int getUrlVisitCount(String url) {
+        return urlVisitCount.getOrDefault(normalize(url), 0);
     }
 
     public static int urlCount() {
@@ -77,19 +90,13 @@ public class SessionState {
 
         String n = normalize(key);
 
-        // 🔥 track frequency
         elementVisitCount.merge(n, 1, Integer::sum);
 
         return visitedElements.add(n);
     }
 
-    // 🔢 ELEMENT COUNT (🔥 FIX)
     public static int elementCount() {
         return visitedElements.size();
-    }
-
-    public static boolean hasExploredEnoughElements(int threshold) {
-        return visitedElements.size() >= threshold;
     }
 
     public static int getElementVisitCount(String key) {
@@ -115,34 +122,24 @@ public class SessionState {
         return new ArrayList<>(actionHistory);
     }
 
-    public static Map<String, Integer> getActionStats() {
-        return new HashMap<>(actionStats);
-    }
-
     public static int getActionCount(String action) {
         return actionStats.getOrDefault(action, 0);
     }
 
-    // ===================================================
-    // ❌ FAILURES
-    // ===================================================
-    public static void recordFailure(String action) {
-        failures.add(action);
+    // 🔥 IMPORTANT FIX (علشان LearningEngine)
+    public static Map<String, Integer> getActionStats() {
+        return new HashMap<>(actionStats);
     }
 
-    public static List<String> getFailures() {
-        return new ArrayList<>(failures);
+    // ===================================================
+    // ❌ FAILURES (🔥 FIXED PERFORMANCE)
+    // ===================================================
+    public static void recordFailure(String action) {
+        failureCount.merge(action, 1, Integer::sum);
     }
 
     public static int getFailureCount(String action) {
-
-        int count = 0;
-
-        for (String f : failures) {
-            if (f.equals(action)) count++;
-        }
-
-        return count;
+        return failureCount.getOrDefault(action, 0);
     }
 
     // ===================================================
@@ -157,41 +154,99 @@ public class SessionState {
     }
 
     // ===================================================
-    // 🧠 INTELLIGENCE
+    // 🧠 AI INTELLIGENCE
     // ===================================================
     public static boolean isStuck() {
-        return actionHistory.size() > 10 &&
-                new HashSet<>(actionHistory.subList(
-                        Math.max(0, actionHistory.size() - 5),
+
+        if (actionHistory.size() < 6) return false;
+
+        List<String> last =
+                actionHistory.subList(
+                        actionHistory.size() - 5,
                         actionHistory.size()
-                )).size() <= 2;
+                );
+
+        Set<String> unique = new HashSet<>(last);
+
+        return unique.size() <= 2;
+    }
+
+    // 🔥 anti-loop detection
+    public static boolean isLooping() {
+
+        if (navigationPath.size() < 4) return false;
+
+        String last = navigationPath.get(navigationPath.size() - 1);
+
+        return Collections.frequency(navigationPath, last) > 2;
+    }
+
+    // ===================================================
+    // 🧠 RL REWARD SYSTEM
+    // ===================================================
+    public static void reward(String stateKey, double value) {
+        stateRewards.merge(stateKey, value, Double::sum);
+    }
+
+    public static double getReward(String stateKey) {
+        return stateRewards.getOrDefault(stateKey, 0.0);
+    }
+
+    // ===================================================
+    // 🧠 SMART DECISIONS HELPERS
+    // ===================================================
+    public static boolean shouldAvoidUrl(String url) {
+
+        String n = normalize(url);
+
+        if (getUrlVisitCount(n) > 2) return true;
+
+        if (isLooping()) return true;
+
+        return false;
+    }
+
+    public static boolean shouldAvoidElement(String key) {
+
+        int visits = getElementVisitCount(key);
+
+        return visits > 3;
     }
 
     // ===================================================
     // 🔄 RESET
     // ===================================================
     public static void reset() {
+
         visitedUrls.clear();
         visitedElements.clear();
         elementVisitCount.clear();
+        urlVisitCount.clear();
         actionHistory.clear();
         navigationPath.clear();
-        failures.clear();
+        failureCount.clear();
         actionStats.clear();
+        stateRewards.clear();
+
         currentUrl = "";
         lastAction = "";
     }
 
     // ===================================================
-    // 🧹 NORMALIZE
+    // 🧹 NORMALIZE (🔥 improved)
     // ===================================================
     private static String normalize(String value) {
 
         if (value == null) return "";
 
         try {
-            value = value.split("#")[0];
-            value = value.split("\\?")[0];
+            value = value.trim().toLowerCase();
+
+            int hashIndex = value.indexOf("#");
+            if (hashIndex != -1) value = value.substring(0, hashIndex);
+
+            int queryIndex = value.indexOf("?");
+            if (queryIndex != -1) value = value.substring(0, queryIndex);
 
             if (value.endsWith("/")) {
                 value = value.substring(0, value.length() - 1);
@@ -199,6 +254,13 @@ public class SessionState {
 
         } catch (Exception ignored) {}
 
-        return value.trim().toLowerCase();
+        return value;
+    }
+
+    // ===================================================
+    // 📊 VISITED COUNT (NEW 🔥)
+    // ===================================================
+    public static int getVisitedCount() {
+        return visitedUrls.size(); // أو أي collection عندك
     }
 }

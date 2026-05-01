@@ -1,55 +1,122 @@
 package engine.learning;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class BehaviorStore {
 
-    // 🔥 success count
-    private static final Map<String, Integer> successMap = new ConcurrentHashMap<>();
-
-    // 🔥 failure count
-    private static final Map<String, Integer> failureMap = new ConcurrentHashMap<>();
+    // ===================================================
+    // 🧠 STRUCTURE: key = state|action
+    // ===================================================
+    private static final Map<String, Stats> store =
+            new ConcurrentHashMap<>();
 
     // ===================================================
-    // ✅ SUCCESS
+    // 📊 STATS MODEL
     // ===================================================
-    public static void recordSuccess(String key) {
+    private static class Stats {
+        int success;
+        int failure;
+        long lastUpdated;
 
-        successMap.merge(key, 1, Integer::sum);
+        void record(boolean ok) {
+            if (ok) success++;
+            else failure++;
+
+            lastUpdated = System.currentTimeMillis();
+        }
+
+        double score() {
+
+            int total = success + failure;
+
+            if (total == 0) return 0;
+
+            double ratio = (double) success / total;
+
+            // 🔥 recency factor
+            double age = (System.currentTimeMillis() - lastUpdated) / 10000.0;
+            double recency = 1.0 / (1.0 + age);
+
+            // 🔥 confidence
+            double confidence = Math.min(1.0, total / 10.0);
+
+            return ratio * confidence + recency * 0.3;
+        }
     }
 
     // ===================================================
-    // ❌ FAILURE
+    // 🔥 BUILD KEY (state + action)
     // ===================================================
-    public static void recordFailure(String key) {
-
-        failureMap.merge(key, 1, Integer::sum);
+    public static String buildKey(String state, String action) {
+        return state + "|" + action;
     }
 
     // ===================================================
-    // 📊 GETTERS
+    // ✅ RECORD
     // ===================================================
-    public static int getSuccess(String key) {
-        return successMap.getOrDefault(key, 0);
+    public static void record(String state,
+                              String action,
+                              boolean success) {
+
+        String key = buildKey(state, action);
+
+        store
+                .computeIfAbsent(key, k -> new Stats())
+                .record(success);
     }
 
-    public static int getFailure(String key) {
-        return failureMap.getOrDefault(key, 0);
+    // ===================================================
+    // 📊 GET SCORE
+    // ===================================================
+    public static double getScore(String state, String action) {
+
+        String key = buildKey(state, action);
+
+        Stats stats = store.get(key);
+
+        if (stats == null) return 0;
+
+        return stats.score();
     }
 
     // ===================================================
-    // 🧠 SCORE
+    // 📊 GET RAW DATA
     // ===================================================
-    public static double getScore(String key) {
+    public static int getSuccess(String state, String action) {
+        Stats s = store.get(buildKey(state, action));
+        return s == null ? 0 : s.success;
+    }
 
-        int success = getSuccess(key);
-        int failure = getFailure(key);
+    public static int getFailure(String state, String action) {
+        Stats s = store.get(buildKey(state, action));
+        return s == null ? 0 : s.failure;
+    }
 
-        int total = success + failure;
+    // ===================================================
+    // 🧠 DECAY (IMPORTANT)
+    // ===================================================
+    public static void decay() {
 
-        if (total == 0) return 0.5; // neutral
+        for (Stats s : store.values()) {
 
-        return (double) success / total;
+            s.success *= 0.95;
+            s.failure *= 0.95;
+        }
+    }
+
+    // ===================================================
+    // 🧠 GET ALL KEYS
+    // ===================================================
+    public static Set<String> getAllKeys() {
+        return store.keySet();
+    }
+
+    // ===================================================
+    // 🧹 RESET
+    // ===================================================
+    public static void reset() {
+        store.clear();
     }
 }

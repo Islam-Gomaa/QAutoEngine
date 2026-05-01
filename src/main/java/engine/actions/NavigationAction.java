@@ -2,11 +2,10 @@ package engine.actions;
 
 import engine.context.ContextEngine;
 import engine.goal.GoalEngine;
-import engine.learning.BehaviorGraph;
-import engine.learning.BehaviorStore;
 import engine.state.SessionState;
 import org.openqa.selenium.*;
 import utilities.Waits;
+import utilities.DebugUtil;
 
 import java.net.URI;
 import java.util.*;
@@ -28,7 +27,7 @@ public class NavigationAction implements Action {
 
         List<WebElement> links = driver.findElements(By.tagName("a"));
 
-        List<String> urls = new ArrayList<>();
+        List<WebElement> validLinks = new ArrayList<>();
 
         for (WebElement link : links) {
 
@@ -37,61 +36,85 @@ public class NavigationAction implements Action {
 
                 if (href == null || !href.startsWith("http")) continue;
 
-                // 🔒 domain filter
-                if (!getDomain(href).contains(baseDomain)) continue;
+                String normalized = normalize(href);
 
-                // 🔁 skip visited
-                if (SessionState.isUrlVisited(href)) continue;
+                if (!getDomain(normalized).contains(baseDomain)) continue;
+                if (SessionState.shouldAvoidUrl(normalized)) continue;
+                if (isBlocked(normalized)) continue;
 
-                // 🚫 block unwanted
-                if (isBlocked(href)) continue;
-
-                urls.add(normalize(href));
+                validLinks.add(link);
 
             } catch (StaleElementReferenceException ignored) {}
         }
 
-        // إزالة التكرار
-        urls = urls.stream().distinct().collect(Collectors.toList());
+        // 🔥 Dedup
+        validLinks = validLinks.stream()
+                .collect(Collectors.collectingAndThen(
+                        Collectors.toMap(
+                                el -> normalize(el.getAttribute("href")),
+                                el -> el,
+                                (a, b) -> a
+                        ),
+                        map -> new ArrayList<>(map.values())
+                ));
 
-        // 🔥 ترتيب بالـ AI
-        urls.sort(Comparator.comparingDouble(url -> -score(url, context, goal)));
+        // 🔥 Sorting
+        validLinks.sort((a, b) -> Double.compare(
+                score(b.getAttribute("href"), context, goal),
+                score(a.getAttribute("href"), context, goal)
+        ));
 
         int count = 0;
 
-        for (String url : urls) {
+        for (WebElement link : validLinks) {
 
             if (count++ >= MAX_LINKS) break;
 
             try {
 
-                System.out.println("➡️ Navigating to: " + url);
+                String url = normalize(link.getAttribute("href"));
 
-                String before = driver.getCurrentUrl();
+                double linkScore = score(url, context, goal);
 
-                driver.navigate().to(url);
-                Waits.waitForPageLoad(driver);
+                System.out.println("➡️ Trying: " + url + " (score: " + linkScore + ")");
 
-                String after = driver.getCurrentUrl();
+                DebugUtil.highlight(driver, link);
+                DebugUtil.slow(400);
 
-                // 🧠 Learning
-                BehaviorGraph.record(before, "NavigationAction", after);
-                BehaviorStore.recordSuccess("NavigationAction");
+                String beforeUrl = driver.getCurrentUrl();
+                int beforeDom = driver.findElements(By.xpath("//*")).size();
+                String beforeTitle = driver.getTitle();
 
-                return; // 🔥 خطوة واحدة ذكية
+                safeClick(driver, link);
+
+                DebugUtil.slow(900);
+
+                String afterUrl = driver.getCurrentUrl();
+                int afterDom = driver.findElements(By.xpath("//*")).size();
+                String afterTitle = driver.getTitle();
+
+                boolean changed =
+                        !beforeUrl.equals(afterUrl)
+                                || beforeDom != afterDom
+                                || !beforeTitle.equals(afterTitle);
+
+                if (changed) {
+
+                    SessionState.markUrlVisited(url);
+
+                    System.out.println("✅ Navigation SUCCESS");
+                    return;
+                }
 
             } catch (Exception e) {
 
-                BehaviorStore.recordFailure("NavigationAction");
-                System.out.println("❌ Navigation failed");
+                System.out.println("❌ Navigation failed → trying next");
             }
         }
 
         System.out.println("⚠️ No navigation executed");
     }
 
-    // ===================================================
-    // 🧠 SCORE
     // ===================================================
     private double score(String url,
                          ContextEngine.ContextType context,
@@ -101,40 +124,50 @@ public class NavigationAction implements Action {
 
         url = url.toLowerCase();
 
-        // 🎯 goal-driven
         if (goal != null) {
 
             switch (goal) {
+
                 case ADD_TO_CART:
-                    if (url.contains("product")) score += 5;
+                    if (url.contains("product")) score += 10;
                     break;
 
                 case REACH_CHECKOUT:
-                    if (url.contains("cart") || url.contains("checkout")) score += 10;
+                    if (url.contains("cart")) score += 12;
+                    if (url.contains("checkout")) score += 15;
                     break;
 
                 case COMPLETE_PAYMENT:
-                    if (url.contains("checkout") || url.contains("payment")) score += 10;
+                    if (url.contains("checkout")) score += 15;
+                    if (url.contains("payment")) score += 18;
                     break;
             }
         }
 
-        // 🧠 context
-        if (context == ContextEngine.ContextType.GENERIC && url.contains("product")) score += 5;
-        if (context == ContextEngine.ContextType.CART && url.contains("checkout")) score += 5;
+        if (context == ContextEngine.ContextType.GENERIC &&
+                url.contains("product")) score += 6;
 
-        // 📊 learning
-        score += BehaviorStore.getScore("NavigationAction") * 5;
+        if (context == ContextEngine.ContextType.CART &&
+                url.contains("checkout")) score += 8;
 
-        // 🔑 keywords
-        if (url.contains("next")) score += 2;
-        if (url.contains("continue")) score += 2;
+        if (url.contains("next")) score += 4;
+        if (url.contains("continue")) score += 4;
+        if (url.contains("details")) score += 3;
 
-        return score;
+        return score + Math.random();
     }
 
     // ===================================================
-    // 🚫 BLOCK
+    private void safeClick(WebDriver driver, WebElement el) {
+
+        try {
+            Waits.waitForClickable(driver, el).click();
+        } catch (Exception e) {
+            ((JavascriptExecutor) driver)
+                    .executeScript("arguments[0].click();", el);
+        }
+    }
+
     // ===================================================
     private boolean isBlocked(String url) {
 
@@ -149,10 +182,9 @@ public class NavigationAction implements Action {
                 url.contains("instagram");
     }
 
-    // ===================================================
-    // 🧹 NORMALIZE
-    // ===================================================
     private String normalize(String url) {
+
+        if (url == null) return "";
 
         url = url.split("#")[0];
         url = url.split("\\?")[0];

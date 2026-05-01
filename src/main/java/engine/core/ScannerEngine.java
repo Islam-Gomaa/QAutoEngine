@@ -1,7 +1,10 @@
 package engine.core;
 
 import engine.decision.DecisionEngine;
-import engine.optimization.PathOptimizer;
+import engine.learning.LearningEngine;
+import engine.learning.LearningEngine.State;
+import engine.context.ContextEngine;
+import engine.goal.GoalEngine;
 import engine.distribution.DistributionManager;
 import org.openqa.selenium.*;
 import utilities.Waits;
@@ -12,7 +15,6 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class ScannerEngine {
 
-    // 🔥 session-based seen (مش static)
     private final Set<String> seen =
             Collections.newSetFromMap(new ConcurrentHashMap<>());
 
@@ -26,20 +28,40 @@ public class ScannerEngine {
         Set<String> result = new LinkedHashSet<>();
 
         try {
+
             Waits.waitForPageLoad(driver);
 
             String currentUrl = driver.getCurrentUrl();
             String baseDomain = getDomain(currentUrl);
 
+            // 🧠 BUILD STATE (🔥 مهم جدًا)
+            ContextEngine.ContextType context =
+                    ContextEngine.detect(driver);
+
+            GoalEngine.GoalType goal =
+                    GoalEngine.getGoal();
+
+            int domSize = driver.findElements(By.xpath("//*")).size();
+
+            State state = LearningEngine.buildState(
+                    context,
+                    currentUrl,
+                    goal,
+                    domSize
+            );
+
+            // ===================================================
+            // 🔍 COLLECT
+            // ===================================================
             List<String> rawLinks = collectFromDom(driver);
 
             for (String url : rawLinks) {
 
                 String normalized = normalize(url);
 
-                if (!isValid(normalized, currentUrl, baseDomain)) continue;
+                if (!isValid(normalized, currentUrl, baseDomain, state))
+                    continue;
 
-                // 🔁 dedupe
                 if (!seen.add(normalized)) continue;
 
                 result.add(normalized);
@@ -47,34 +69,47 @@ public class ScannerEngine {
                 if (result.size() >= maxPerPage) break;
             }
 
-            // 🔥 AI Prioritization
-            List<String> prioritized = PathOptimizer.prioritize(new ArrayList<>(result));
+            // ===================================================
+            // 🧠 AI SORTING (🔥 upgraded)
+            // ===================================================
+            List<String> sorted = new ArrayList<>(result);
 
-            // 🔥 Distribution
-            DistributionManager.addAll(prioritized);
+            sorted.sort((a, b) ->
+                    Double.compare(
+                            DecisionEngine.scoreNavigation(b, state),
+                            DecisionEngine.scoreNavigation(a, state)
+                    )
+            );
 
-            System.out.println("🔗 Scanner collected: " + prioritized.size());
+            // ===================================================
+            // 🔥 DISTRIBUTION
+            // ===================================================
+            DistributionManager.addAll(sorted);
 
-            return new LinkedHashSet<>(prioritized);
+            System.out.println("🔗 Scanner collected: " + sorted.size());
+
+            return new LinkedHashSet<>(sorted);
 
         } catch (Exception e) {
+
             System.out.println("❌ Scanner failed: " + e.getMessage());
             return Collections.emptySet();
         }
     }
 
     // ===================================================
-    // 🔍 COLLECT
-    // ===================================================
     private List<String> collectFromDom(WebDriver driver) {
 
         List<String> urls = new ArrayList<>();
 
         try {
+
             List<WebElement> links = driver.findElements(By.tagName("a"));
 
             for (WebElement el : links) {
+
                 try {
+
                     String href = el.getAttribute("href");
 
                     if (href != null) {
@@ -90,36 +125,39 @@ public class ScannerEngine {
     }
 
     // ===================================================
-    // 🔥 VALIDATION (CORE FILTER)
+    // 🧠 AI VALIDATION
     // ===================================================
-    private boolean isValid(String url, String currentUrl, String baseDomain) {
+    private boolean isValid(String url,
+                            String currentUrl,
+                            String baseDomain,
+                            State state) {
 
         if (url.isEmpty()) return false;
 
-        // 🚫 نفس الصفحة
         if (url.equals(normalize(currentUrl))) return false;
 
-        // 🚫 invalid protocols
         if (url.startsWith("javascript")) return false;
         if (url.startsWith("mailto")) return false;
         if (url.startsWith("tel")) return false;
 
-        // 🔐 domain guard
         if (!isSameDomain(url, baseDomain)) return false;
 
-        // 🧠 AI decision
-        return DecisionEngine.shouldNavigate(url);
+        // 🧠 AI scoring
+        double score = DecisionEngine.scoreNavigation(url, state);
+
+        return score > 1;
     }
 
     // ===================================================
-    // 🌐 DOMAIN
-    // ===================================================
     private boolean isSameDomain(String url, String baseDomain) {
+
         String domain = getDomain(url);
+
         return domain != null && domain.contains(baseDomain);
     }
 
     private String getDomain(String url) {
+
         try {
             return new URI(url).getHost();
         } catch (Exception e) {
@@ -128,28 +166,24 @@ public class ScannerEngine {
     }
 
     // ===================================================
-    // 🧹 NORMALIZATION
-    // ===================================================
     private String normalize(String url) {
 
         if (url == null) return "";
 
         try {
+
             url = url.trim();
 
-            // remove fragments
             int hashIndex = url.indexOf("#");
             if (hashIndex != -1) {
                 url = url.substring(0, hashIndex);
             }
 
-            // remove query
             int queryIndex = url.indexOf("?");
             if (queryIndex != -1) {
                 url = url.substring(0, queryIndex);
             }
 
-            // remove trailing slash
             if (url.endsWith("/")) {
                 url = url.substring(0, url.length() - 1);
             }

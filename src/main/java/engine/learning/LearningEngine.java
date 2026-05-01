@@ -1,99 +1,197 @@
 package engine.learning;
 
-import engine.state.SessionState;
+import engine.context.ContextEngine;
+import engine.goal.GoalEngine;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class LearningEngine {
 
-    // 🔥 global knowledge
-    private static final Map<String, Double> actionScores =
+    // ===================================================
+    // 🧠 STATE MODEL
+    // ===================================================
+    public static class State {
+
+        public ContextEngine.ContextType context;
+        public String pageType;
+        public GoalEngine.GoalType goal;
+        public int domSize;
+
+        public State(ContextEngine.ContextType context,
+                     String url,
+                     GoalEngine.GoalType goal,
+                     int domSize) {
+
+            this.context = context;
+            this.pageType = simplify(url);
+            this.goal = goal;
+            this.domSize = domSize;
+        }
+
+        private String simplify(String url) {
+
+            if (url == null) return "generic";
+
+            url = url.toLowerCase();
+
+            if (url.contains("product")) return "product";
+            if (url.contains("cart")) return "cart";
+            if (url.contains("checkout")) return "checkout";
+            if (url.contains("payment")) return "payment";
+
+            return "generic";
+        }
+
+        @Override
+        public String toString() {
+            return context + "|" + pageType + "|" + goal;
+        }
+    }
+
+    // ===================================================
+    // 🧠 REWARD ENGINE (🔥 مهم جدًا)
+    // ===================================================
+    private static class RewardEngine {
+
+        static double calculate(State prev,
+                                State next,
+                                String action,
+                                boolean success,
+                                boolean revisited) {
+
+            double reward = 0;
+
+            // BASE
+            reward += success ? 2.0 : -1.5;
+
+            // STATE CHANGE
+            if (!prev.pageType.equals(next.pageType)) {
+                reward += 2.0;
+            }
+
+            // DOM CHANGE
+            int delta = Math.abs(next.domSize - prev.domSize);
+            if (delta > 50) reward += 1.5;
+            else if (delta > 10) reward += 0.8;
+
+            // GOAL PROGRESSION
+            if (prev.goal != null) {
+
+                switch (prev.goal) {
+
+                    case ADD_TO_CART:
+                        if ("product".equals(next.pageType)) reward += 1;
+                        if ("cart".equals(next.pageType)) reward += 4;
+                        break;
+
+                    case REACH_CHECKOUT:
+                        if ("cart".equals(next.pageType)) reward += 2;
+                        if ("checkout".equals(next.pageType)) reward += 6;
+                        break;
+
+                    case COMPLETE_PAYMENT:
+                        if ("checkout".equals(next.pageType)) reward += 3;
+                        if ("payment".equals(next.pageType)) reward += 10;
+                        break;
+                }
+            }
+
+            // ACTION QUALITY
+            if ("FormAction".equals(action)) reward += 1.5;
+            if ("NavigationAction".equals(action)) reward += 1.0;
+            if ("ClickAction".equals(action)) reward += 0.5;
+
+            // LOOP PENALTY
+            if (revisited) reward -= 3;
+
+            // SMALL EXPLORATION BONUS
+            if (Math.random() < 0.1) reward += 0.5;
+
+            return reward;
+        }
+    }
+
+    // ===================================================
+    private static final Map<String, Double> lastRewards =
             new ConcurrentHashMap<>();
 
     // ===================================================
-    // 🧠 LEARN FROM CURRENT SESSION
+    // 🧠 BUILD STATE
     // ===================================================
-    public static void learn() {
+    public static State buildState(ContextEngine.ContextType context,
+                                   String url,
+                                   GoalEngine.GoalType goal,
+                                   int domSize) {
 
-        Map<String, Integer> stats = SessionState.getActionStats();
-
-        for (String action : stats.keySet()) {
-
-            int success = stats.getOrDefault(action, 0);
-            int failures = SessionState.getFailureCount(action);
-
-            double score = calculateScore(success, failures);
-
-            actionScores.put(action, score);
-
-            System.out.println("📚 Learning → " + action + " = " + score);
-        }
+        return new State(context, url, goal, domSize);
     }
 
     // ===================================================
-    // 🔢 SCORE FORMULA
+    // 🧠 MAIN LEARNING ENTRY (🔥 FIXED)
     // ===================================================
-    private static double calculateScore(int success, int failures) {
+    public static void learn(State prevState,
+                             State nextState,
+                             String action,
+                             String nextUrl,
+                             boolean success,
+                             boolean revisited) {
 
-        if (success == 0 && failures == 0) return 0;
+        double reward = RewardEngine.calculate(
+                prevState,
+                nextState,
+                action,
+                success,
+                revisited
+        );
 
-        return success - (failures * 2.0);
+        // 🔥 FIX: send reward to BehaviorGraph
+        BehaviorGraph.record(
+                prevState.toString(),
+                action,
+                nextState.toString(),
+                nextUrl,
+                success,
+                reward
+        );
+
+        // optional cache
+        lastRewards.put(prevState + "|" + action, reward);
+
+        System.out.println("🧠 Learning Update:");
+        System.out.println("   From: " + prevState);
+        System.out.println("   To:   " + nextState);
+        System.out.println("   Action: " + action);
+        System.out.println("   Reward: " + reward);
     }
 
     // ===================================================
-    // 🎯 GET SCORE
+    // 🧠 DECISION HELPER
     // ===================================================
-    public static double getScore(String action) {
-        return actionScores.getOrDefault(action, 0.0);
+    public static boolean shouldExecute(State state,
+                                        String action) {
+
+        return BehaviorGraph
+                .suggestAction(state.toString())
+                .map(best -> best.equals(action))
+                .orElse(true);
     }
 
     // ===================================================
-    // 🔥 DECISION HELPER
-    // ===================================================
-    public static boolean isActionAllowed(String action) {
+    public static double getScore(State state, String action) {
 
-        double score = getScore(action);
-
-        if (score < -2) {
-            System.out.println("🚫 AI blocked action: " + action);
-            return false;
-        }
-
-        return true;
+        return BehaviorGraph.getActionScore(
+                state.toString(),
+                action
+        );
     }
 
-    // ===================================================
-    // 🧹 RESET
     // ===================================================
     public static void reset() {
-        actionScores.clear();
-    }
 
-    // ===================================================
-    // 🌐 PATH LEARNING (NEW 🔥)
-    // ===================================================
-    private static final Map<String, Double> pathScores =
-            new ConcurrentHashMap<>();
+        BehaviorGraph.reset();
+        lastRewards.clear();
 
-    public static void learnPath(String url, boolean success) {
-
-        if (url == null || url.isEmpty()) return;
-
-        double delta = success ? 2.0 : -1.5;
-
-        pathScores.merge(url, delta, Double::sum);
-
-        System.out.println("🌐 Path Learning → " + url + " = " + pathScores.get(url));
-    }
-
-    public static double getPathScore(String url) {
-        return pathScores.getOrDefault(url, 0.0);
-    }
-
-    public static void decay() {
-        // تقليل تأثير القديم (مبدئي)
-        // حالياً ممكن تسيبها فاضية أو تعمل logging
-        System.out.println("🧠 Decay applied");
+        System.out.println("🧹 LearningEngine Reset");
     }
 }

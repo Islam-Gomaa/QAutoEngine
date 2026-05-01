@@ -1,9 +1,7 @@
 package engine.core;
 
-import engine.actions.Action;
-import engine.actions.ClickAction;
-import engine.actions.FormAction;
-import engine.actions.NavigationAction;
+import engine.actions.*;
+import engine.state.SessionState;
 import org.openqa.selenium.WebDriver;
 
 import java.util.ArrayList;
@@ -14,15 +12,13 @@ public class EngineOrchestrator {
     private final List<Action> actions = new ArrayList<>();
     private final ScannerEngine scannerEngine;
 
-    // ⚙️ Configurable
-    private final int cycles = 2;
+    private final int maxSteps = 20;     // 🔥 بدل cycles
     private final int maxFailures = 5;
 
     public EngineOrchestrator() {
 
         this.scannerEngine = new ScannerEngine();
 
-        // 🔥 ترتيب execution مهم
         actions.add(new NavigationAction());
         actions.add(new ClickAction());
         actions.add(new FormAction());
@@ -37,30 +33,51 @@ public class EngineOrchestrator {
         try {
 
             // ==============================
-            // 🔥 PHASE 1: SCAN
+            // 🔍 INITIAL SCAN
             // ==============================
-            log("🔍 Running Scanner Engine...");
+            log("🔍 Initial Scan...");
             safeScan(driver);
 
             // ==============================
-            // 🔥 PHASE 2: ACTIONS LOOP
+            // 🔥 AI LOOP
             // ==============================
-            for (int i = 0; i < cycles; i++) {
+            for (int step = 0; step < maxSteps; step++) {
 
-                log("🔁 Cycle: " + (i + 1));
+                log("\n🧠 STEP: " + (step + 1));
+
+                boolean anySuccess = false;
 
                 for (Action action : actions) {
 
                     boolean success = executeSafely(driver, action);
 
-                    if (!success) {
-                        failures++;
+                    if (success) {
+                        anySuccess = true;
 
-                        if (failures >= maxFailures) {
-                            log("🛑 Too many failures, stopping...");
-                            return;
-                        }
+                        // 🔥 re-scan after success
+                        safeScan(driver);
+
+                        break; // 🔥 نفذ Action واحد ذكي بس
+                    } else {
+                        failures++;
                     }
+
+                    if (failures >= maxFailures) {
+                        log("🛑 Too many failures, stopping...");
+                        return;
+                    }
+                }
+
+                // 💀 لو مفيش أي حاجة نجحت → stop
+                if (!anySuccess) {
+                    log("⚠️ No progress detected, stopping...");
+                    break;
+                }
+
+                // 🧠 Smart stop condition
+                if (isStable()) {
+                    log("🧠 System stabilized, stopping...");
+                    break;
                 }
             }
 
@@ -75,24 +92,19 @@ public class EngineOrchestrator {
     }
 
     // ===================================================
-    // 🔍 SAFE SCAN
+    // 🔍 SCAN
     // ===================================================
     private void safeScan(WebDriver driver) {
 
         try {
-
-            // 👇 استخدم واحدة من دول حسب ScannerEngine عندك
             scannerEngine.runAndCollect(driver);
-            // scannerEngine.run(driver);
-
         } catch (Exception e) {
-
-            log("❌ Scanner failed: " + e.getMessage());
+            log("❌ Scanner failed");
         }
     }
 
     // ===================================================
-    // 🔐 SAFE EXECUTION
+    // 🔐 EXECUTION
     // ===================================================
     private boolean executeSafely(WebDriver driver, Action action) {
 
@@ -117,36 +129,30 @@ public class EngineOrchestrator {
     }
 
     // ===================================================
-    // 🧯 RECOVERY SYSTEM (SMART)
+    // 🧯 RECOVERY
     // ===================================================
     private void recover(WebDriver driver) {
 
         try {
 
-            String current = driver.getCurrentUrl();
-
-            log("🧯 Recovering from: " + current);
-
-            // 🔥 block external redirects
-            if (current.contains("whatsapp") ||
-                    current.contains("instagram") ||
-                    current.contains("facebook")) {
-
-                driver.navigate().back();
-                return;
-            }
-
-            // 🔥 normal recovery
             driver.navigate().back();
 
         } catch (Exception ignored) {}
     }
 
     // ===================================================
-    // 🧾 LOGGER
+    // 🧠 STOP CONDITION
+    // ===================================================
+    private boolean isStable() {
+
+        int urls = SessionState.urlCount();
+        int elements = SessionState.elementCount(); // 👈 لازم تكون عاملها
+
+        return urls > 10 && elements > 30;
+    }
+
     // ===================================================
     private void log(String msg) {
-
         System.out.println(msg);
     }
 }

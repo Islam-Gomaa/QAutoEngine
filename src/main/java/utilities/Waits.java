@@ -10,7 +10,7 @@ import java.util.List;
 
 public class Waits {
 
-    private static final int DEFAULT_TIMEOUT = 10;
+    private static final int DEFAULT_TIMEOUT = 2;
     private static final int POLLING = 500;
 
     // ================= WAIT BUILDER =================

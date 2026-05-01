@@ -2,11 +2,10 @@ package engine.actions;
 
 import engine.context.ContextEngine;
 import engine.goal.GoalEngine;
-import engine.learning.BehaviorGraph;
-import engine.learning.BehaviorStore;
 import engine.state.SessionState;
 import org.openqa.selenium.*;
 import utilities.Waits;
+import utilities.DebugUtil;
 
 import java.net.URI;
 import java.util.*;
@@ -23,18 +22,25 @@ public class ClickAction implements Action {
 
         String baseDomain = getDomain(driver.getCurrentUrl());
 
-        // 🧠 Context + Goal
         ContextEngine.ContextType context = ContextEngine.detect(driver);
         GoalEngine.GoalType goal = GoalEngine.getGoal();
 
-        // 🔍 Collect clickable elements
         List<WebElement> elements = findClickableElements(driver);
 
-        // إزالة التكرار
-        elements = elements.stream().distinct().collect(Collectors.toList());
+        if (elements.isEmpty()) {
+            System.out.println("⚠️ No clickable elements found");
+            return;
+        }
 
-        // 🔥 ترتيب بالعقل (score)
-        elements.sort(Comparator.comparingDouble(el -> -score(el, context, goal)));
+        // 🔥 KEEP POWER (filter + sort)
+        elements = elements.stream()
+                .filter(this::isValid)
+                .distinct()
+                .sorted((a, b) -> Double.compare(
+                        score(b, context, goal),
+                        score(a, context, goal)
+                ))
+                .collect(Collectors.toList());
 
         int attempts = 0;
 
@@ -44,48 +50,55 @@ public class ClickAction implements Action {
 
             try {
 
-                if (!isValid(el)) continue;
                 if (!isSafe(el)) continue;
+                if (isExternal(el, baseDomain)) continue;
 
                 String key = buildKey(el);
 
-                // 🔁 skip لو اتجرب قبل كده
-                if (SessionState.isElementVisited(key)) continue;
+                if (SessionState.shouldAvoidElement(key)) continue;
 
-                // 🌐 skip external links
-                if (isExternal(el, baseDomain)) continue;
+                double elementScore = score(el, context, goal);
+
+                System.out.println("➡️ Trying element (score: " + elementScore + ")");
 
                 scrollIntoView(driver, el);
+                DebugUtil.highlight(driver, el);
+                DebugUtil.slow(300);
 
-                String before = driver.getCurrentUrl();
+                String beforeUrl = driver.getCurrentUrl();
+                int beforeDom = driver.findElements(By.xpath("//*")).size();
+                String beforeTitle = driver.getTitle();
 
                 safeClick(driver, el);
 
-                Waits.waitForPageLoad(driver);
+                DebugUtil.slow(800);
 
-                String after = driver.getCurrentUrl();
+                String afterUrl = driver.getCurrentUrl();
+                int afterDom = driver.findElements(By.xpath("//*")).size();
+                String afterTitle = driver.getTitle();
 
-                // 🧠 Learning
-                BehaviorGraph.record(before, "ClickAction", after);
-                BehaviorStore.recordSuccess("ClickAction");
+                boolean changed =
+                        !beforeUrl.equals(afterUrl)
+                                || beforeDom != afterDom
+                                || !beforeTitle.equals(afterTitle);
 
-                SessionState.markElementVisited(key);
+                if (changed) {
 
-                System.out.println("✅ Clicked: " + key);
+                    SessionState.markElementVisited(key);
 
-                return; // 🔥 click واحد ذكي
+                    System.out.println("✅ Click SUCCESS → score: " + elementScore);
+                    return;
+                }
+
             } catch (Exception e) {
 
-                BehaviorStore.recordFailure("ClickAction");
                 System.out.println("❌ Click failed → trying next");
             }
         }
 
-        System.out.println("⚠️ No valid click found");
+        System.out.println("⚠️ ClickAction finished without change");
     }
 
-    // ===================================================
-    // 🔍 FIND ELEMENTS
     // ===================================================
     private List<WebElement> findClickableElements(WebDriver driver) {
 
@@ -101,8 +114,6 @@ public class ClickAction implements Action {
     }
 
     // ===================================================
-    // 🧠 SCORE (العقل الحقيقي)
-    // ===================================================
     private double score(WebElement el,
                          ContextEngine.ContextType context,
                          GoalEngine.GoalType goal) {
@@ -110,8 +121,9 @@ public class ClickAction implements Action {
         double score = 0;
 
         String text = safeText(el);
+        String tag = el.getTagName();
 
-        // 🎯 Goal
+        // 🎯 GOAL
         if (goal != null) {
             switch (goal) {
                 case ADD_TO_CART:
@@ -126,58 +138,50 @@ public class ClickAction implements Action {
             }
         }
 
-        // 🧠 Context
-        if (context == ContextEngine.ContextType.PRODUCT && text.contains("add")) score += 5;
-        if (context == ContextEngine.ContextType.CART && text.contains("checkout")) score += 5;
-        if (context == ContextEngine.ContextType.CHECKOUT && text.contains("pay")) score += 5;
+        // 🧠 CONTEXT
+        if (context == ContextEngine.ContextType.PRODUCT && text.contains("add"))
+            score += 5;
 
-        // 📊 Learning
-        score += BehaviorStore.getScore("ClickAction") * 5;
+        // 🔥 TAG WEIGHT
+        if ("button".equals(tag)) score += 3;
+        if ("a".equals(tag)) score += 2;
 
-        // 🔑 Keywords
-        if (text.contains("next")) score += 2;
-        if (text.contains("continue")) score += 2;
-
+        // ❌ BAD ACTIONS
         if (text.contains("cancel") || text.contains("close")) score -= 5;
 
-        return score;
+        return score + Math.random();
     }
 
     // ===================================================
-    // 🔒 VALIDATION
-    // ===================================================
     private boolean isValid(WebElement el) {
         try {
-            return el.isDisplayed() && el.isEnabled();
+            return el.isDisplayed()
+                    && el.isEnabled()
+                    && el.getSize().height > 5
+                    && el.getSize().width > 5;
         } catch (Exception e) {
             return false;
         }
     }
 
     private boolean isSafe(WebElement el) {
-
-        String text = safeText(el);
-
-        return !(text.contains("logout") ||
-                text.contains("delete") ||
-                text.contains("remove") ||
-                text.contains("sign out"));
+        String t = safeText(el);
+        return !(t.contains("logout") ||
+                t.contains("delete") ||
+                t.contains("remove") ||
+                t.contains("sign out"));
     }
 
     private boolean isExternal(WebElement el, String baseDomain) {
-
         try {
             String href = el.getAttribute("href");
             if (href == null) return false;
-
             return !getDomain(href).contains(baseDomain);
         } catch (Exception e) {
             return false;
         }
     }
 
-    // ===================================================
-    // ⚙️ CLICK SAFE
     // ===================================================
     private void safeClick(WebDriver driver, WebElement el) {
 
@@ -192,8 +196,7 @@ public class ClickAction implements Action {
 
     private void handleAlert(WebDriver driver) {
         try {
-            Alert alert = driver.switchTo().alert();
-            alert.accept();
+            driver.switchTo().alert().accept();
         } catch (Exception ignored) {}
     }
 
@@ -208,29 +211,23 @@ public class ClickAction implements Action {
     }
 
     // ===================================================
-    // 🧠 HELPERS
-    // ===================================================
     private String safeText(WebElement el) {
-        try {
-            return el.getText().toLowerCase();
-        } catch (Exception e) {
-            return "";
-        }
+        try { return el.getText().toLowerCase(); }
+        catch (Exception e) { return ""; }
     }
 
     private String buildKey(WebElement el) {
         try {
-            return el.getTagName() + "|" + el.getText();
+            return el.getTagName() + "|" +
+                    el.getText() + "|" +
+                    el.getAttribute("href");
         } catch (Exception e) {
             return UUID.randomUUID().toString();
         }
     }
 
     private String getDomain(String url) {
-        try {
-            return new URI(url).getHost();
-        } catch (Exception e) {
-            return "";
-        }
+        try { return new URI(url).getHost(); }
+        catch (Exception e) { return ""; }
     }
 }
