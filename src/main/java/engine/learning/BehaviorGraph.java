@@ -5,29 +5,21 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class BehaviorGraph {
 
-    // state → action → (to → stats)
     private static final Map<String,
             Map<String,
                     Map<String, TransitionStats>>> graph =
             new ConcurrentHashMap<>();
 
-    // Q-table (state|action → value)
     private static final Map<String, Double> qTable =
             new ConcurrentHashMap<>();
 
-    // state → best Q (optimization 🔥)
-    private static final Map<String, Double> maxQCache =
-            new ConcurrentHashMap<>();
-
-    // ================= PARAMETERS =================
-    private static final double LR = 0.3;
-    private static final double DISCOUNT = 0.85;
-
-    // 🔥 dynamic exploration
-    private static double explorationRate = 0.12;
-
-    // 🔥 decay factor
+    // 🔥 remove stale cache issue
+    // (we compute dynamically instead)
+    private static final double LR = 0.25;
+    private static final double DISCOUNT = 0.9;
     private static final double DECAY = 0.97;
+
+    private static double explorationRate = 0.12;
 
     // ================= STATS =================
     private static class TransitionStats {
@@ -36,31 +28,29 @@ public class BehaviorGraph {
         double failure;
         long lastSeen;
 
-        void record(boolean ok) {
+        synchronized void record(boolean ok) {
             count++;
             if (ok) success++; else failure++;
             lastSeen = System.currentTimeMillis();
         }
 
-        double score() {
+        synchronized double score() {
 
-            if (count == 0) return 0;
+            if (count == 0) return 0.5;
 
-            double ratio = success / count;
+            double ratio = (success + 1) / (count + 2); // smoothing
 
-            // 🔥 recency
             double age = (System.currentTimeMillis() - lastSeen) / 10000.0;
             double recency = 1.0 / (1.0 + age);
 
-            // 🔥 confidence
-            double confidence = Math.min(1.0, count / 10.0);
+            double confidence = Math.min(1.0, count / 15.0);
 
-            return (ratio * confidence) + (recency * 0.3);
+            return (ratio * 0.6)
+                    + (recency * 0.2)
+                    + (confidence * 0.2);
         }
     }
 
-    // ===================================================
-    // 🔗 RECORD
     // ===================================================
     public static void record(String state,
                               String action,
@@ -79,8 +69,6 @@ public class BehaviorGraph {
     }
 
     // ===================================================
-    // 🧠 Q-UPDATE (IMPROVED)
-    // ===================================================
     private static void updateQ(String state,
                                 String action,
                                 String nextState,
@@ -89,58 +77,60 @@ public class BehaviorGraph {
         String key = state + "|" + action;
 
         double current = qTable.getOrDefault(key, 0.0);
-        double maxNext = maxQCache.getOrDefault(nextState, 0.0);
+        double maxNext = getMaxQ(nextState);
 
-        double newQ = current + LR *
-                (reward + DISCOUNT * maxNext - current);
+        double target = reward + DISCOUNT * maxNext;
+
+        double newQ = current + LR * (target - current);
+
+        // 🔥 normalization (prevents explosion)
+        newQ = Math.tanh(newQ);
 
         qTable.put(key, newQ);
-
-        maxQCache.merge(state, newQ, Math::max);
     }
 
     // ===================================================
-    // 🔥 DYNAMIC EXPLORATION
-    // ===================================================
-    public static void adjustExploration(boolean success) {
+    private static double getMaxQ(String state) {
 
-        if (success) {
-            explorationRate *= 0.95;
-        } else {
-            explorationRate *= 1.05;
-        }
-
-        explorationRate = Math.max(0.05, Math.min(0.3, explorationRate));
+        return qTable.entrySet().stream()
+                .filter(e -> e.getKey().startsWith(state + "|"))
+                .mapToDouble(Map.Entry::getValue)
+                .max()
+                .orElse(0);
     }
 
     // ===================================================
-    // 🧠 HYBRID SCORE
+    private static double getGraphScore(String state, String action) {
+
+        Map<String, TransitionStats> targets =
+                graph.getOrDefault(state, Map.of())
+                        .getOrDefault(action, Map.of());
+
+        if (targets.isEmpty()) return 0;
+
+        // 🔥 average بدل sum
+        return targets.values().stream()
+                .mapToDouble(TransitionStats::score)
+                .average()
+                .orElse(0);
+    }
+
     // ===================================================
     private static double getHybridScore(String state, String action) {
 
         String key = state + "|" + action;
 
         double q = qTable.getOrDefault(key, 0.0);
+        double graphScore = getGraphScore(state, action);
 
-        double graphScore = graph
-                .getOrDefault(state, Map.of())
-                .getOrDefault(action, Map.of())
-                .values().stream()
-                .mapToDouble(TransitionStats::score)
-                .sum();
-
-        // 🔥 normalization
-        double normalizedGraph = Math.tanh(graphScore);
-
+        // 🔥 intelligent exploration
         double exploration = (Math.random() < explorationRate)
-                ? Math.random()
+                ? (1 - Math.abs(q)) * Math.random()
                 : 0;
 
-        return q + normalizedGraph + exploration;
+        return q + graphScore + exploration;
     }
 
-    // ===================================================
-    // 🎯 ACTION SUGGESTION
     // ===================================================
     public static Optional<String> suggestAction(String state) {
 
@@ -151,23 +141,17 @@ public class BehaviorGraph {
 
         return actions.keySet().stream()
                 .max(Comparator.comparingDouble(a ->
-                        getHybridScore(state, a)));
+                        applyLoopPenalty(state,
+                                getHybridScore(state, a))));
     }
 
-    // ===================================================
-    // 🌍 NEXT URL
     // ===================================================
     public static Optional<String> suggestNextUrl(String state,
                                                   String action) {
 
-        Map<String, Map<String, TransitionStats>> actions = graph.get(state);
-
-        if (actions == null) return Optional.empty();
-
-        Map<String, TransitionStats> targets = actions.get(action);
-
-        if (targets == null || targets.isEmpty())
-            return Optional.empty();
+        Map<String, TransitionStats> targets =
+                graph.getOrDefault(state, Map.of())
+                        .getOrDefault(action, Map.of());
 
         return targets.entrySet().stream()
                 .max(Comparator.comparingDouble(e ->
@@ -176,38 +160,30 @@ public class BehaviorGraph {
     }
 
     // ===================================================
-    // 🔁 DECAY GRAPH
+    public static void adjustExploration(boolean success) {
+
+        if (success) explorationRate *= 0.97;
+        else explorationRate *= 1.03;
+
+        explorationRate = clamp(explorationRate, 0.05, 0.3);
+    }
+
     // ===================================================
-    private static void decayGraph() {
+    public static void decayAll() {
+
+        qTable.replaceAll((k, v) -> v * DECAY);
 
         for (var stateEntry : graph.values()) {
-
             for (var actionEntry : stateEntry.values()) {
-
-                for (TransitionStats stats : actionEntry.values()) {
-
-                    stats.count *= 0.95;
-                    stats.success *= 0.95;
-                    stats.failure *= 0.95;
+                for (TransitionStats s : actionEntry.values()) {
+                    s.count *= 0.97;
+                    s.success *= 0.97;
+                    s.failure *= 0.97;
                 }
             }
         }
     }
 
-    // ===================================================
-    // 🔁 FULL DECAY
-    // ===================================================
-    public static void decayAll() {
-
-        for (String key : qTable.keySet()) {
-            qTable.put(key, qTable.get(key) * DECAY);
-        }
-
-        decayGraph();
-    }
-
-    // ===================================================
-    // 🔥 LOOP PENALTY
     // ===================================================
     public static double applyLoopPenalty(String state, double score) {
 
@@ -219,38 +195,24 @@ public class BehaviorGraph {
     }
 
     // ===================================================
-    // 🧠 ACTION SCORE (FOR ENGINE)
-    // ===================================================
     public static double getActionScore(String state, String action) {
 
-        String key = state + "|" + action;
-
-        double q = qTable.getOrDefault(key, 0.0);
-
-        double graphScore = graph
-                .getOrDefault(state, Map.of())
-                .getOrDefault(action, Map.of())
-                .values().stream()
-                .mapToDouble(TransitionStats::score)
-                .sum();
-
-        return q + Math.tanh(graphScore);
+        return getHybridScore(state, action);
     }
 
-    // ===================================================
-    // 🧠 GET Q-TABLE
     // ===================================================
     public static Map<String, Double> getQTable() {
         return qTable;
     }
 
     // ===================================================
-    // 🧹 RESET
-    // ===================================================
     public static void reset() {
         graph.clear();
         qTable.clear();
-        maxQCache.clear();
         explorationRate = 0.12;
+    }
+
+    private static double clamp(double v, double min, double max) {
+        return Math.max(min, Math.min(max, v));
     }
 }

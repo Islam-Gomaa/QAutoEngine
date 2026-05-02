@@ -1,9 +1,9 @@
 package engine.core;
 
 import engine.actions.Action;
-import engine.context.ContextEngine;
 import engine.decision.DecisionEngine;
-import engine.goal.GoalEngine;
+import engine.intelligence.ProgressEngine;
+import engine.intelligence.ScenarioTracker;
 import engine.learning.*;
 import engine.state.SessionState;
 import org.openqa.selenium.*;
@@ -13,7 +13,7 @@ import java.util.List;
 public class ExecutionEngine {
 
     private final List<Action> actions;
-    private final int maxSteps = 40;
+    private final int maxSteps = 50;
 
     public ExecutionEngine(List<Action> actions) {
         this.actions = actions;
@@ -23,7 +23,10 @@ public class ExecutionEngine {
 
         System.out.println("🧠 AI Execution Engine START");
 
+        ScenarioTracker.reset();
+
         int step = 0;
+        int stepsWithoutProgress = 0;
 
         while (step < maxSteps) {
 
@@ -33,19 +36,10 @@ public class ExecutionEngine {
 
                 // ================= OBSERVE =================
                 String beforeUrl = driver.getCurrentUrl();
-
-                ContextEngine.ContextType context = ContextEngine.detect(driver);
-                GoalEngine.update(context);
-                GoalEngine.GoalType goal = GoalEngine.getGoal();
-
                 int beforeDom = driver.findElements(By.xpath("//*")).size();
 
                 LearningEngine.State prevState =
-                        LearningEngine.buildState(context, beforeUrl, goal, beforeDom);
-
-                LoopDetector.record(prevState.toString());
-
-                System.out.println("🧠 State: " + prevState);
+                        LearningEngine.buildState(null, beforeUrl, null, beforeDom);
 
                 // ================= DECIDE =================
                 Action bestAction = selectBestAction(driver, prevState);
@@ -61,37 +55,54 @@ public class ExecutionEngine {
                 // ================= EXECUTE =================
                 boolean executed = executeWithRetry(driver, bestAction);
 
-                sleep(700);
+                sleep(500);
 
                 // ================= AFTER =================
                 String afterUrl = driver.getCurrentUrl();
                 int afterDom = driver.findElements(By.xpath("//*")).size();
 
                 LearningEngine.State nextState =
-                        LearningEngine.buildState(context, afterUrl, goal, afterDom);
+                        LearningEngine.buildState(null, afterUrl, null, afterDom);
 
-                boolean changed = !beforeUrl.equals(afterUrl)
-                        || beforeDom != afterDom;
+                // ================= 🔥 PROGRESS =================
+                double progressScore = ProgressEngine.evaluateProgress(
+                        driver,
+                        beforeUrl,
+                        afterUrl,
+                        beforeDom,
+                        afterDom
+                );
 
-                boolean success = executed && changed;
+                boolean progress = progressScore > 2;
 
+                if (progress) stepsWithoutProgress = 0;
+                else stepsWithoutProgress++;
+
+                boolean success = executed && progress;
                 boolean revisited = SessionState.isUrlVisited(afterUrl);
 
-                // ================= REWARD =================
+                boolean terminal = ProgressEngine.isTerminal(driver);
+
+                // ================= 💰 REWARD =================
                 double reward = RewardEngine.calculate(
                         prevState,
                         nextState,
                         actionName,
                         success,
-                        revisited
+                        revisited,
+                        progressScore,
+                        terminal
                 );
 
-                if (LoopDetector.isLooping(prevState.toString())) {
+                // 🔁 loop penalty
+                if (ScenarioTracker.isLooping(afterUrl)) {
                     reward -= 5;
                     System.out.println("🔁 Loop penalty applied");
                 }
 
-                // ================= LEARNING =================
+                System.out.println("💰 Reward: " + reward);
+
+                // ================= 🧠 LEARNING =================
                 BehaviorGraph.record(
                         prevState.toString(),
                         actionName,
@@ -109,21 +120,26 @@ public class ExecutionEngine {
 
                 BehaviorGraph.adjustExploration(success);
 
-                System.out.println("🧠 Reward: " + reward);
+                // ================= 📊 SCENARIO =================
+                ScenarioTracker.record(actionName, afterUrl, progressScore);
+
+                // ================= 🎯 TERMINAL =================
+                if (terminal) {
+                    System.out.println("🎯 SCENARIO COMPLETED!");
+                    ScenarioTracker.printSmart();
+                    break;
+                }
+
+                // ================= 💣 STUCK HANDLING =================
+                if (ProgressEngine.isStuck(stepsWithoutProgress)) {
+                    System.out.println("⚠️ Stuck detected → navigating back");
+                    driver.navigate().back();
+                    stepsWithoutProgress = 0;
+                }
 
                 // ================= VISITED =================
                 if (!revisited) {
                     SessionState.markUrlVisited(afterUrl);
-                }
-
-                // ================= SMART BREAK =================
-                if (GoalEngine.isCompleted(GoalEngine.GoalType.COMPLETE_PAYMENT)) {
-                    System.out.println("🏁 Goal Completed!");
-                    break;
-                }
-
-                if (!changed) {
-                    System.out.println("⚠️ No change → forcing exploration");
                 }
 
                 step++;
@@ -166,16 +182,16 @@ public class ExecutionEngine {
 
         double score = 0;
 
-        // 🧠 Learning memory
+        // 🧠 memory
         score += BehaviorStore.getScore(state.toString(), name) * 10;
 
-        // 🧠 Graph knowledge
+        // 🧠 graph
         score += BehaviorGraph.getActionScore(state.toString(), name) * 5;
 
-        // 🧠 Decision rules
+        // 🧠 rules
         score += DecisionEngine.scoreAction(name, driver, state);
 
-        // 🔥 exploration (controlled)
+        // 🔥 exploration
         if (Math.random() < 0.15) {
             score += Math.random();
         }

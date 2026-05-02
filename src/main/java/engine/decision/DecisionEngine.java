@@ -1,18 +1,19 @@
 package engine.decision;
 
+import engine.intelligence.ProgressEngine;
 import engine.learning.BehaviorGraph;
 import engine.learning.BehaviorStore;
 import engine.learning.LearningEngine.State;
+import engine.state.SessionState;
 
-import org.openqa.selenium.WebDriver;
-import org.openqa.selenium.WebElement;
+import org.openqa.selenium.*;
 
-import java.util.List;
+import java.util.*;
 
 public class DecisionEngine {
 
     // ===================================================
-    // 🧠 MAIN ENTRY (🔥 الجديد)
+    // 🧠 MAIN ENTRY (UNIVERSAL)
     // ===================================================
     public static double scoreAction(String actionName,
                                      WebDriver driver,
@@ -20,6 +21,9 @@ public class DecisionEngine {
 
         double score = 0;
 
+        // ===============================================
+        // 🔥 BASE SCORING
+        // ===============================================
         switch (actionName) {
 
             case "ClickAction":
@@ -31,30 +35,84 @@ public class DecisionEngine {
                 break;
 
             case "NavigationAction":
-                score += scoreNavigation(driver.getCurrentUrl(), state);
+                score += scoreBestNavigation(driver, state);
                 break;
-
-            default:
-                score += 0;
         }
+
+        // ===============================================
+        // 🧠 MEMORY (BehaviorStore)
+        // ===============================================
+        double memory = BehaviorStore.getScore(state.toString(), actionName);
+        score += memory * 12;
+
+        // ===============================================
+        // 🧠 GRAPH LEARNING
+        // ===============================================
+        double graph = BehaviorGraph.getActionScore(state.toString(), actionName);
+        score += graph * 6;
+
+        // ===============================================
+        // 💣 REWARD MEMORY (SessionState RL)
+        // ===============================================
+        double reward = SessionState.getReward(state.toString());
+        score += reward * 2;
+
+        // ===============================================
+        // 💣 LOOP DETECTION
+        // ===============================================
+        if (SessionState.isLooping()) {
+            score -= 25;
+        }
+
+        // ===============================================
+        // 💣 STUCK DETECTION
+        // ===============================================
+        if (SessionState.isStuck()) {
+
+            // Escape logic
+            if (actionName.equals("NavigationAction")) score += 15;
+            if (actionName.equals("ClickAction")) score += 5;
+        }
+
+        // ===============================================
+        // 💣 VISIT FREQUENCY
+        // ===============================================
+        int visits = SessionState.getUrlVisitCount(state.pageType);
+
+        if (visits > 2) score -= 12;
+
+        // ===============================================
+        // 💣 SCENARIO AWARENESS
+        // ===============================================
+        score += scenarioBoost(state, actionName);
+
+        // ===============================================
+        // 💣 PATH AWARENESS
+        // ===============================================
+        score += pathAwareness();
+
+        // ===============================================
+        // 🎲 EXPLORATION
+        // ===============================================
+        score += Math.random();
 
         return score;
     }
 
     // ===================================================
-    // 🖱 CLICK (BEST ELEMENT 🔥)
+    // 🖱 CLICK SCORING
     // ===================================================
     private static double scoreBestClick(WebDriver driver,
                                          State state) {
 
         List<WebElement> elements =
-                driver.findElements(org.openqa.selenium.By.xpath("//button | //a | //input"));
+                driver.findElements(By.xpath("//button | //a | //*[@role='button']"));
 
         double best = -999;
 
         for (WebElement el : elements) {
 
-            double s = scoreClick(el, state);
+            double s = scoreClick(el, driver, state);
 
             if (s > best) best = s;
         }
@@ -62,79 +120,26 @@ public class DecisionEngine {
         return best;
     }
 
-    // ===================================================
-    // 📝 FORM (BEST FIELD 🔥)
-    // ===================================================
-    private static double scoreBestForm(WebDriver driver,
-                                        State state) {
-
-        List<WebElement> elements =
-                driver.findElements(org.openqa.selenium.By.xpath("//input | //textarea | //select"));
-
-        double best = -999;
-
-        for (WebElement el : elements) {
-
-            double s = scoreForm(el, state);
-
-            if (s > best) best = s;
-        }
-
-        return best;
-    }
-
-    // ===================================================
-    // 🧠 CLICK SCORE (OLD + NEW)
-    // ===================================================
-    public static double scoreClick(WebElement el,
-                                    State state) {
-
-        double score = 0;
+    private static double scoreClick(WebElement el,
+                                     WebDriver driver,
+                                     State state) {
 
         try {
 
             String text = safe(el.getText()).toLowerCase();
             String tag = safe(el.getTagName()).toLowerCase();
-            String href = el.getAttribute("href");
-            String role = safe(el.getAttribute("role")).toLowerCase();
 
-            String action = "ClickAction";
+            if (text.contains("logout") || text.contains("delete"))
+                return -100;
 
-            // ❌ BLOCK
-            if (text.contains("logout")) return -100;
-            if (text.contains("delete")) return -100;
-            if (text.contains("remove")) return -100;
+            double score = 0;
 
-            if (isExternal(href)) return -50;
-
-            // 🎯 RULES
-            if (text.contains("next")) score += 10;
-            if (text.contains("submit")) score += 10;
-            if (text.contains("continue")) score += 8;
-            if (text.contains("checkout")) score += 12;
-
+            if (text.contains("next")) score += 12;
+            if (text.contains("submit")) score += 14;
+            if (text.contains("continue")) score += 10;
             if (tag.equals("button")) score += 8;
-            if (tag.equals("a")) score += 5;
-            if (tag.equals("input")) score += 6;
 
-            if (role.contains("button")) score += 7;
-
-            if (href != null && href.startsWith("http")) {
-                score += 5;
-            }
-
-            if (!text.isEmpty()) {
-                score += Math.min(text.length(), 5);
-            }
-
-            // 🧠 LEARNING
-            score += BehaviorStore.getScore(state.toString(), action) * 10;
-
-            // 🧠 GRAPH
-            score += BehaviorGraph.getActionScore(state.toString(), action) * 5;
-
-            // 🎲
-            score += Math.random() * 0.5;
+            score += predictProgress(driver, state);
 
             return score;
 
@@ -144,70 +149,41 @@ public class DecisionEngine {
     }
 
     // ===================================================
-    // 🌍 NAVIGATION
+    // 📝 FORM SCORING
     // ===================================================
-    public static double scoreNavigation(String url,
-                                         State state) {
+    private static double scoreBestForm(WebDriver driver,
+                                        State state) {
 
-        if (url == null) return -100;
+        List<WebElement> forms =
+                driver.findElements(By.tagName("form"));
 
-        url = url.toLowerCase();
+        double best = -999;
 
-        double score = 0;
+        for (WebElement form : forms) {
 
-        String action = "NavigationAction";
+            double s = scoreForm(form, driver, state);
 
-        if (url.contains("logout")) return -100;
-        if (url.contains("delete")) return -100;
+            if (s > best) best = s;
+        }
 
-        if (isExternal(url)) return -50;
-
-        if (url.contains("product")) score += 10;
-        if (url.contains("cart")) score += 12;
-        if (url.contains("checkout")) score += 15;
-        if (url.contains("next")) score += 6;
-
-        score += 3;
-
-        score += BehaviorStore.getScore(state.toString(), action) * 10;
-        score += BehaviorGraph.getActionScore(state.toString(), action) * 5;
-
-        score += Math.random() * 0.5;
-
-        return score;
+        return best;
     }
 
-    // ===================================================
-    // 📝 FORM
-    // ===================================================
-    public static double scoreForm(WebElement el,
-                                   State state) {
-
-        double score = 0;
+    private static double scoreForm(WebElement form,
+                                    WebDriver driver,
+                                    State state) {
 
         try {
 
-            String type = safe(el.getAttribute("type")).toLowerCase();
-            String name = safe(el.getAttribute("name")).toLowerCase();
+            if (!form.isDisplayed()) return -50;
 
-            String action = "FormAction";
+            int inputs = form.findElements(By.cssSelector("input,textarea")).size();
 
-            if (type.contains("hidden")) return -100;
-            if (type.contains("file")) return -50;
+            double score = inputs * 2;
 
-            if (type.contains("email")) score += 10;
-            if (type.contains("password")) score += 12;
-            if (type.contains("text")) score += 6;
+            score += 10; // forms are important
 
-            if (name.contains("email")) score += 10;
-            if (name.contains("name")) score += 5;
-
-            score += 3;
-
-            score += BehaviorStore.getScore(state.toString(), action) * 10;
-            score += BehaviorGraph.getActionScore(state.toString(), action) * 5;
-
-            score += Math.random() * 0.5;
+            score += predictProgress(driver, state);
 
             return score;
 
@@ -217,19 +193,111 @@ public class DecisionEngine {
     }
 
     // ===================================================
-    private static boolean isExternal(String url) {
+    // 🌍 NAVIGATION SCORING
+    // ===================================================
+    private static double scoreBestNavigation(WebDriver driver,
+                                              State state) {
 
-        if (url == null) return false;
+        List<WebElement> links =
+                driver.findElements(By.xpath("//a[@href]"));
 
-        url = url.toLowerCase();
+        double best = -999;
 
-        return url.contains("facebook") ||
-                url.contains("instagram") ||
-                url.contains("whatsapp") ||
-                url.contains("linkedin") ||
-                url.contains("twitter");
+        for (WebElement link : links) {
+
+            try {
+
+                String href = safe(link.getAttribute("href")).toLowerCase();
+
+                double score = 0;
+
+                if (href.contains("detail")) score += 8;
+                if (href.contains("view")) score += 6;
+                if (href.contains("edit")) score += 7;
+                if (href.contains("form")) score += 10;
+
+                if (href.contains("logout")) score -= 20;
+
+                score += predictProgress(driver, state);
+
+                if (score > best) best = score;
+
+            } catch (Exception ignored) {}
+        }
+
+        return best;
     }
 
+    // ===================================================
+    // 💣 PROGRESS PREDICTION
+    // ===================================================
+    private static double predictProgress(WebDriver driver,
+                                          State state) {
+
+        try {
+
+            int dom = driver.findElements(By.xpath("//*")).size();
+
+            double score = 0;
+
+            if (dom > 500) score += 2;
+            else if (dom > 200) score += 1;
+
+            score += state.depth * 0.5;
+
+            if (state.pageType.contains("form")) score += 2;
+            if (state.pageType.contains("detail")) score += 1;
+
+            return score;
+
+        } catch (Exception e) {
+            return 0.5;
+        }
+    }
+
+    // ===================================================
+    // 🧠 SCENARIO BOOST
+    // ===================================================
+    private static double scenarioBoost(State state,
+                                        String action) {
+
+        String page = state.pageType.toLowerCase();
+
+        double boost = 0;
+
+        if (page.contains("login") && action.equals("FormAction"))
+            boost += 25;
+
+        if (page.contains("form") && action.equals("FormAction"))
+            boost += 20;
+
+        if (page.contains("detail") && action.equals("ClickAction"))
+            boost += 12;
+
+        return boost;
+    }
+
+    // ===================================================
+    // 💣 PATH AWARENESS
+    // ===================================================
+    private static double pathAwareness() {
+
+        List<String> path = SessionState.getNavigationPath();
+
+        if (path.size() < 3) return 0;
+
+        String last = path.get(path.size() - 1);
+
+        int freq = Collections.frequency(path, last);
+
+        if (freq > 2) {
+            return -20; // loop detected
+        }
+
+        return 0;
+    }
+
+    // ===================================================
     private static String safe(String s) {
         return s == null ? "" : s;
     }

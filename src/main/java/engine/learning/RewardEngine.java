@@ -4,69 +4,151 @@ import engine.learning.LearningEngine.State;
 
 public class RewardEngine {
 
+    // 🔥 dynamic learning factor
+    private static double adaptiveFactor = 1.0;
+
+    // ===============================
+    // 🧠 MAIN REWARD FUNCTION
+    // ===============================
     public static double calculate(State prev,
                                    State next,
                                    String action,
                                    boolean success,
-                                   boolean revisited) {
+                                   boolean revisited,
+                                   double progressScore,
+                                   boolean terminal) {
 
         double reward = 0;
 
-        // ================= BASE =================
-        reward += success ? 2.0 : -1.5;
+        // ===============================
+        // 1️⃣ BASE SUCCESS / FAILURE
+        // ===============================
+        reward += success ? 2.0 : -2.5;
 
-        // ================= STATE CHANGE =================
+        // ===============================
+        // 2️⃣ PROGRESS (🔥 أهم جزء)
+        // ===============================
+        reward += progressScore * 2;
+
+        // ===============================
+        // 3️⃣ STRONG PROGRESS BOOST
+        // ===============================
+        if (progressScore > 4) reward += 3;
+        else if (progressScore > 2) reward += 1.5;
+
+        // ===============================
+        // 4️⃣ STATE TRANSITION
+        // ===============================
         if (prev != null && next != null &&
                 !safe(prev.pageType).equals(safe(next.pageType))) {
-            reward += 2.0;
+
+            reward += 4;
         }
 
-        // ================= DOM CHANGE =================
+        // ===============================
+        // 5️⃣ DOM INTELLIGENCE
+        // ===============================
         int prevDom = prev != null ? prev.domSize : 0;
         int nextDom = next != null ? next.domSize : 0;
 
         int delta = Math.abs(nextDom - prevDom);
 
-        if (delta > 50) reward += 1.5;
-        else if (delta > 10) reward += 0.8;
+        if (delta > 80) reward += 2;
+        else if (delta > 30) reward += 1;
 
-        // ================= GOAL PROGRESSION =================
-        if (prev != null && prev.goal != null) {
+        // ===============================
+        // 6️⃣ ACTION QUALITY
+        // ===============================
+        reward += actionWeight(action, progressScore);
 
-            switch (prev.goal) {
+        // ===============================
+        // 7️⃣ LOOP / REVISIT PENALTY
+        // ===============================
+        if (revisited) reward -= 4;
 
-                case ADD_TO_CART:
-                    if ("product".equals(next.pageType)) reward += 1;
-                    if ("cart".equals(next.pageType)) reward += 4;
-                    break;
+        // ===============================
+        // 8️⃣ STAGNATION PENALTY
+        // ===============================
+        if (progressScore < 1) reward -= 2;
 
-                case REACH_CHECKOUT:
-                    if ("cart".equals(next.pageType)) reward += 2;
-                    if ("checkout".equals(next.pageType)) reward += 6;
-                    break;
+        // ===============================
+        // 9️⃣ TERMINAL REWARD (💣 مهم جدًا)
+        // ===============================
+        if (terminal) reward += 15;
 
-                case COMPLETE_PAYMENT:
-                    if ("checkout".equals(next.pageType)) reward += 3;
-                    if ("payment".equals(next.pageType)) reward += 10;
-                    break;
-            }
-        }
+        // ===============================
+        // 🔟 ADAPTIVE LEARNING
+        // ===============================
+        adaptiveFactor = updateAdaptiveFactor(success, progressScore);
 
-        // ================= ACTION QUALITY =================
-        if ("FormAction".equals(action)) reward += 1.5;
-        if ("NavigationAction".equals(action)) reward += 1.0;
-        if ("ClickAction".equals(action)) reward += 0.5;
+        reward *= adaptiveFactor;
 
-        // ================= LOOP PENALTY =================
-        if (revisited) reward -= 3;
-
-        // ================= EXPLORATION =================
-        if (Math.random() < 0.1) reward += 0.5;
+        // ===============================
+        // 🔥 NORMALIZATION
+        // ===============================
+        reward = normalize(reward);
 
         return reward;
     }
 
-    // ================= SAFE HELPER =================
+    // ===============================
+    // 🧠 ACTION INTELLIGENCE
+    // ===============================
+    private static double actionWeight(String action, double progressScore) {
+
+        double weight = 0;
+
+        switch (action) {
+
+            case "FormAction":
+                weight += 2;
+                if (progressScore > 2) weight += 1;
+                break;
+
+            case "NavigationAction":
+                weight += 1.5;
+                break;
+
+            case "ClickAction":
+                weight += 0.5;
+                break;
+
+            default:
+                weight += 0.2;
+        }
+
+        return weight;
+    }
+
+    // ===============================
+    // 🔥 ADAPTIVE FACTOR
+    // ===============================
+    private static double updateAdaptiveFactor(boolean success,
+                                               double progressScore) {
+
+        if (success && progressScore > 2) {
+            adaptiveFactor *= 1.05;
+        } else {
+            adaptiveFactor *= 0.97;
+        }
+
+        return clamp(adaptiveFactor, 0.5, 2.0);
+    }
+
+    // ===============================
+    // 🧠 NORMALIZATION (prevents explosion)
+    // ===============================
+    private static double normalize(double value) {
+        return Math.tanh(value);
+    }
+
+    // ===============================
+    // 🔧 UTILS
+    // ===============================
+    private static double clamp(double v, double min, double max) {
+        return Math.max(min, Math.min(max, v));
+    }
+
     private static String safe(String s) {
         return s == null ? "" : s;
     }

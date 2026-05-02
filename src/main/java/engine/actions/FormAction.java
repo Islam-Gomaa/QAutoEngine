@@ -1,300 +1,274 @@
 package engine.actions;
 
-import engine.context.ContextEngine;
-import engine.goal.GoalEngine;
-import engine.state.SessionState;
+import engine.intelligence.ProgressEngine;
+import engine.intelligence.ScenarioTracker;
 import org.openqa.selenium.*;
 import org.openqa.selenium.support.ui.Select;
 import utilities.Waits;
-import utilities.DebugUtil;
 
-import java.net.URI;
-import java.util.List;
+import java.util.*;
 
 public class FormAction implements Action {
 
-    private static final int MAX_FORMS = 5;
+    private static final int MAX_RETRIES = 3;
 
     @Override
     public void execute(WebDriver driver) {
 
-        System.out.println("📝 [FormAction AI] Start");
-
-        String baseDomain = getDomain(driver.getCurrentUrl());
-
-        ContextEngine.ContextType context = ContextEngine.detect(driver);
-        GoalEngine.GoalType goal = GoalEngine.getGoal();
+        System.out.println("🧠 [FormAction AI ULTRA]");
 
         List<WebElement> forms = driver.findElements(By.tagName("form"));
 
-        if (forms.isEmpty()) {
-            System.out.println("⚠️ No forms found");
-            return;
-        }
-
-        // 🔥 KEEP SORTING
-        forms.sort((a, b) -> Double.compare(
-                scoreForm(b, context, goal),
-                scoreForm(a, context, goal)
-        ));
-
-        int attempts = 0;
-
         for (WebElement form : forms) {
 
-            if (attempts++ >= MAX_FORMS) break;
+            if (!form.isDisplayed()) continue;
+
+            String lastError = null;
+
+            for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+
+                try {
+
+                    String beforeUrl = driver.getCurrentUrl();
+                    int beforeDom = driver.findElements(By.xpath("//*")).size();
+
+                    fillForm(driver, form, lastError);
+
+                    if (!submitSmart(form)) continue;
+
+                    Waits.waitForPageLoad(driver);
+
+                    String afterUrl = driver.getCurrentUrl();
+                    int afterDom = driver.findElements(By.xpath("//*")).size();
+
+                    double progress = ProgressEngine.evaluateProgress(
+                            driver, beforeUrl, afterUrl, beforeDom, afterDom
+                    );
+
+                    if (progress > 2) {
+
+                        ScenarioTracker.record("FormAction", afterUrl, progress);
+
+                        System.out.println("✅ Form SUCCESS → " + progress);
+                        return;
+                    }
+
+                    lastError = detectError(driver);
+
+                    System.out.println("⚠️ Retry with error: " + lastError);
+
+                } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    // ===================================================
+    // 💣 SMART FILL
+    // ===================================================
+    private void fillForm(WebDriver driver, WebElement form, String lastError) {
+
+        List<WebElement> fields =
+                form.findElements(By.cssSelector("input, textarea, select"));
+
+        for (WebElement el : fields) {
 
             try {
 
-                String formKey = buildFormKey(form);
+                if (!el.isDisplayed() || !el.isEnabled()) continue;
 
-                if (SessionState.shouldAvoidElement(formKey)) continue;
-                if (isDangerousForm(form)) continue;
-                if (!isRelevantForm(form, context, goal)) continue;
-
-                double formScore = scoreForm(form, context, goal);
-
-                System.out.println("➡️ Trying form (score: " + formScore + ")");
-
-                List<WebElement> fields =
-                        form.findElements(By.cssSelector("input, textarea, select"));
-
-                // ================= FILL =================
-                for (WebElement field : fields) {
-
-                    if (!isValid(field)) continue;
-
-                    fillField(driver, field, context, goal);
+                if ("select".equals(el.getTagName())) {
+                    Select s = new Select(el);
+                    if (s.getOptions().size() > 1)
+                        s.selectByIndex(1);
+                    continue;
                 }
 
-                // ================= STATE =================
-                String beforeUrl = driver.getCurrentUrl();
-                int beforeDom = driver.findElements(By.xpath("//*")).size();
-                String beforeTitle = driver.getTitle();
+                String fieldType = detectFieldType(el);
+                Map<String, Object> constraints = extractConstraints(el);
 
-                highlightSubmit(driver, form);
-                DebugUtil.slow(700);
+                String value = generateValue(fieldType, constraints, lastError);
 
-                submitForm(driver, form, baseDomain);
-
-                DebugUtil.slow(1200);
-
-                String afterUrl = driver.getCurrentUrl();
-                int afterDom = driver.findElements(By.xpath("//*")).size();
-                String afterTitle = driver.getTitle();
-
-                boolean changed =
-                        !beforeUrl.equals(afterUrl)
-                                || beforeDom != afterDom
-                                || !beforeTitle.equals(afterTitle);
-
-                if (changed) {
-
-                    SessionState.markElementVisited(formKey);
-
-                    System.out.println("✅ Form SUCCESS → score: " + formScore);
-                    return;
-                }
-
-            } catch (Exception e) {
-
-                System.out.println("❌ Form failed → trying next");
-            }
-        }
-
-        System.out.println("⚠️ No valid form executed");
-    }
-
-    // ===================================================
-    private double scoreForm(WebElement form,
-                             ContextEngine.ContextType context,
-                             GoalEngine.GoalType goal) {
-
-        double score = 0;
-
-        try {
-
-            String text = form.getText().toLowerCase();
-
-            if (goal != null) {
-                switch (goal) {
-                    case COMPLETE_PAYMENT: score += 15; break;
-                    case REACH_CHECKOUT: score += 10; break;
-                }
-            }
-
-            if (context == ContextEngine.ContextType.CHECKOUT) score += 10;
-
-            if (text.contains("checkout")) score += 12;
-            if (text.contains("payment")) score += 15;
-            if (text.contains("address")) score += 8;
-
-            if (text.contains("search")) score -= 10;
-            if (text.contains("login")) score -= 8;
-
-            return score + Math.random();
-
-        } catch (Exception e) {
-            return 0;
-        }
-    }
-
-    // ===================================================
-    private void fillField(WebDriver driver,
-                           WebElement el,
-                           ContextEngine.ContextType context,
-                           GoalEngine.GoalType goal) {
-
-        try {
-
-            String tag = el.getTagName().toLowerCase();
-            String type = get(el, "type");
-
-            DebugUtil.highlight(driver, el);
-            DebugUtil.slow(300);
-
-            if ("select".equals(tag)) {
-
-                Select select = new Select(el);
-
-                if (select.getOptions().size() > 1) {
-                    select.selectByIndex(1);
-                }
-
-            } else if ("checkbox".equals(type) || "radio".equals(type)) {
-
-                if (!el.isSelected()) {
-                    scroll(driver, el);
-                    el.click();
-                }
-
-            } else {
-
-                String value = generateValue(
-                        type,
-                        get(el, "name"),
-                        get(el, "placeholder"),
-                        context,
-                        goal
-                );
-
-                scroll(driver, el);
                 el.clear();
+                el.sendKeys(value);
 
-                for (char c : value.toCharArray()) {
-                    el.sendKeys(String.valueOf(c));
-                    DebugUtil.slow(40);
+            } catch (Exception ignored) {}
+        }
+    }
+
+    // ===================================================
+    // 🧠 FIELD DETECTION (قوي جدًا)
+    // ===================================================
+    private String detectFieldType(WebElement el) {
+
+        String key = (
+                safe(el.getAttribute("type")) + " " +
+                        safe(el.getAttribute("name")) + " " +
+                        safe(el.getAttribute("id")) + " " +
+                        safe(el.getAttribute("placeholder")) + " " +
+                        safe(el.getAttribute("aria-label"))
+        ).toLowerCase();
+
+        if (key.matches(".*email.*")) return "EMAIL";
+        if (key.matches(".*password.*")) return "PASSWORD";
+        if (key.matches(".*phone|mobile.*")) return "PHONE";
+        if (key.matches(".*name|user.*")) return "NAME";
+        if (key.matches(".*address|city.*")) return "ADDRESS";
+        if (key.matches(".*zip|postal.*")) return "ZIP";
+        if (key.matches(".*date|birth.*")) return "DATE";
+
+        return "TEXT";
+    }
+
+    // ===================================================
+    // 🔍 CONSTRAINT EXTRACTION
+    // ===================================================
+    private Map<String, Object> extractConstraints(WebElement el) {
+
+        Map<String, Object> c = new HashMap<>();
+
+        try {
+
+            if (el.getAttribute("required") != null)
+                c.put("required", true);
+
+            String min = el.getAttribute("minlength");
+            String max = el.getAttribute("maxlength");
+            String pattern = el.getAttribute("pattern");
+
+            if (min != null) c.put("min", Integer.parseInt(min));
+            if (max != null) c.put("max", Integer.parseInt(max));
+            if (pattern != null) c.put("pattern", pattern);
+
+        } catch (Exception ignored) {}
+
+        return c;
+    }
+
+    // ===================================================
+    // 💣 SMART GENERATOR (Adaptive)
+    // ===================================================
+    private String generateValue(String type,
+                                 Map<String, Object> c,
+                                 String error) {
+
+        int min = (int) c.getOrDefault("min", 3);
+        int max = (int) c.getOrDefault("max", 15);
+
+        String base;
+
+        switch (type) {
+
+            case "EMAIL":
+                base = "user" + rand(1000) + "@mail.com";
+                break;
+
+            case "PASSWORD":
+                base = "Aa@" + rand(10000);
+                break;
+
+            case "PHONE":
+                base = "010" + rand(10000000);
+                break;
+
+            case "NAME":
+                base = "User" + rand(100);
+                break;
+
+            default:
+                base = "Test" + rand(1000);
+        }
+
+        // 🔥 error adaptation
+        if ("INVALID".equals(error)) {
+            base = base + "X1!";
+        }
+
+        if ("REQ".equals(error)) {
+            base = "Valid" + rand(1000);
+        }
+
+        // enforce length
+        if (base.length() < min)
+            base += "X".repeat(min - base.length());
+
+        if (base.length() > max)
+            base = base.substring(0, max);
+
+        return base;
+    }
+
+    // ===================================================
+    // 🚀 SMART SUBMIT (Scoring)
+    // ===================================================
+    private boolean submitSmart(WebElement form) {
+
+        List<WebElement> buttons =
+                form.findElements(By.cssSelector("button, input"));
+
+        double bestScore = -999;
+        WebElement best = null;
+
+        for (WebElement btn : buttons) {
+
+            try {
+
+                String key = (
+                        safe(btn.getText()) + " " +
+                                safe(btn.getAttribute("type")) + " " +
+                                safe(btn.getAttribute("value")) + " " +
+                                safe(btn.getAttribute("class"))
+                ).toLowerCase();
+
+                double score = 0;
+
+                if (key.matches(".*submit|login|continue|next|pay.*")) score += 10;
+                if (key.matches(".*save|confirm|finish.*")) score += 6;
+                if (key.contains("cancel") || key.contains("close")) score -= 10;
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = btn;
                 }
-            }
 
-        } catch (Exception ignored) {}
-    }
-
-    // ===================================================
-    private void submitForm(WebDriver driver,
-                            WebElement form,
-                            String baseDomain) {
+            } catch (Exception ignored) {}
+        }
 
         try {
 
-            WebElement submit = form.findElement(
-                    By.cssSelector("button[type='submit'], input[type='submit']")
-            );
-
-            Waits.waitForClickable(driver, submit).click();
-            Waits.waitForPageLoad(driver);
-
-            String currentDomain = getDomain(driver.getCurrentUrl());
-
-            if (!currentDomain.contains(baseDomain)) {
-                driver.navigate().back();
-                Waits.waitForPageLoad(driver);
+            if (best != null) {
+                best.click();
+                return true;
             }
 
-        } catch (Exception ignored) {}
-    }
+            form.submit();
+            return true;
 
-    // ===================================================
-    private boolean isRelevantForm(WebElement form,
-                                   ContextEngine.ContextType context,
-                                   GoalEngine.GoalType goal) {
-
-        String text = form.getText().toLowerCase();
-
-        if (context == ContextEngine.ContextType.CHECKOUT) return true;
-        if (text.contains("search")) return false;
-        if (text.contains("login") && goal != GoalEngine.GoalType.EXPLORE) return false;
-
-        return true;
-    }
-
-    private boolean isDangerousForm(WebElement form) {
-
-        String text = form.getText().toLowerCase();
-
-        return text.contains("delete") ||
-                text.contains("remove") ||
-                text.contains("reset");
-    }
-
-    private boolean isValid(WebElement el) {
-        try {
-            return el.isDisplayed() && el.isEnabled();
         } catch (Exception e) {
             return false;
         }
     }
 
     // ===================================================
-    private String generateValue(String type,
-                                 String name,
-                                 String placeholder,
-                                 ContextEngine.ContextType context,
-                                 GoalEngine.GoalType goal) {
+    // 💣 ERROR DETECTION
+    // ===================================================
+    private String detectError(WebDriver driver) {
 
-        String key = (type + name + placeholder).toLowerCase();
+        String page = driver.getPageSource().toLowerCase();
 
-        if (context == ContextEngine.ContextType.CHECKOUT) {
-            if (key.contains("address")) return "Cairo Egypt";
-            if (key.contains("city")) return "Cairo";
-            if (key.contains("zip")) return "12345";
-        }
+        if (page.contains("required")) return "REQ";
+        if (page.contains("invalid")) return "INVALID";
+        if (page.contains("too short")) return "SHORT";
+        if (page.contains("too long")) return "LONG";
 
-        if (key.contains("email")) return "test@example.com";
-        if (key.contains("password")) return "Test@12345";
-        if (key.contains("phone")) return "01000000000";
-        if (key.contains("name")) return "Automation User";
-        if (key.contains("search")) return "automation";
-
-        return "Test123";
+        return null;
     }
 
     // ===================================================
-    private void highlightSubmit(WebDriver driver, WebElement form) {
-        try {
-            WebElement submit = form.findElement(
-                    By.cssSelector("button[type='submit'], input[type='submit']")
-            );
-            DebugUtil.highlight(driver, submit);
-        } catch (Exception ignored) {}
+    private int rand(int max) {
+        return new Random().nextInt(max);
     }
 
-    private void scroll(WebDriver driver, WebElement el) {
-        ((JavascriptExecutor) driver)
-                .executeScript("arguments[0].scrollIntoView({block:'center'});", el);
-    }
-
-    private String get(WebElement el, String attr) {
-        String v = el.getAttribute(attr);
-        return v == null ? "" : v;
-    }
-
-    private String buildFormKey(WebElement form) {
-        return "form|" + form.getText();
-    }
-
-    private String getDomain(String url) {
-        try { return new URI(url).getHost(); }
-        catch (Exception e) { return ""; }
+    private String safe(String s) {
+        return s == null ? "" : s;
     }
 }

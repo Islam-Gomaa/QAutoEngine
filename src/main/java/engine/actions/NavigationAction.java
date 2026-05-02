@@ -1,7 +1,7 @@
 package engine.actions;
 
-import engine.context.ContextEngine;
-import engine.goal.GoalEngine;
+import engine.intelligence.ProgressEngine;
+import engine.intelligence.ScenarioTracker;
 import engine.state.SessionState;
 import org.openqa.selenium.*;
 import utilities.Waits;
@@ -13,194 +13,165 @@ import java.util.stream.Collectors;
 
 public class NavigationAction implements Action {
 
-    private static final int MAX_LINKS = 30;
+    private static final int MAX_LINKS = 40;
 
     @Override
     public void execute(WebDriver driver) {
 
-        System.out.println("🌍 [Navigation AI] Start");
+        System.out.println("🧠 [NavigationAction AI ULTRA]");
 
         String baseDomain = getDomain(driver.getCurrentUrl());
 
-        ContextEngine.ContextType context = ContextEngine.detect(driver);
-        GoalEngine.GoalType goal = GoalEngine.getGoal();
+        List<WebElement> links = findLinks(driver);
 
-        List<WebElement> links = driver.findElements(By.tagName("a"));
+        if (links.isEmpty()) {
+            System.out.println("⚠️ No links found");
+            return;
+        }
 
-        List<WebElement> validLinks = new ArrayList<>();
+        // 🔥 Clean + Deduplicate + Rank
+        links = links.stream()
+                .filter(this::isValid)
+                .filter(link -> !isExternal(link, baseDomain))
+                .distinct()
+                .sorted((a, b) -> Double.compare(score(b), score(a)))
+                .limit(MAX_LINKS)
+                .collect(Collectors.toList());
+
+        int attempts = 0;
 
         for (WebElement link : links) {
 
             try {
-                String href = link.getAttribute("href");
 
-                if (href == null || !href.startsWith("http")) continue;
+                String href = normalize(link.getAttribute("href"));
+                if (href.isEmpty()) continue;
 
-                String normalized = normalize(href);
-
-                if (!getDomain(normalized).contains(baseDomain)) continue;
-                if (SessionState.shouldAvoidUrl(normalized)) continue;
-                if (isBlocked(normalized)) continue;
-
-                validLinks.add(link);
-
-            } catch (StaleElementReferenceException ignored) {}
-        }
-
-        // 🔥 Dedup
-        validLinks = validLinks.stream()
-                .collect(Collectors.collectingAndThen(
-                        Collectors.toMap(
-                                el -> normalize(el.getAttribute("href")),
-                                el -> el,
-                                (a, b) -> a
-                        ),
-                        map -> new ArrayList<>(map.values())
-                ));
-
-        // 🔥 Sorting
-        validLinks.sort((a, b) -> Double.compare(
-                score(b.getAttribute("href"), context, goal),
-                score(a.getAttribute("href"), context, goal)
-        ));
-
-        int count = 0;
-
-        for (WebElement link : validLinks) {
-
-            if (count++ >= MAX_LINKS) break;
-
-            try {
-
-                String url = normalize(link.getAttribute("href"));
-
-                double linkScore = score(url, context, goal);
-
-                System.out.println("➡️ Trying: " + url + " (score: " + linkScore + ")");
+                if (SessionState.shouldAvoidUrl(href)) continue;
 
                 DebugUtil.highlight(driver, link);
-                DebugUtil.slow(400);
+                scrollIntoView(driver, link);
 
                 String beforeUrl = driver.getCurrentUrl();
                 int beforeDom = driver.findElements(By.xpath("//*")).size();
-                String beforeTitle = driver.getTitle();
 
                 safeClick(driver, link);
 
-                DebugUtil.slow(900);
+                Waits.waitForPageLoad(driver);
 
                 String afterUrl = driver.getCurrentUrl();
                 int afterDom = driver.findElements(By.xpath("//*")).size();
-                String afterTitle = driver.getTitle();
 
-                boolean changed =
-                        !beforeUrl.equals(afterUrl)
-                                || beforeDom != afterDom
-                                || !beforeTitle.equals(afterTitle);
+                double progress = ProgressEngine.evaluateProgress(
+                        driver, beforeUrl, afterUrl, beforeDom, afterDom
+                );
 
-                if (changed) {
+                if (progress > 1.5) {
 
-                    SessionState.markUrlVisited(url);
+                    SessionState.markUrlVisited(afterUrl);
+                    ScenarioTracker.record("NavigationAction", afterUrl, progress);
 
-                    System.out.println("✅ Navigation SUCCESS");
+                    System.out.println("✅ Navigation SUCCESS → " + progress);
                     return;
                 }
 
-            } catch (Exception e) {
+                attempts++;
 
-                System.out.println("❌ Navigation failed → trying next");
-            }
+            } catch (Exception ignored) {}
         }
 
-        System.out.println("⚠️ No navigation executed");
+        System.out.println("⚠️ NavigationAction no useful path");
     }
 
     // ===================================================
-    private double score(String url,
-                         ContextEngine.ContextType context,
-                         GoalEngine.GoalType goal) {
+    // 💣 STRUCTURE-AWARE SCORING
+    // ===================================================
+    private double score(WebElement link) {
+
+        String href = safe(link.getAttribute("href")).toLowerCase();
+        String text = safe(link.getText()).toLowerCase();
+        String cls = safe(link.getAttribute("class")).toLowerCase();
+
+        String key = href + " " + text + " " + cls;
 
         double score = 0;
 
-        url = url.toLowerCase();
+        // 🔥 HIGH VALUE PAGES
+        if (key.matches(".*(product|details|view).*")) score += 12;
+        if (key.matches(".*(cart|basket).*")) score += 15;
+        if (key.matches(".*(checkout|payment).*")) score += 18;
 
-        if (goal != null) {
+        // 🔥 NAVIGATION FLOW
+        if (key.matches(".*(next|continue|step).*")) score += 10;
 
-            switch (goal) {
+        // 🔥 STRUCTURE
+        if (href.split("/").length > 4) score += 3; // deeper pages
 
-                case ADD_TO_CART:
-                    if (url.contains("product")) score += 10;
-                    break;
+        // 🔥 UI SIGNAL
+        if (cls.contains("nav") || cls.contains("menu")) score += 2;
 
-                case REACH_CHECKOUT:
-                    if (url.contains("cart")) score += 12;
-                    if (url.contains("checkout")) score += 15;
-                    break;
+        // ❌ AVOID
+        if (key.matches(".*(logout|delete|remove|cancel).*")) score -= 20;
 
-                case COMPLETE_PAYMENT:
-                    if (url.contains("checkout")) score += 15;
-                    if (url.contains("payment")) score += 18;
-                    break;
-            }
-        }
+        // 🔥 EXPLORATION
+        score += Math.random();
 
-        if (context == ContextEngine.ContextType.GENERIC &&
-                url.contains("product")) score += 6;
-
-        if (context == ContextEngine.ContextType.CART &&
-                url.contains("checkout")) score += 8;
-
-        if (url.contains("next")) score += 4;
-        if (url.contains("continue")) score += 4;
-        if (url.contains("details")) score += 3;
-
-        return score + Math.random();
+        return score;
     }
 
+    // ===================================================
+    // 🔥 SAFE CLICK
     // ===================================================
     private void safeClick(WebDriver driver, WebElement el) {
 
         try {
-            Waits.waitForClickable(driver, el).click();
+            el.click();
         } catch (Exception e) {
-            ((JavascriptExecutor) driver)
-                    .executeScript("arguments[0].click();", el);
+
+            try {
+                ((JavascriptExecutor) driver)
+                        .executeScript("arguments[0].click();", el);
+            } catch (Exception ignored) {}
         }
     }
 
     // ===================================================
-    private boolean isBlocked(String url) {
+    private List<WebElement> findLinks(WebDriver driver) {
 
-        url = url.toLowerCase();
+        return driver.findElements(By.xpath(
+                "//a[@href] | //*[@role='link']"
+        ));
+    }
 
-        return url.contains("logout") ||
-                url.contains("signout") ||
-                url.contains("delete") ||
-                url.contains("remove") ||
-                url.contains("facebook") ||
-                url.contains("twitter") ||
-                url.contains("instagram");
+    private boolean isValid(WebElement el) {
+        try { return el.isDisplayed(); } catch (Exception e) { return false; }
+    }
+
+    private boolean isExternal(WebElement el, String base) {
+        try {
+            String href = el.getAttribute("href");
+            if (href == null) return true;
+            return !getDomain(href).contains(base);
+        } catch (Exception e) { return true; }
     }
 
     private String normalize(String url) {
-
         if (url == null) return "";
+        return url.split("\\?")[0];
+    }
 
-        url = url.split("#")[0];
-        url = url.split("\\?")[0];
-
-        if (url.endsWith("/")) {
-            url = url.substring(0, url.length() - 1);
-        }
-
-        return url;
+    private void scrollIntoView(WebDriver driver, WebElement el) {
+        try {
+            ((JavascriptExecutor) driver)
+                    .executeScript("arguments[0].scrollIntoView({block:'center'});", el);
+        } catch (Exception ignored) {}
     }
 
     private String getDomain(String url) {
-        try {
-            return new URI(url).getHost();
-        } catch (Exception e) {
-            return "";
-        }
+        try { return new URI(url).getHost(); } catch (Exception e) { return ""; }
+    }
+
+    private String safe(String s) {
+        return s == null ? "" : s;
     }
 }

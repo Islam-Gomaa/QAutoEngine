@@ -13,41 +13,61 @@ public class BehaviorStore {
             new ConcurrentHashMap<>();
 
     // ===================================================
-    // 📊 STATS MODEL
+    // 📊 STATS MODEL (THREAD SAFE + RL READY)
     // ===================================================
     private static class Stats {
-        int success;
-        int failure;
+
+        double success;
+        double failure;
         long lastUpdated;
 
-        void record(boolean ok) {
-            if (ok) success++;
-            else failure++;
+        synchronized void record(boolean ok) {
+            if (ok) success += 1;
+            else failure += 1;
 
             lastUpdated = System.currentTimeMillis();
         }
 
-        double score() {
+        synchronized double score() {
 
-            int total = success + failure;
+            double total = success + failure;
 
-            if (total == 0) return 0;
+            if (total == 0) return 0.5; // neutral
 
-            double ratio = (double) success / total;
+            // 🔥 smoothing (prevents spikes)
+            double smoothedSuccess = success + 1;
+            double smoothedTotal = total + 2;
 
-            // 🔥 recency factor
+            double ratio = smoothedSuccess / smoothedTotal;
+
+            // 🔥 recency (bounded)
             double age = (System.currentTimeMillis() - lastUpdated) / 10000.0;
             double recency = 1.0 / (1.0 + age);
+            recency = clamp(recency, 0.1, 1.0);
 
             // 🔥 confidence
-            double confidence = Math.min(1.0, total / 10.0);
+            double confidence = Math.min(1.0, total / 15.0);
 
-            return ratio * confidence + recency * 0.3;
+            // 🔥 failure penalty
+            double failurePenalty = failure / (total + 1);
+
+            double score =
+                    (ratio * 0.6)
+                            + (recency * 0.2)
+                            + (confidence * 0.2)
+                            - (failurePenalty * 0.3);
+
+            return clamp(score, 0.0, 1.0);
+        }
+
+        synchronized void decay() {
+            success *= 0.98;
+            failure *= 0.98;
         }
     }
 
     // ===================================================
-    // 🔥 BUILD KEY (state + action)
+    // 🔥 BUILD KEY
     // ===================================================
     public static String buildKey(String state, String action) {
         return state + "|" + action;
@@ -72,42 +92,50 @@ public class BehaviorStore {
     // ===================================================
     public static double getScore(String state, String action) {
 
-        String key = buildKey(state, action);
+        Stats stats = store.get(buildKey(state, action));
 
-        Stats stats = store.get(key);
-
-        if (stats == null) return 0;
+        if (stats == null) return 0.5;
 
         return stats.score();
     }
 
     // ===================================================
-    // 📊 GET RAW DATA
+    // 📊 RAW DATA
     // ===================================================
     public static int getSuccess(String state, String action) {
         Stats s = store.get(buildKey(state, action));
-        return s == null ? 0 : s.success;
+        return s == null ? 0 : (int) s.success;
     }
 
     public static int getFailure(String state, String action) {
         Stats s = store.get(buildKey(state, action));
-        return s == null ? 0 : s.failure;
+        return s == null ? 0 : (int) s.failure;
     }
 
     // ===================================================
-    // 🧠 DECAY (IMPORTANT)
+    // 🧠 DECAY (SAFE)
     // ===================================================
     public static void decay() {
 
         for (Stats s : store.values()) {
-
-            s.success *= 0.95;
-            s.failure *= 0.95;
+            s.decay();
         }
     }
 
     // ===================================================
-    // 🧠 GET ALL KEYS
+    // 🧠 CLEAN LOW VALUE (🔥 مهم جدًا)
+    // ===================================================
+    public static void cleanup() {
+
+        store.entrySet().removeIf(e -> {
+            Stats s = e.getValue();
+            return (s.success + s.failure) < 2 &&
+                    (System.currentTimeMillis() - s.lastUpdated) > 60000;
+        });
+    }
+
+    // ===================================================
+    // 🧠 KEYS
     // ===================================================
     public static Set<String> getAllKeys() {
         return store.keySet();
@@ -118,5 +146,12 @@ public class BehaviorStore {
     // ===================================================
     public static void reset() {
         store.clear();
+    }
+
+    // ===================================================
+    // 🔧 UTILS
+    // ===================================================
+    private static double clamp(double v, double min, double max) {
+        return Math.max(min, Math.min(max, v));
     }
 }
