@@ -1,7 +1,6 @@
-package engine.intelligence;
+package ai.intelligence;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
 public class ScenarioExporter {
 

@@ -1,7 +1,6 @@
-package engine.learning;
+package ai.learning;
 
 import engine.context.ContextEngine;
-import engine.intelligence.ProgressEngine;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;

@@ -1,9 +1,9 @@
 package engine.actions;
 
 import engine.context.ContextEngine;
-import engine.intelligence.ProgressEngine;
-import engine.intelligence.ScenarioTracker;
-import engine.state.SessionState;
+import ai.intelligence.ProgressEngine;
+import ai.intelligence.ScenarioTracker;
+import ai.state.SessionState;
 import org.openqa.selenium.*;
 import utilities.Waits;
 import utilities.DebugUtil;

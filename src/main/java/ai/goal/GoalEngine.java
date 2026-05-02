@@ -1,4 +1,4 @@
-package engine.goal;
+package ai.goal;
 
 import engine.context.ContextEngine;
 

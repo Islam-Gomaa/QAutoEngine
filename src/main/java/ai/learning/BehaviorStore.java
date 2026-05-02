@@ -1,4 +1,4 @@
-package engine.learning;
+package ai.learning;
 
 import java.util.Map;
 import java.util.Set;

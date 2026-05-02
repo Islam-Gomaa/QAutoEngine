@@ -1,4 +1,4 @@
-package engine.intelligence;
+package ai.intelligence;
 
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;

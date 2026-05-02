@@ -1,11 +1,14 @@
 package engine.core;
 
+import ai.learning.BehaviorGraph;
+import ai.learning.BehaviorStore;
+import ai.learning.LearningEngine;
+import ai.learning.RewardEngine;
 import engine.actions.Action;
-import engine.decision.DecisionEngine;
-import engine.intelligence.ProgressEngine;
-import engine.intelligence.ScenarioTracker;
-import engine.learning.*;
-import engine.state.SessionState;
+import ai.decision.DecisionEngine;
+import ai.intelligence.ProgressEngine;
+import ai.intelligence.ScenarioTracker;
+import ai.state.SessionState;
 import org.openqa.selenium.*;
 
 import java.util.List;

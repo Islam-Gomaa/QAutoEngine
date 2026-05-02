@@ -1,4 +1,4 @@
-package engine.intelligence;
+package ai.intelligence;
 
 import java.util.*;
 

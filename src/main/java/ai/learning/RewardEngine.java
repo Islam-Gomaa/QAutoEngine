@@ -1,6 +1,6 @@
-package engine.learning;
+package ai.learning;
 
-import engine.learning.LearningEngine.State;
+import ai.learning.LearningEngine.State;
 
 public class RewardEngine {
 

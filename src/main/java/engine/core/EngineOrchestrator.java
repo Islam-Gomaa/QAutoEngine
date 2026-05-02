@@ -1,7 +1,7 @@
 package engine.core;
 
 import engine.actions.*;
-import engine.state.SessionState;
+import ai.state.SessionState;
 import org.openqa.selenium.WebDriver;
 
 import java.util.ArrayList;

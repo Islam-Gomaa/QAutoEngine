@@ -1,7 +1,7 @@
 package engine.actions;
 
-import engine.intelligence.ProgressEngine;
-import engine.intelligence.ScenarioTracker;
+import ai.intelligence.ProgressEngine;
+import ai.intelligence.ScenarioTracker;
 import org.openqa.selenium.*;
 import org.openqa.selenium.support.ui.Select;
 import utilities.Waits;

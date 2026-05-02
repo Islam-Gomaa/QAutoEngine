@@ -1,10 +1,9 @@
-package engine.decision;
+package ai.decision;
 
-import engine.intelligence.ProgressEngine;
-import engine.learning.BehaviorGraph;
-import engine.learning.BehaviorStore;
-import engine.learning.LearningEngine.State;
-import engine.state.SessionState;
+import ai.learning.BehaviorGraph;
+import ai.learning.BehaviorStore;
+import ai.learning.LearningEngine.State;
+import ai.state.SessionState;
 
 import org.openqa.selenium.*;
 

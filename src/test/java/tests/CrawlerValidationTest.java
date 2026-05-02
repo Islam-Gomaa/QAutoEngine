@@ -1,9 +1,12 @@
 package tests;
 
+import ai.learning.BehaviorGraph;
+import ai.learning.BehaviorStore;
+import ai.learning.LearningPersistence;
+import ai.learning.LoopDetector;
 import engine.actions.*;
 import engine.core.ExecutionEngine;
-import engine.learning.*;
-import engine.state.SessionState;
+import ai.state.SessionState;
 import io.qameta.allure.*;
 import io.qameta.allure.model.Status;
 import io.qameta.allure.model.TestResult;
