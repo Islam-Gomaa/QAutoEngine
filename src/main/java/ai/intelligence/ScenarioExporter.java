@@ -1,15 +1,17 @@
 package ai.intelligence;
 
+import ai.learning.State;
+
 import java.util.*;
 
 public class ScenarioExporter {
 
-    // ===============================
+    // ===================================================
     // 🧠 MAIN ENTRY
-    // ===============================
+    // ===================================================
     public static void exportFull() {
 
-        List<ScenarioTracker.Step> steps = ScenarioTracker.getBestPath();
+        List<ScenarioTracker.Step> steps = ScenarioTracker.getBestScenario();
 
         if (steps.isEmpty()) {
             System.out.println("❌ No scenario to export");
@@ -22,9 +24,9 @@ public class ScenarioExporter {
         printQualityReport(steps);
     }
 
-    // ===============================
-    // 🧾 HUMAN TEST CASE
-    // ===============================
+    // ===================================================
+    // 🧾 HUMAN TEST CASE (UPGRADED)
+    // ===================================================
     private static void printReadableTestCase(List<ScenarioTracker.Step> steps) {
 
         System.out.println("\n===== 🧪 HUMAN TEST CASE =====");
@@ -35,14 +37,15 @@ public class ScenarioExporter {
 
             System.out.println("Step " + i++ + ":");
             System.out.println("  Action: " + normalizeAction(step.action));
-            System.out.println("  Target: " + simplifyUrl(step.url));
-            System.out.println("  Expected: Page loads correctly\n");
+            System.out.println("  URL: " + simplifyUrl(step.url));
+            System.out.println("  State: " + step.stateSignature);
+            System.out.println("  Expected: Page changes or new content appears\n");
         }
     }
 
-    // ===============================
-    // 🤖 SELENIUM TEST GENERATOR
-    // ===============================
+    // ===================================================
+    // 🤖 SELENIUM TEST (SMART)
+    // ===================================================
     private static void generateSeleniumTest(List<ScenarioTracker.Step> steps) {
 
         System.out.println("\n===== 🤖 GENERATED SELENIUM TEST =====");
@@ -56,6 +59,9 @@ public class ScenarioExporter {
             if (code != null) {
                 System.out.println("    " + code);
             }
+
+            // 🔥 auto wait
+            System.out.println("    waitForPageLoad();");
         }
 
         System.out.println("}");
@@ -66,10 +72,14 @@ public class ScenarioExporter {
         switch (step.action) {
 
             case "ClickAction":
-                return "driver.findElement(By.cssSelector(\"" + guessSelector(step) + "\")).click();";
+                return "driver.findElement(By.xpath(\"//button | //a\")).click();";
 
             case "FormAction":
-                return "driver.findElement(By.cssSelector(\"input\")).sendKeys(\"test-data\");";
+                return """
+                       for (WebElement input : driver.findElements(By.xpath("//input | //textarea"))) {
+                           input.sendKeys("test");
+                       }
+                       """;
 
             case "NavigationAction":
                 return "driver.get(\"" + step.url + "\");";
@@ -79,25 +89,27 @@ public class ScenarioExporter {
         }
     }
 
-    // ===============================
-    // 🧠 ASSERTIONS GENERATOR
-    // ===============================
+    // ===================================================
+    // 🧠 ASSERTIONS (SMART)
+    // ===================================================
     private static void generateAssertions(List<ScenarioTracker.Step> steps) {
 
         System.out.println("\n===== 🧠 ASSERTIONS =====");
 
         for (ScenarioTracker.Step step : steps) {
 
-            if (isTerminal(step.url)) {
+            if (step.progressScore > 4) {
 
-                System.out.println("assertTrue(driver.getPageSource().contains(\"success\"));");
+                System.out.println("// Assert meaningful change");
+                System.out.println("assertTrue(driver.getCurrentUrl().contains(\""
+                        + extractKeyword(step.url) + "\"));");
             }
         }
     }
 
-    // ===============================
-    // 📊 QUALITY REPORT
-    // ===============================
+    // ===================================================
+    // 📊 QUALITY REPORT (UPGRADED)
+    // ===================================================
     private static void printQualityReport(List<ScenarioTracker.Step> steps) {
 
         double avgScore = steps.stream()
@@ -105,23 +117,24 @@ public class ScenarioExporter {
                 .average()
                 .orElse(0);
 
-        long uniqueUrls = steps.stream()
-                .map(s -> s.url)
+        long uniqueStates = steps.stream()
+                .map(s -> s.stateSignature)
                 .distinct()
                 .count();
 
         System.out.println("\n===== 📊 SCENARIO QUALITY =====");
         System.out.println("Steps: " + steps.size());
-        System.out.println("Unique Pages: " + uniqueUrls);
+        System.out.println("Unique States: " + uniqueStates);
         System.out.println("Avg Progress Score: " + avgScore);
 
-        if (avgScore > 3) System.out.println("🔥 Strong Scenario");
-        else System.out.println("⚠️ Weak Scenario");
+        if (avgScore > 4) System.out.println("🔥 Strong Scenario");
+        else if (avgScore > 2) System.out.println("⚠️ Medium Scenario");
+        else System.out.println("❌ Weak Scenario");
     }
 
-    // ===============================
-    // 🔍 SMART HELPERS
-    // ===============================
+    // ===================================================
+    // 🔥 HELPERS
+    // ===================================================
     private static String normalizeAction(String action) {
 
         return switch (action) {
@@ -140,23 +153,12 @@ public class ScenarioExporter {
                 .replaceAll("\\d+", "{id}");
     }
 
-    private static boolean isTerminal(String url) {
+    private static String extractKeyword(String url) {
 
-        if (url == null) return false;
+        if (url == null) return "";
 
-        url = url.toLowerCase();
+        String[] parts = url.split("/");
 
-        return url.contains("success")
-                || url.contains("complete")
-                || url.contains("done");
-    }
-
-    private static String guessSelector(ScenarioTracker.Step step) {
-
-        // 🔥 AI heuristic selector
-        if (step.url.contains("login")) return "button[type='submit']";
-        if (step.url.contains("checkout")) return ".checkout-btn";
-
-        return "button";
+        return parts.length > 2 ? parts[parts.length - 1] : "";
     }
 }

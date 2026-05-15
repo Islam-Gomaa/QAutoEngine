@@ -1,193 +1,224 @@
 package ai.goal;
 
-import engine.context.ContextEngine;
+import ai.learning.BehaviorStore;
+import ai.learning.State;
+import ai.planning.PlanningEngine;
+import ai.planning.Plan;
+import engine.state.SessionState;
+
+import org.openqa.selenium.By;
+import org.openqa.selenium.WebDriver;
 
 import java.util.*;
 
 public class GoalEngine {
 
-    public enum GoalType {
-        EXPLORE,
-        ADD_TO_CART,
-        REACH_CHECKOUT,
-        COMPLETE_PAYMENT
+    // ===================================================
+    // 🧠 GOAL MODEL (V6)
+    // ===================================================
+    public static class Goal {
+
+        public final String name;
+
+        public double desirability;
+        public double confidence;
+        public double progress;
+        public double urgency;
+        public double stability;
+
+        public boolean completed;
+
+        public Goal(String name) {
+            this.name = name;
+        }
+
+        public double score() {
+            return desirability * 0.25
+                    + confidence * 0.2
+                    + progress * 0.25
+                    + urgency * 0.1
+                    + stability * 0.2;
+        }
+
+        @Override
+        public String toString() {
+            return name +
+                    " | score=" + score() +
+                    " | progress=" + progress;
+        }
     }
 
-    private static GoalType currentGoal = GoalType.EXPLORE;
-
-    private static final Set<GoalType> completedGoals = new HashSet<>();
-
-    // 🔥 tracking
-    private static int stepsOnSameGoal = 0;
-    private static final int MAX_STEPS_PER_GOAL = 5;
+    // ===================================================
+    private static final Map<String, Goal> goals = new HashMap<>();
+    private static Goal currentGoal;
+    private static Goal lastGoal;
 
     // ===================================================
-    // 🎯 SET GOAL
-    // ===================================================
-    public static void setGoal(GoalType goal) {
+    public static void init() {
 
-        if (goal == currentGoal) return;
+        goals.clear();
 
-        currentGoal = goal;
-        stepsOnSameGoal = 0;
+        add("AUTH");
+        add("FORM");
+        add("SEARCH");
+        add("NAVIGATION");
+        add("EXPLORE");
 
-        System.out.println("🎯 Goal switched → " + goal);
+        currentGoal = goals.get("EXPLORE");
+        lastGoal = currentGoal;
     }
 
-    public static GoalType getGoal() {
+    private static void add(String name) {
+        goals.put(name, new Goal(name));
+    }
+
+    // ===================================================
+    // 🧠 MAIN UPDATE (STATE-DRIVEN 💣)
+    // ===================================================
+    public static void update(WebDriver driver) {
+
+        State state = buildState(driver);
+
+        Plan plan = PlanningEngine.getCurrentPlan();
+
+        for (Goal g : goals.values()) {
+
+            g.progress = estimateProgress(g, driver);
+            g.desirability = estimateValue(g, state);
+            g.confidence = estimateConfidence(state);
+            g.urgency = estimateUrgency(state);
+            g.stability = stabilityBoost(g);
+
+            // 🔥 PLAN AWARENESS
+            if (plan != null && plan.goal != null && plan.goal.equals(g.name)) {
+                g.progress += 1.5;
+                g.confidence += 0.5;
+            }
+
+            if (g.progress >= 6) {
+                g.completed = true;
+            }
+        }
+
+        lastGoal = currentGoal;
+
+        currentGoal = goals.values().stream()
+                .filter(g -> !g.completed)
+                .max(Comparator.comparingDouble(Goal::score))
+                .orElse(goals.get("EXPLORE"));
+
+        System.out.println("🎯 Goal → " + currentGoal);
+    }
+
+    // ===================================================
+    // 🔥 PROGRESS
+    // ===================================================
+    private static double estimateProgress(Goal g, WebDriver d) {
+
+        String url = d.getCurrentUrl().toLowerCase();
+        String page = d.getPageSource().toLowerCase();
+
+        double score = 0;
+
+        switch (g.name) {
+
+            case "AUTH":
+                if (page.contains("password")) score += 2;
+                if (page.contains("login")) score += 2;
+                if (url.contains("dashboard")) score += 4;
+                break;
+
+            case "FORM":
+                int inputs = d.findElements(By.tagName("input")).size();
+                score += inputs * 0.2;
+                if (page.contains("submit")) score += 1;
+                break;
+
+            case "SEARCH":
+                if (page.contains("search")) score += 2;
+                break;
+
+            case "NAVIGATION":
+                int links = d.findElements(By.tagName("a")).size();
+                score += links * 0.1;
+                break;
+
+            case "EXPLORE":
+                score += 1;
+                break;
+        }
+
+        return score;
+    }
+
+    // ===================================================
+    // 💣 VALUE (FIXED)
+    // ===================================================
+    private static double estimateValue(Goal g, State state) {
+
+        double learned = BehaviorStore.getScore(state, g.name);
+
+        return 1 + learned * 3;
+    }
+
+    // ===================================================
+    // 💣 CONFIDENCE (FIXED)
+    // ===================================================
+    private static double estimateConfidence(State state) {
+
+        double reward = SessionState.getReward(state);
+
+        return Math.max(0.5, Math.min(3, 1 + reward));
+    }
+
+    // ===================================================
+    // 💣 URGENCY (FIXED)
+    // ===================================================
+    private static double estimateUrgency(State state) {
+
+        int visits = SessionState.getStateVisitCount(state);
+
+        if (visits > 5) return -2;
+        if (visits > 2) return -1;
+
+        return 1;
+    }
+
+    // ===================================================
+    private static double stabilityBoost(Goal g) {
+
+        if (lastGoal == null) return 0;
+
+        if (g.name.equals(lastGoal.name)) return 2;
+
+        return -0.5;
+    }
+
+    // ===================================================
+    // 💣 STATE BUILDER
+    // ===================================================
+    private static State buildState(WebDriver driver) {
+
+        int domSize = driver.findElements(By.xpath("//*")).size();
+
+        boolean hasForm = !driver.findElements(By.tagName("form")).isEmpty();
+        boolean hasLinks = !driver.findElements(By.tagName("a")).isEmpty();
+
+        return new State(
+                driver.getCurrentUrl(),
+                domSize,
+                "GOAL",
+                hasForm,
+                hasLinks
+        );
+    }
+
+    // ===================================================
+    public static Goal getCurrentGoal() {
         return currentGoal;
     }
 
-    // ===================================================
-    // 🔄 RESET (مهم جدًا)
-    // ===================================================
     public static void reset() {
-
-        currentGoal = GoalType.EXPLORE;
-        completedGoals.clear();
-        stepsOnSameGoal = 0;
-
-        System.out.println("🔄 GoalEngine Reset");
-    }
-
-    // ===================================================
-    // ✅ CHECK GOAL
-    // ===================================================
-    public static boolean isGoalReached(ContextEngine.ContextType context) {
-
-        switch (currentGoal) {
-
-            case ADD_TO_CART:
-                return context == ContextEngine.ContextType.CART;
-
-            case REACH_CHECKOUT:
-                return context == ContextEngine.ContextType.CHECKOUT;
-
-            case COMPLETE_PAYMENT:
-                return context == ContextEngine.ContextType.PAYMENT;
-
-            case EXPLORE:
-            default:
-                return false;
-        }
-    }
-
-    // ===================================================
-    // 🧠 MAIN BRAIN (🔥 أهم ميثود)
-    // ===================================================
-    public static void update(ContextEngine.ContextType context) {
-
-        stepsOnSameGoal++;
-
-        // ===================================================
-        // ✅ Goal Achieved
-        // ===================================================
-        if (isGoalReached(context)) {
-
-            completedGoals.add(currentGoal);
-
-            System.out.println("✅ Goal achieved → " + currentGoal);
-
-            moveToNextGoal();
-            return;
-        }
-
-        // ===================================================
-        // 💀 STUCK DETECTION
-        // ===================================================
-        if (stepsOnSameGoal >= MAX_STEPS_PER_GOAL) {
-
-            System.out.println("⚠️ Stuck on goal → " + currentGoal);
-
-            fallback();
-        }
-
-        // ===================================================
-        // 🧠 SMART ENTRY LOGIC
-        // ===================================================
-        smartEntry(context);
-    }
-
-    // ===================================================
-    // 🚀 NEXT GOAL
-    // ===================================================
-    private static void moveToNextGoal() {
-
-        switch (currentGoal) {
-
-            case EXPLORE:
-                currentGoal = GoalType.ADD_TO_CART;
-                break;
-
-            case ADD_TO_CART:
-                currentGoal = GoalType.REACH_CHECKOUT;
-                break;
-
-            case REACH_CHECKOUT:
-                currentGoal = GoalType.COMPLETE_PAYMENT;
-                break;
-
-            case COMPLETE_PAYMENT:
-                System.out.println("🏁 Journey Completed!");
-                return;
-        }
-
-        stepsOnSameGoal = 0;
-
-        System.out.println("🚀 Next Goal → " + currentGoal);
-    }
-
-    // ===================================================
-    // 🔁 FALLBACK
-    // ===================================================
-    private static void fallback() {
-
-        stepsOnSameGoal = 0;
-
-        // 🔥 رجوع ذكي
-        switch (currentGoal) {
-
-            case COMPLETE_PAYMENT:
-                currentGoal = GoalType.REACH_CHECKOUT;
-                break;
-
-            case REACH_CHECKOUT:
-                currentGoal = GoalType.ADD_TO_CART;
-                break;
-
-            default:
-                currentGoal = GoalType.EXPLORE;
-        }
-
-        System.out.println("🔁 Fallback → " + currentGoal);
-    }
-
-    // ===================================================
-    // 🧠 SMART ENTRY
-    // ===================================================
-    private static void smartEntry(ContextEngine.ContextType context) {
-
-        // لو دخلنا صفحة checkout فجأة
-        if (context == ContextEngine.ContextType.CHECKOUT &&
-                currentGoal != GoalType.COMPLETE_PAYMENT) {
-
-            setGoal(GoalType.COMPLETE_PAYMENT);
-        }
-
-        // لو دخلنا cart فجأة
-        if (context == ContextEngine.ContextType.CART &&
-                currentGoal == GoalType.EXPLORE) {
-
-            setGoal(GoalType.REACH_CHECKOUT);
-        }
-    }
-
-    // ===================================================
-    public static boolean isCompleted(GoalType goal) {
-        return completedGoals.contains(goal);
-    }
-
-    public static Set<GoalType> getCompletedGoals() {
-        return Collections.unmodifiableSet(completedGoals);
+        init();
     }
 }

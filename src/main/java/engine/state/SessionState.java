@@ -1,4 +1,6 @@
-package ai.state;
+package engine.state;
+
+import ai.learning.State;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -16,15 +18,20 @@ public class SessionState {
     private static final Map<String, Integer> urlVisitCount = new ConcurrentHashMap<>();
 
     // ===================================================
-    // 🧠 STATE TRACKING (🔥 NEW)
+    // 🧠 STATE TRACKING
     // ===================================================
     private static final Map<String, Integer> stateVisitCount = new ConcurrentHashMap<>();
 
     // ===================================================
-    // 🧠 CONTEXT
+    // ❌ FAILURES
     // ===================================================
-    private static volatile String currentUrl = "";
-    private static volatile String lastAction = "";
+    private static final Map<String, Integer> failureCount = new ConcurrentHashMap<>();
+    private static final Map<String, Integer> stateFailures = new ConcurrentHashMap<>();
+
+    // ===================================================
+    // 🧠 RL MEMORY
+    // ===================================================
+    private static final Map<String, Double> stateRewards = new ConcurrentHashMap<>();
 
     // ===================================================
     // 📜 HISTORY
@@ -33,33 +40,24 @@ public class SessionState {
     private static final List<String> navigationPath = new CopyOnWriteArrayList<>();
 
     // ===================================================
-    // ❌ FAILURES (UPGRADED)
+    // 🔹 STATE KEY
     // ===================================================
-    private static final Map<String, Integer> failureCount = new ConcurrentHashMap<>();
-    private static final Map<String, Integer> stateFailures = new ConcurrentHashMap<>();
-
-    // ===================================================
-    // 📊 STATS
-    // ===================================================
-    private static final Map<String, Integer> actionStats = new ConcurrentHashMap<>();
-
-    // ===================================================
-    // 🧠 RL MEMORY
-    // ===================================================
-    private static final Map<String, Double> stateRewards = new ConcurrentHashMap<>();
+    private static String key(State state) {
+        return state == null ? "NULL_STATE" : state.signature();
+    }
 
     // ===================================================
     // 🔹 STATE VISIT
     // ===================================================
-    public static void markStateVisited(String state) {
-        stateVisitCount.merge(state, 1, Integer::sum);
+    public static void markStateVisited(State state) {
+        stateVisitCount.merge(key(state), 1, Integer::sum);
     }
 
-    public static int getStateVisitCount(String state) {
-        return stateVisitCount.getOrDefault(state, 0);
+    public static int getStateVisitCount(State state) {
+        return stateVisitCount.getOrDefault(key(state), 0);
     }
 
-    public static boolean isRevisiting(String state) {
+    public static boolean isLoopingState(State state) {
         return getStateVisitCount(state) > 2;
     }
 
@@ -74,7 +72,6 @@ public class SessionState {
 
         if (visitedUrls.add(n)) {
             navigationPath.add(n);
-            currentUrl = n;
             return true;
         }
 
@@ -105,60 +102,59 @@ public class SessionState {
     // 🧠 ACTION TRACKING
     // ===================================================
     public static void recordAction(String action) {
-
-        lastAction = action;
         actionHistory.add(action);
-
-        actionStats.merge(action, 1, Integer::sum);
     }
 
     public static int getFailureCount(String action) {
         return failureCount.getOrDefault(action, 0);
     }
 
-    public static void recordFailure(String action, String state) {
+    public static void recordFailure(String action, State state) {
 
         failureCount.merge(action, 1, Integer::sum);
-        stateFailures.merge(state, 1, Integer::sum);
+        stateFailures.merge(key(state), 1, Integer::sum);
     }
 
-    public static int getStateFailures(String state) {
-        return stateFailures.getOrDefault(state, 0);
-    }
-
-    // ===================================================
-    // 🧠 INTELLIGENCE
-    // ===================================================
-    public static boolean isStuck() {
-
-        if (actionHistory.size() < 6) return false;
-
-        List<String> last = actionHistory.subList(
-                actionHistory.size() - 5,
-                actionHistory.size()
-        );
-
-        return new HashSet<>(last).size() <= 2;
-    }
-
-    public static boolean isLooping() {
-
-        if (navigationPath.size() < 4) return false;
-
-        String last = navigationPath.get(navigationPath.size() - 1);
-
-        return Collections.frequency(navigationPath, last) > 2;
+    public static int getStateFailures(State state) {
+        return stateFailures.getOrDefault(key(state), 0);
     }
 
     // ===================================================
-    // 🧠 REWARD SYSTEM (UPGRADED)
+    // 🧠 REWARD SYSTEM (SAFE)
     // ===================================================
-    public static void reward(String state, double value) {
-        stateRewards.merge(state, value, Double::sum);
+    public static void reward(State state, double value) {
+
+        if (state == null) return;
+
+        // clamp step reward
+        value = Math.max(-5, Math.min(5, value));
+
+        stateRewards.merge(key(state), value, Double::sum);
+
+        // 💣 clamp accumulated reward
+        stateRewards.computeIfPresent(key(state),
+                (k, v) -> Math.max(-50, Math.min(50, v)));
     }
 
-    public static double getReward(String state) {
-        return stateRewards.getOrDefault(state, 0.0);
+    public static double getReward(State state) {
+        return stateRewards.getOrDefault(key(state), 0.0);
+    }
+
+    // ===================================================
+    // 🧠 DECISION HELPERS
+    // ===================================================
+    public static boolean shouldAvoidState(State state) {
+
+        return getStateVisitCount(state) > 4
+                || getStateFailures(state) > 2;
+    }
+
+    public static boolean shouldAvoidUrl(String url) {
+        return getUrlVisitCount(url) > 3;
+    }
+
+    public static boolean shouldAvoidElement(String key) {
+        return getElementVisitCount(key) > 3;
     }
 
     // ===================================================
@@ -166,24 +162,11 @@ public class SessionState {
     // ===================================================
     public static void decay() {
 
-        for (String key : stateRewards.keySet()) {
-            stateRewards.put(key, stateRewards.get(key) * 0.95);
-        }
-    }
+        stateRewards.replaceAll((k, v) -> v * 0.95);
 
-    // ===================================================
-    // 🧠 HELPERS
-    // ===================================================
-    public static boolean shouldAvoidUrl(String url) {
+        failureCount.replaceAll((k, v) -> Math.max(0, v - 1));
 
-        String n = normalize(url);
-
-        return getUrlVisitCount(n) > 2 || isLooping();
-    }
-
-    public static boolean shouldAvoidElement(String key) {
-
-        return getElementVisitCount(key) > 3;
+        stateVisitCount.replaceAll((k, v) -> Math.max(0, v - 1));
     }
 
     // ===================================================
@@ -200,32 +183,26 @@ public class SessionState {
         navigationPath.clear();
         failureCount.clear();
         stateFailures.clear();
-        actionStats.clear();
         stateRewards.clear();
-
-        currentUrl = "";
-        lastAction = "";
     }
 
+    // ===================================================
+    // 🔧 UTILS
     // ===================================================
     private static String normalize(String value) {
 
         if (value == null) return "";
 
-        try {
-            value = value.trim().toLowerCase();
+        value = value.trim().toLowerCase();
 
-            int hashIndex = value.indexOf("#");
-            if (hashIndex != -1) value = value.substring(0, hashIndex);
+        int i = value.indexOf("#");
+        if (i != -1) value = value.substring(0, i);
 
-            int queryIndex = value.indexOf("?");
-            if (queryIndex != -1) value = value.substring(0, queryIndex);
+        i = value.indexOf("?");
+        if (i != -1) value = value.substring(0, i);
 
-            if (value.endsWith("/")) {
-                value = value.substring(0, value.length() - 1);
-            }
-
-        } catch (Exception ignored) {}
+        if (value.endsWith("/"))
+            value = value.substring(0, value.length() - 1);
 
         return value;
     }

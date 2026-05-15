@@ -1,303 +1,255 @@
 package ai.decision;
 
+import ai.goal.GoalEngine;
+import ai.goal.GoalEngine.Goal;
+import ai.learning.LearningEngine;
+import ai.planning.MCTSPlanner;
+import ai.planning.PlanningEngine;
+import ai.planning.Plan;
 import ai.learning.BehaviorGraph;
 import ai.learning.BehaviorStore;
-import ai.learning.LearningEngine.State;
-import ai.state.SessionState;
+import ai.learning.State;
+import engine.state.SessionState;
 
-import org.openqa.selenium.*;
+import org.openqa.selenium.WebDriver;
 
 import java.util.*;
 
 public class DecisionEngine {
 
+    private static final List<String> ACTIONS = List.of(
+            "ClickAction",
+            "FormAction",
+            "NavigationAction"
+    );
+
     // ===================================================
-    // 🧠 MAIN ENTRY (UNIVERSAL)
+    // 🧠 MAIN ENTRY
     // ===================================================
-    public static double scoreAction(String actionName,
-                                     WebDriver driver,
-                                     State state) {
+    public static String decide(WebDriver driver, State state) {
+
+        Goal goal = GoalEngine.getCurrentGoal();
+        Plan plan = PlanningEngine.getCurrentPlan();
+        String step = (plan != null) ? plan.getCurrentStep() : null;
+
+        // 💣 أولاً: خليه يستفيد من MCTS
+        String mctsSuggestion = MCTSPlanner.plan(driver);
+
+        Map<String, Double> scores = new HashMap<>();
+
+        for (String action : ACTIONS) {
+
+            if (!isActionAllowed(action, step)) {
+                scores.put(action, -100.0);
+                continue;
+            }
+
+            double score = evaluate(action, step, goal, state);
+
+            // 💣 boost لو MCTS اقترحه
+            if (action.equals(mctsSuggestion)) {
+                score += 15;
+            }
+
+            scores.put(action, score);
+
+            System.out.println("➡️ " + action + " = " + score);
+        }
+
+        return scores.entrySet()
+                .stream()
+                .max(Map.Entry.comparingByValue())
+                .map(Map.Entry::getKey)
+                .orElse("NavigationAction");
+    }
+
+    // ===================================================
+    // 💣 CORE EVALUATION
+    // ===================================================
+    private static double evaluate(String action,
+                                   String step,
+                                   Goal goal,
+                                   State state) {
 
         double score = 0;
 
         // ===============================================
-        // 🔥 BASE SCORING
+        // 🔥 BASE
         // ===============================================
-        switch (actionName) {
+        score += baseScore(action, state);
+
+        // ===============================================
+        // 🧠 LEARNING
+        // ===============================================
+        score += BehaviorStore.getScore(state, action) *8;
+        score += BehaviorGraph.getActionScore(state, action) * 4;
+        score += LearningEngine.getScore(state, action) * 6;
+        // ===============================================
+        // 💣 PLAN ALIGNMENT
+        // ===============================================
+        score += planAlignment(action, step);
+
+        // ===============================================
+        // 💣 GOAL ALIGNMENT
+        // ===============================================
+        score += goalAlignment(action, goal);
+
+        // ===============================================
+        // 💣 CONTEXT
+        // ===============================================
+        score += contextBoost(action, state);
+
+        // ===============================================
+        // 💣 MEMORY
+        // ===============================================
+        score += SessionState.getReward(state) * 2;
+
+        // ===============================================
+        // 💣 LOOP / FAILURE
+        // ===============================================
+        if (SessionState.isLoopingState(state)) score -= 20;
+
+        if (SessionState.getFailureCount(action) > 2) score -= 10;
+
+        if (SessionState.shouldAvoidState(state)) score -= 15;
+
+        // ===============================================
+        // 💣 FUTURE ESTIMATION (NEW 🔥)
+        // ===============================================
+        score += futureEstimate(action, state);
+
+        // ===============================================
+        return clamp(score, -50, 100);
+    }
+
+    // ===================================================
+    // 💣 أهم إضافة
+    // ===================================================
+    private static double futureEstimate(String action, State state) {
+
+        // simulate next state
+        int newDom = state.domSize + new Random().nextInt(15) - 5;
+
+        State next = new State(
+                state.url,
+                Math.max(1, newDom),
+                state.goal,
+                state.hasForm,
+                state.hasLinks
+        );
+
+        double value = 0;
+
+        value += BehaviorStore.getScore(next, action) * 5;
+        value += SessionState.getReward(next);
+
+        if (SessionState.shouldAvoidState(next)) value -= 10;
+
+        return value;
+    }
+
+    // ===================================================
+    private static double baseScore(String action, State state) {
+
+        switch (action) {
 
             case "ClickAction":
-                score += scoreBestClick(driver, state);
-                break;
+                return state.hasLinks ? 5 : 0;
 
             case "FormAction":
-                score += scoreBestForm(driver, state);
-                break;
+                return state.hasForm ? 5 : 0;
 
             case "NavigationAction":
-                score += scoreBestNavigation(driver, state);
-                break;
-        }
-
-        // ===============================================
-        // 🧠 MEMORY (BehaviorStore)
-        // ===============================================
-        double memory = BehaviorStore.getScore(state.toString(), actionName);
-        score += memory * 12;
-
-        // ===============================================
-        // 🧠 GRAPH LEARNING
-        // ===============================================
-        double graph = BehaviorGraph.getActionScore(state.toString(), actionName);
-        score += graph * 6;
-
-        // ===============================================
-        // 💣 REWARD MEMORY (SessionState RL)
-        // ===============================================
-        double reward = SessionState.getReward(state.toString());
-        score += reward * 2;
-
-        // ===============================================
-        // 💣 LOOP DETECTION
-        // ===============================================
-        if (SessionState.isLooping()) {
-            score -= 25;
-        }
-
-        // ===============================================
-        // 💣 STUCK DETECTION
-        // ===============================================
-        if (SessionState.isStuck()) {
-
-            // Escape logic
-            if (actionName.equals("NavigationAction")) score += 15;
-            if (actionName.equals("ClickAction")) score += 5;
-        }
-
-        // ===============================================
-        // 💣 VISIT FREQUENCY
-        // ===============================================
-        int visits = SessionState.getUrlVisitCount(state.pageType);
-
-        if (visits > 2) score -= 12;
-
-        // ===============================================
-        // 💣 SCENARIO AWARENESS
-        // ===============================================
-        score += scenarioBoost(state, actionName);
-
-        // ===============================================
-        // 💣 PATH AWARENESS
-        // ===============================================
-        score += pathAwareness();
-
-        // ===============================================
-        // 🎲 EXPLORATION
-        // ===============================================
-        score += Math.random();
-
-        return score;
-    }
-
-    // ===================================================
-    // 🖱 CLICK SCORING
-    // ===================================================
-    private static double scoreBestClick(WebDriver driver,
-                                         State state) {
-
-        List<WebElement> elements =
-                driver.findElements(By.xpath("//button | //a | //*[@role='button']"));
-
-        double best = -999;
-
-        for (WebElement el : elements) {
-
-            double s = scoreClick(el, driver, state);
-
-            if (s > best) best = s;
-        }
-
-        return best;
-    }
-
-    private static double scoreClick(WebElement el,
-                                     WebDriver driver,
-                                     State state) {
-
-        try {
-
-            String text = safe(el.getText()).toLowerCase();
-            String tag = safe(el.getTagName()).toLowerCase();
-
-            if (text.contains("logout") || text.contains("delete"))
-                return -100;
-
-            double score = 0;
-
-            if (text.contains("next")) score += 12;
-            if (text.contains("submit")) score += 14;
-            if (text.contains("continue")) score += 10;
-            if (tag.equals("button")) score += 8;
-
-            score += predictProgress(driver, state);
-
-            return score;
-
-        } catch (Exception e) {
-            return -1;
-        }
-    }
-
-    // ===================================================
-    // 📝 FORM SCORING
-    // ===================================================
-    private static double scoreBestForm(WebDriver driver,
-                                        State state) {
-
-        List<WebElement> forms =
-                driver.findElements(By.tagName("form"));
-
-        double best = -999;
-
-        for (WebElement form : forms) {
-
-            double s = scoreForm(form, driver, state);
-
-            if (s > best) best = s;
-        }
-
-        return best;
-    }
-
-    private static double scoreForm(WebElement form,
-                                    WebDriver driver,
-                                    State state) {
-
-        try {
-
-            if (!form.isDisplayed()) return -50;
-
-            int inputs = form.findElements(By.cssSelector("input,textarea")).size();
-
-            double score = inputs * 2;
-
-            score += 10; // forms are important
-
-            score += predictProgress(driver, state);
-
-            return score;
-
-        } catch (Exception e) {
-            return -1;
-        }
-    }
-
-    // ===================================================
-    // 🌍 NAVIGATION SCORING
-    // ===================================================
-    private static double scoreBestNavigation(WebDriver driver,
-                                              State state) {
-
-        List<WebElement> links =
-                driver.findElements(By.xpath("//a[@href]"));
-
-        double best = -999;
-
-        for (WebElement link : links) {
-
-            try {
-
-                String href = safe(link.getAttribute("href")).toLowerCase();
-
-                double score = 0;
-
-                if (href.contains("detail")) score += 8;
-                if (href.contains("view")) score += 6;
-                if (href.contains("edit")) score += 7;
-                if (href.contains("form")) score += 10;
-
-                if (href.contains("logout")) score -= 20;
-
-                score += predictProgress(driver, state);
-
-                if (score > best) best = score;
-
-            } catch (Exception ignored) {}
-        }
-
-        return best;
-    }
-
-    // ===================================================
-    // 💣 PROGRESS PREDICTION
-    // ===================================================
-    private static double predictProgress(WebDriver driver,
-                                          State state) {
-
-        try {
-
-            int dom = driver.findElements(By.xpath("//*")).size();
-
-            double score = 0;
-
-            if (dom > 500) score += 2;
-            else if (dom > 200) score += 1;
-
-            score += state.depth * 0.5;
-
-            if (state.pageType.contains("form")) score += 2;
-            if (state.pageType.contains("detail")) score += 1;
-
-            return score;
-
-        } catch (Exception e) {
-            return 0.5;
-        }
-    }
-
-    // ===================================================
-    // 🧠 SCENARIO BOOST
-    // ===================================================
-    private static double scenarioBoost(State state,
-                                        String action) {
-
-        String page = state.pageType.toLowerCase();
-
-        double boost = 0;
-
-        if (page.contains("login") && action.equals("FormAction"))
-            boost += 25;
-
-        if (page.contains("form") && action.equals("FormAction"))
-            boost += 20;
-
-        if (page.contains("detail") && action.equals("ClickAction"))
-            boost += 12;
-
-        return boost;
-    }
-
-    // ===================================================
-    // 💣 PATH AWARENESS
-    // ===================================================
-    private static double pathAwareness() {
-
-        List<String> path = SessionState.getNavigationPath();
-
-        if (path.size() < 3) return 0;
-
-        String last = path.get(path.size() - 1);
-
-        int freq = Collections.frequency(path, last);
-
-        if (freq > 2) {
-            return -20; // loop detected
+                return 3;
         }
 
         return 0;
     }
 
     // ===================================================
-    private static String safe(String s) {
-        return s == null ? "" : s;
+    private static double planAlignment(String action, String step) {
+
+        if (step == null) return 0;
+
+        switch (step) {
+
+            case "FILL_FORM":
+                return action.equals("FormAction") ? 50 : -20;
+
+            case "SUBMIT":
+                return action.equals("ClickAction") ? 45 : -15;
+
+            case "NAVIGATE":
+                return action.equals("NavigationAction") ? 40 : -10;
+
+            case "CLICK_LOGIN":
+            case "CLICK_LINK":
+                return action.equals("ClickAction") ? 40 : -10;
+
+            case "TYPE_QUERY":
+                return action.equals("FormAction") ? 35 : -10;
+        }
+
+        return 0;
+    }
+
+    // ===================================================
+    private static boolean isActionAllowed(String action, String step) {
+
+        if (step == null) return true;
+
+        switch (step) {
+
+            case "FILL_FORM":
+                return action.equals("FormAction");
+
+            case "SUBMIT":
+            case "CLICK_LOGIN":
+                return action.equals("ClickAction");
+
+            case "NAVIGATE":
+                return action.equals("NavigationAction");
+        }
+
+        return true;
+    }
+
+    // ===================================================
+    private static double goalAlignment(String action, Goal goal) {
+
+        if (goal == null) return 0;
+
+        switch (goal.name) {
+
+            case "FORM":
+                return action.equals("FormAction") ? 20 : 0;
+
+            case "AUTH":
+                return action.equals("FormAction") ? 15 : 0;
+
+            case "NAVIGATION":
+                return action.equals("NavigationAction") ? 15 : 0;
+        }
+
+        return 0;
+    }
+
+    // ===================================================
+    private static double contextBoost(String action, State state) {
+
+        double score = 0;
+
+        if (action.equals("FormAction") && state.hasForm)
+            score += 10;
+
+        if (action.equals("NavigationAction") && state.hasLinks)
+            score += 8;
+
+        return score;
+    }
+
+    // ===================================================
+    private static double clamp(double v, double min, double max) {
+        return Math.max(min, Math.min(max, v));
     }
 }

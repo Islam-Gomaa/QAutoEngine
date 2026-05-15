@@ -2,7 +2,9 @@ package engine.actions;
 
 import ai.intelligence.ProgressEngine;
 import ai.intelligence.ScenarioTracker;
-import ai.state.SessionState;
+import ai.learning.State;
+import engine.state.SessionState;
+
 import org.openqa.selenium.*;
 import utilities.Waits;
 import utilities.DebugUtil;
@@ -18,7 +20,7 @@ public class NavigationAction implements Action {
     @Override
     public void execute(WebDriver driver) {
 
-        System.out.println("🧠 [NavigationAction AI ULTRA]");
+        System.out.println("🧠 [NavigationAction AI V6]");
 
         String baseDomain = getDomain(driver.getCurrentUrl());
 
@@ -29,12 +31,14 @@ public class NavigationAction implements Action {
             return;
         }
 
-        // 🔥 Clean + Deduplicate + Rank
+        State prevState = buildState(driver);
+
+        // 🔥 Clean + Rank
         links = links.stream()
                 .filter(this::isValid)
                 .filter(link -> !isExternal(link, baseDomain))
                 .distinct()
-                .sorted((a, b) -> Double.compare(score(b), score(a)))
+                .sorted((a, b) -> Double.compare(score(b, prevState), score(a, prevState)))
                 .limit(MAX_LINKS)
                 .collect(Collectors.toList());
 
@@ -52,24 +56,35 @@ public class NavigationAction implements Action {
                 DebugUtil.highlight(driver, link);
                 scrollIntoView(driver, link);
 
-                String beforeUrl = driver.getCurrentUrl();
-                int beforeDom = driver.findElements(By.xpath("//*")).size();
+                State before = prevState;
 
                 safeClick(driver, link);
 
                 Waits.waitForPageLoad(driver);
 
-                String afterUrl = driver.getCurrentUrl();
-                int afterDom = driver.findElements(By.xpath("//*")).size();
+                State after = buildState(driver);
 
                 double progress = ProgressEngine.evaluateProgress(
-                        driver, beforeUrl, afterUrl, beforeDom, afterDom
+                        driver,
+                        before,
+                        after,
+                        before.url,
+                        after.url,
+                        before.domSize,
+                        after.domSize
                 );
 
                 if (progress > 1.5) {
 
-                    SessionState.markUrlVisited(afterUrl);
-                    ScenarioTracker.record("NavigationAction", afterUrl, progress);
+                    SessionState.markUrlVisited(after.url);
+                    SessionState.markStateVisited(after);
+
+                    ScenarioTracker.record(
+                            "NavigationAction",
+                            after.url,
+                            after,
+                            progress
+                    );
 
                     System.out.println("✅ Navigation SUCCESS → " + progress);
                     return;
@@ -84,9 +99,9 @@ public class NavigationAction implements Action {
     }
 
     // ===================================================
-    // 💣 STRUCTURE-AWARE SCORING
+    // 💣 SCORING (STATE-AWARE)
     // ===================================================
-    private double score(WebElement link) {
+    private double score(WebElement link, State state) {
 
         String href = safe(link.getAttribute("href")).toLowerCase();
         String text = safe(link.getText()).toLowerCase();
@@ -101,17 +116,20 @@ public class NavigationAction implements Action {
         if (key.matches(".*(cart|basket).*")) score += 15;
         if (key.matches(".*(checkout|payment).*")) score += 18;
 
-        // 🔥 NAVIGATION FLOW
+        // 🔥 FLOW
         if (key.matches(".*(next|continue|step).*")) score += 10;
 
-        // 🔥 STRUCTURE
-        if (href.split("/").length > 4) score += 3; // deeper pages
+        // 🔥 DEPTH
+        if (href.split("/").length > 4) score += 3;
 
         // 🔥 UI SIGNAL
         if (cls.contains("nav") || cls.contains("menu")) score += 2;
 
-        // ❌ AVOID
-        if (key.matches(".*(logout|delete|remove|cancel).*")) score -= 20;
+        // 🔥 CONTEXT
+        if (state != null && state.hasLinks) score += 2;
+
+        // ❌ NEGATIVE
+        if (key.matches(".*(logout|delete|remove|cancel).*")) score -= 25;
 
         // 🔥 EXPLORATION
         score += Math.random();
@@ -119,8 +137,6 @@ public class NavigationAction implements Action {
         return score;
     }
 
-    // ===================================================
-    // 🔥 SAFE CLICK
     // ===================================================
     private void safeClick(WebDriver driver, WebElement el) {
 
@@ -135,7 +151,6 @@ public class NavigationAction implements Action {
         }
     }
 
-    // ===================================================
     private List<WebElement> findLinks(WebDriver driver) {
 
         return driver.findElements(By.xpath(
@@ -165,6 +180,25 @@ public class NavigationAction implements Action {
             ((JavascriptExecutor) driver)
                     .executeScript("arguments[0].scrollIntoView({block:'center'});", el);
         } catch (Exception ignored) {}
+    }
+
+    // ===================================================
+    // 💣 STATE BUILDER
+    // ===================================================
+    private State buildState(WebDriver driver) {
+
+        int domSize = driver.findElements(By.xpath("//*")).size();
+
+        boolean hasForm = !driver.findElements(By.tagName("form")).isEmpty();
+        boolean hasLinks = !driver.findElements(By.tagName("a")).isEmpty();
+
+        return new State(
+                driver.getCurrentUrl(),
+                domSize,
+                "NAV",
+                hasForm,
+                hasLinks
+        );
     }
 
     private String getDomain(String url) {

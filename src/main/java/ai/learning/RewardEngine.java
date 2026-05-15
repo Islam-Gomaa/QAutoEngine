@@ -1,15 +1,14 @@
 package ai.learning;
 
-import ai.learning.LearningEngine.State;
+import ai.goal.GoalEngine;
+import ai.planning.PlanningEngine;
+import ai.planning.Plan;
 
 public class RewardEngine {
 
-    // 🔥 dynamic learning factor
-    private static double adaptiveFactor = 1.0;
-
-    // ===============================
-    // 🧠 MAIN REWARD FUNCTION
-    // ===============================
+    // ===================================================
+    // 🧠 MAIN REWARD FUNCTION (V6)
+    // ===================================================
     public static double calculate(State prev,
                                    State next,
                                    String action,
@@ -21,130 +20,107 @@ public class RewardEngine {
         double reward = 0;
 
         // ===============================
-        // 1️⃣ BASE SUCCESS / FAILURE
+        // 1️⃣ BASE
         // ===============================
         reward += success ? 2.0 : -2.5;
 
         // ===============================
-        // 2️⃣ PROGRESS (🔥 أهم جزء)
+        // 2️⃣ PROGRESS
         // ===============================
-        reward += progressScore * 2;
+        reward += progressScore * 1.5;
 
-        // ===============================
-        // 3️⃣ STRONG PROGRESS BOOST
-        // ===============================
         if (progressScore > 4) reward += 3;
         else if (progressScore > 2) reward += 1.5;
 
         // ===============================
-        // 4️⃣ STATE TRANSITION
+        // 3️⃣ STATE CHANGE (V6 FIX)
         // ===============================
         if (prev != null && next != null &&
-                !safe(prev.pageType).equals(safe(next.pageType))) {
+                !safe(prev.goal).equals(safe(next.goal))) {
 
-            reward += 4;
+            reward += 3;
         }
 
         // ===============================
-        // 5️⃣ DOM INTELLIGENCE
+        // 4️⃣ DOM CHANGE
         // ===============================
-        int prevDom = prev != null ? prev.domSize : 0;
-        int nextDom = next != null ? next.domSize : 0;
-
-        int delta = Math.abs(nextDom - prevDom);
+        int delta = Math.abs(next.domSize - prev.domSize);
 
         if (delta > 80) reward += 2;
         else if (delta > 30) reward += 1;
 
         // ===============================
-        // 6️⃣ ACTION QUALITY
+        // 5️⃣ CONTEXT INTELLIGENCE 🔥
         // ===============================
-        reward += actionWeight(action, progressScore);
+        if (action.equals("FormAction") && next.hasForm)
+            reward += 1.5;
+
+        if (action.equals("NavigationAction") && next.hasLinks)
+            reward += 1;
 
         // ===============================
-        // 7️⃣ LOOP / REVISIT PENALTY
+        // 6️⃣ GOAL ALIGNMENT
+        // ===============================
+        if (GoalEngine.getCurrentGoal() != null &&
+                next.goal.contains(GoalEngine.getCurrentGoal().name)) {
+
+            reward += 2;
+        }
+
+        // ===============================
+        // 7️⃣ PLAN ALIGNMENT
+        // ===============================
+        Plan plan = PlanningEngine.getCurrentPlan();
+
+        if (plan != null && plan.getCurrentStep() != null) {
+
+            String step = plan.getCurrentStep();
+
+            if (matches(action, step)) reward += 2;
+            else reward -= 1;
+        }
+
+        // ===============================
+        // 8️⃣ LOOP PENALTY
         // ===============================
         if (revisited) reward -= 4;
 
         // ===============================
-        // 8️⃣ STAGNATION PENALTY
+        // 9️⃣ STAGNATION
         // ===============================
         if (progressScore < 1) reward -= 2;
 
         // ===============================
-        // 9️⃣ TERMINAL REWARD (💣 مهم جدًا)
+        // 🔟 TERMINAL BONUS
         // ===============================
-        if (terminal) reward += 15;
+        if (terminal) reward += 12;
 
         // ===============================
-        // 🔟 ADAPTIVE LEARNING
+        // 🔥 NORMALIZATION (SAFE)
         // ===============================
-        adaptiveFactor = updateAdaptiveFactor(success, progressScore);
-
-        reward *= adaptiveFactor;
-
-        // ===============================
-        // 🔥 NORMALIZATION
-        // ===============================
-        reward = normalize(reward);
-
-        return reward;
+        return clamp(reward, -10, 10);
     }
 
-    // ===============================
-    // 🧠 ACTION INTELLIGENCE
-    // ===============================
-    private static double actionWeight(String action, double progressScore) {
+    // ===================================================
+    private static boolean matches(String action, String step) {
 
-        double weight = 0;
+        if (step == null) return false;
 
-        switch (action) {
+        switch (step) {
+            case "FILL_FORM":
+                return action.equals("FormAction");
 
-            case "FormAction":
-                weight += 2;
-                if (progressScore > 2) weight += 1;
-                break;
+            case "SUBMIT":
+                return action.equals("ClickAction");
 
-            case "NavigationAction":
-                weight += 1.5;
-                break;
-
-            case "ClickAction":
-                weight += 0.5;
-                break;
-
-            default:
-                weight += 0.2;
+            case "NAVIGATE":
+                return action.equals("NavigationAction");
         }
 
-        return weight;
+        return true;
     }
 
-    // ===============================
-    // 🔥 ADAPTIVE FACTOR
-    // ===============================
-    private static double updateAdaptiveFactor(boolean success,
-                                               double progressScore) {
-
-        if (success && progressScore > 2) {
-            adaptiveFactor *= 1.05;
-        } else {
-            adaptiveFactor *= 0.97;
-        }
-
-        return clamp(adaptiveFactor, 0.5, 2.0);
-    }
-
-    // ===============================
-    // 🧠 NORMALIZATION (prevents explosion)
-    // ===============================
-    private static double normalize(double value) {
-        return Math.tanh(value);
-    }
-
-    // ===============================
-    // 🔧 UTILS
-    // ===============================
+    // ===================================================
     private static double clamp(double v, double min, double max) {
         return Math.max(min, Math.min(max, v));
     }

@@ -2,6 +2,9 @@ package engine.actions;
 
 import ai.intelligence.ProgressEngine;
 import ai.intelligence.ScenarioTracker;
+import ai.learning.State;
+import engine.state.SessionState;
+
 import org.openqa.selenium.*;
 import org.openqa.selenium.support.ui.Select;
 import utilities.Waits;
@@ -15,7 +18,7 @@ public class FormAction implements Action {
     @Override
     public void execute(WebDriver driver) {
 
-        System.out.println("🧠 [FormAction AI ULTRA]");
+        System.out.println("🧠 [FormAction AI V6]");
 
         List<WebElement> forms = driver.findElements(By.tagName("form"));
 
@@ -29,8 +32,7 @@ public class FormAction implements Action {
 
                 try {
 
-                    String beforeUrl = driver.getCurrentUrl();
-                    int beforeDom = driver.findElements(By.xpath("//*")).size();
+                    State before = buildState(driver);
 
                     fillForm(driver, form, lastError);
 
@@ -38,16 +40,28 @@ public class FormAction implements Action {
 
                     Waits.waitForPageLoad(driver);
 
-                    String afterUrl = driver.getCurrentUrl();
-                    int afterDom = driver.findElements(By.xpath("//*")).size();
+                    State after = buildState(driver);
 
                     double progress = ProgressEngine.evaluateProgress(
-                            driver, beforeUrl, afterUrl, beforeDom, afterDom
+                            driver,
+                            before,
+                            after,
+                            before.url,
+                            after.url,
+                            before.domSize,
+                            after.domSize
                     );
 
                     if (progress > 2) {
 
-                        ScenarioTracker.record("FormAction", afterUrl, progress);
+                        SessionState.markStateVisited(after);
+
+                        ScenarioTracker.record(
+                                "FormAction",
+                                after.url,
+                                after,
+                                progress
+                        );
 
                         System.out.println("✅ Form SUCCESS → " + progress);
                         return;
@@ -83,10 +97,10 @@ public class FormAction implements Action {
                     continue;
                 }
 
-                String fieldType = detectFieldType(el);
+                String type = detectFieldType(el);
                 Map<String, Object> constraints = extractConstraints(el);
 
-                String value = generateValue(fieldType, constraints, lastError);
+                String value = generateValue(type, constraints, lastError);
 
                 el.clear();
                 el.sendKeys(value);
@@ -96,7 +110,7 @@ public class FormAction implements Action {
     }
 
     // ===================================================
-    // 🧠 FIELD DETECTION (قوي جدًا)
+    // 🧠 FIELD TYPE
     // ===================================================
     private String detectFieldType(WebElement el) {
 
@@ -108,19 +122,19 @@ public class FormAction implements Action {
                         safe(el.getAttribute("aria-label"))
         ).toLowerCase();
 
-        if (key.matches(".*email.*")) return "EMAIL";
-        if (key.matches(".*password.*")) return "PASSWORD";
-        if (key.matches(".*phone|mobile.*")) return "PHONE";
-        if (key.matches(".*name|user.*")) return "NAME";
-        if (key.matches(".*address|city.*")) return "ADDRESS";
-        if (key.matches(".*zip|postal.*")) return "ZIP";
-        if (key.matches(".*date|birth.*")) return "DATE";
+        if (key.contains("email")) return "EMAIL";
+        if (key.contains("password")) return "PASSWORD";
+        if (key.contains("phone") || key.contains("mobile")) return "PHONE";
+        if (key.contains("name") || key.contains("user")) return "NAME";
+        if (key.contains("address")) return "ADDRESS";
+        if (key.contains("zip") || key.contains("postal")) return "ZIP";
+        if (key.contains("date") || key.contains("birth")) return "DATE";
 
         return "TEXT";
     }
 
     // ===================================================
-    // 🔍 CONSTRAINT EXTRACTION
+    // 🔍 CONSTRAINTS
     // ===================================================
     private Map<String, Object> extractConstraints(WebElement el) {
 
@@ -133,11 +147,9 @@ public class FormAction implements Action {
 
             String min = el.getAttribute("minlength");
             String max = el.getAttribute("maxlength");
-            String pattern = el.getAttribute("pattern");
 
             if (min != null) c.put("min", Integer.parseInt(min));
             if (max != null) c.put("max", Integer.parseInt(max));
-            if (pattern != null) c.put("pattern", pattern);
 
         } catch (Exception ignored) {}
 
@@ -145,7 +157,7 @@ public class FormAction implements Action {
     }
 
     // ===================================================
-    // 💣 SMART GENERATOR (Adaptive)
+    // 💣 VALUE GENERATION
     // ===================================================
     private String generateValue(String type,
                                  Map<String, Object> c,
@@ -178,16 +190,10 @@ public class FormAction implements Action {
                 base = "Test" + rand(1000);
         }
 
-        // 🔥 error adaptation
-        if ("INVALID".equals(error)) {
-            base = base + "X1!";
-        }
+        // 🔥 adaptive retry
+        if ("INVALID".equals(error)) base += "X1!";
+        if ("REQ".equals(error)) base = "Valid" + rand(1000);
 
-        if ("REQ".equals(error)) {
-            base = "Valid" + rand(1000);
-        }
-
-        // enforce length
         if (base.length() < min)
             base += "X".repeat(min - base.length());
 
@@ -198,15 +204,15 @@ public class FormAction implements Action {
     }
 
     // ===================================================
-    // 🚀 SMART SUBMIT (Scoring)
+    // 🚀 SUBMIT
     // ===================================================
     private boolean submitSmart(WebElement form) {
 
         List<WebElement> buttons =
                 form.findElements(By.cssSelector("button, input"));
 
-        double bestScore = -999;
         WebElement best = null;
+        double bestScore = -999;
 
         for (WebElement btn : buttons) {
 
@@ -223,7 +229,7 @@ public class FormAction implements Action {
 
                 if (key.matches(".*submit|login|continue|next|pay.*")) score += 10;
                 if (key.matches(".*save|confirm|finish.*")) score += 6;
-                if (key.contains("cancel") || key.contains("close")) score -= 10;
+                if (key.contains("cancel")) score -= 10;
 
                 if (score > bestScore) {
                     bestScore = score;
@@ -264,6 +270,24 @@ public class FormAction implements Action {
     }
 
     // ===================================================
+    // 💣 STATE BUILDER
+    // ===================================================
+    private State buildState(WebDriver driver) {
+
+        int domSize = driver.findElements(By.xpath("//*")).size();
+
+        boolean hasForm = !driver.findElements(By.tagName("form")).isEmpty();
+        boolean hasLinks = !driver.findElements(By.tagName("a")).isEmpty();
+
+        return new State(
+                driver.getCurrentUrl(),
+                domSize,
+                "FORM",
+                hasForm,
+                hasLinks
+        );
+    }
+
     private int rand(int max) {
         return new Random().nextInt(max);
     }
