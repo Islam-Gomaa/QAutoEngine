@@ -37,3 +37,8 @@ build/
 
 ### Mac OS ###
 .DS_Store
+### QA Engine run output ###
+learning_v6.dat
+learning_v6.dat.tmp
+allure-results/
+allure-report/
