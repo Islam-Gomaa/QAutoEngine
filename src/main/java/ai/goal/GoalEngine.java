@@ -2,6 +2,7 @@ package ai.goal;
 
 import ai.learning.BehaviorStore;
 import ai.learning.State;
+import ai.learning.StateFactory;
 import ai.planning.PlanningEngine;
 import ai.planning.Plan;
 import engine.state.SessionState;
@@ -77,7 +78,7 @@ public class GoalEngine {
     // ===================================================
     public static void update(WebDriver driver) {
 
-        State state = buildState(driver);
+        State state = StateFactory.build(driver);
 
         Plan plan = PlanningEngine.getCurrentPlan();
 
@@ -90,7 +91,7 @@ public class GoalEngine {
             g.stability = stabilityBoost(g);
 
             // 🔥 PLAN AWARENESS
-            if (plan != null && plan.goal != null && plan.goal.equals(g.name)) {
+            if (plan != null && plan.getGoal() != null && plan.getGoal().equals(g.name)) {
                 g.progress += 1.5;
                 g.confidence += 0.5;
             }

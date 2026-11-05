@@ -2,11 +2,11 @@ package tests;
 
 import io.qameta.allure.*;
 import models.LinkResult;
+import org.openqa.selenium.By;
 import org.openqa.selenium.WebDriver;
+import org.openqa.selenium.WebElement;
 import org.testng.Assert;
 import org.testng.annotations.*;
-
-import crawler.LinkCollector;
 import utilities.ConfigReader;
 import utilities.DriverFactory;
 import validators.ApiValidator;
@@ -14,6 +14,7 @@ import validators.LinkValidator;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Objects;
 
 @Epic("Link Scanner")
 @Feature("Validation")
@@ -29,10 +30,14 @@ public class LinkScannerTest {
 
         System.out.println("🚀 Starting Browser...");
 
-        driver = DriverFactory.createDriver(ConfigReader.get("browser"));
+        driver = DriverFactory.createDriver(
+                ConfigReader.get("browser")
+        );
 
         driver.manage().timeouts().implicitlyWait(
-                Duration.ofSeconds(ConfigReader.getInt("timeout", 10))
+                Duration.ofSeconds(
+                        ConfigReader.getInt("timeout", 10)
+                )
         );
 
         String url = ConfigReader.get("url");
@@ -50,18 +55,40 @@ public class LinkScannerTest {
 
         System.out.println("🔍 Collecting links...");
 
-        List<String> links = LinkCollector.collect(driver);
+        List<String> links = collectLinks();
 
-        if (links == null || links.isEmpty()) {
-            throw new RuntimeException("❌ No links collected");
+        if (links.isEmpty()) {
+            throw new RuntimeException(
+                    "❌ No links collected"
+            );
         }
 
-        System.out.println("🔗 Total links found: " + links.size());
+        System.out.println(
+                "🔗 Total links found: " + links.size()
+        );
 
         return links.stream()
                 .distinct()
                 .map(link -> new Object[]{link})
                 .toArray(Object[][]::new);
+    }
+
+    // =========================
+    // 🔥 LINK COLLECTION
+    // =========================
+    private List<String> collectLinks() {
+
+        List<WebElement> anchors =
+                driver.findElements(
+                        By.tagName("a")
+                );
+
+        return anchors.stream()
+                .map(a -> a.getAttribute("href"))
+                .filter(Objects::nonNull)
+                .filter(h -> !h.isBlank())
+                .distinct()
+                .toList();
     }
 
     // =========================
@@ -73,7 +100,10 @@ public class LinkScannerTest {
     public void validateLink(String href) {
 
         System.out.println("🔗 Checking: " + href);
-        Allure.step("🔗 Checking link: " + href);
+
+        Allure.step(
+                "🔗 Checking link: " + href
+        );
 
         LinkResult result;
 
@@ -85,21 +115,50 @@ public class LinkScannerTest {
 
         } catch (Exception e) {
 
-            result = new LinkResult(href, "", -1, 0, "ERROR");
+            result = new LinkResult(
+                    href,
+                    "",
+                    -1,
+                    0,
+                    "ERROR"
+            );
 
-            System.out.println("❌ Exception: " + e.getMessage());
-            Allure.step("❌ Exception: " + e.getMessage());
+            System.out.println(
+                    "❌ Exception: "
+                            + e.getMessage()
+            );
+
+            Allure.step(
+                    "❌ Exception: "
+                            + e.getMessage()
+            );
         }
 
-        // 🔥 Console visibility
-        System.out.println("➡️ Result: " + result.result +
-                " | Status: " + result.status +
-                " | Time: " + result.timeMs + "ms");
+        System.out.println(
+                "➡️ Result: "
+                        + result.result
+                        + " | Status: "
+                        + result.status
+                        + " | Time: "
+                        + result.timeMs
+                        + "ms"
+        );
 
-        // 🔥 Slow links detection
         if (result.timeMs > 2000) {
-            System.out.println("🐢 SLOW LINK: " + href + " | " + result.timeMs + "ms");
-            Allure.step("🐢 Slow Link detected: " + result.timeMs + "ms");
+
+            System.out.println(
+                    "🐢 SLOW LINK: "
+                            + href
+                            + " | "
+                            + result.timeMs
+                            + "ms"
+            );
+
+            Allure.step(
+                    "🐢 Slow Link detected: "
+                            + result.timeMs
+                            + "ms"
+            );
         }
 
         report(result);
@@ -111,40 +170,79 @@ public class LinkScannerTest {
     // 🔥 VALIDATION LAYER
     // =========================
     private boolean isApi(String url) {
-        return url != null &&
-                (url.contains("/api") || url.contains("/v1") || url.contains("/v2"));
+
+        return url != null
+                && (
+                url.contains("/api")
+                        || url.contains("/v1")
+                        || url.contains("/v2")
+        );
     }
 
-    private LinkResult validateApi(String href) {
+    private LinkResult validateApi(
+            String href
+    ) {
+
         Allure.step("Type: API");
+
         return ApiValidator.validate(href);
     }
 
-    private LinkResult validateUi(String href) {
+    private LinkResult validateUi(
+            String href
+    ) {
+
         Allure.step("Type: UI");
-        return LinkValidator.validate(href, "");
+
+        return LinkValidator.validate(
+                href,
+                ""
+        );
     }
 
     // =========================
     // 🔥 REPORTING
     // =========================
-    private void report(LinkResult result) {
+    private void report(
+            LinkResult result
+    ) {
 
-        Allure.step("Status Code: " + result.status);
-        Allure.step("Result: " + result.result);
+        Allure.step(
+                "Status Code: "
+                        + result.status
+        );
 
-        if ("ERROR".equals(result.result)) {
-            Allure.step("⚠️ Network / Blocked / Timeout");
+        Allure.step(
+                "Result: "
+                        + result.result
+        );
+
+        if ("ERROR".equals(
+                result.result
+        )) {
+
+            Allure.step(
+                    "⚠️ Network / Timeout"
+            );
         }
     }
 
     // =========================
     // 🔥 ASSERTION
     // =========================
-    private void assertResult(String href, LinkResult result) {
+    private void assertResult(
+            String href,
+            LinkResult result
+    ) {
 
-        if ("FAIL".equals(result.result)) {
-            Assert.fail("❌ Broken Link: " + href);
+        if ("FAIL".equals(
+                result.result
+        )) {
+
+            Assert.fail(
+                    "❌ Broken Link: "
+                            + href
+            );
         }
     }
 
@@ -154,7 +252,9 @@ public class LinkScannerTest {
     @AfterClass(alwaysRun = true)
     public void tearDown() {
 
-        System.out.println("🧹 Closing browser...");
+        System.out.println(
+                "🧹 Closing browser..."
+        );
 
         if (driver != null) {
             driver.quit();

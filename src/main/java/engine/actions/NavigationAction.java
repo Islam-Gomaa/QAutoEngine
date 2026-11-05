@@ -3,6 +3,7 @@ package engine.actions;
 import ai.intelligence.ProgressEngine;
 import ai.intelligence.ScenarioTracker;
 import ai.learning.State;
+import ai.learning.StateFactory;
 import engine.state.SessionState;
 
 import org.openqa.selenium.*;
@@ -31,7 +32,7 @@ public class NavigationAction implements Action {
             return;
         }
 
-        State prevState = buildState(driver);
+        State prevState = StateFactory.build(driver);
 
         // 🔥 Clean + Rank
         links = links.stream()
@@ -62,17 +63,14 @@ public class NavigationAction implements Action {
 
                 Waits.waitForPageLoad(driver);
 
-                State after = buildState(driver);
+                State after = StateFactory.build(driver);
 
-                double progress = ProgressEngine.evaluateProgress(
-                        driver,
-                        before,
-                        after,
-                        before.url,
-                        after.url,
-                        before.domSize,
-                        after.domSize
-                );
+                double progress =
+                        ProgressEngine.evaluateProgress(
+                                driver,
+                                before,
+                                after
+                        );
 
                 if (progress > 1.5) {
 

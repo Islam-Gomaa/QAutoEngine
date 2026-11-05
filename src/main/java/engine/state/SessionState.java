@@ -206,4 +206,27 @@ public class SessionState {
 
         return value;
     }
+
+    // ===================================================
+    // 📊 GETTERS
+    // ===================================================
+    public static Set<String> getVisitedUrls() {
+        return Collections.unmodifiableSet(visitedUrls);
+    }
+
+    public static Set<String> getVisitedElements() {
+        return Collections.unmodifiableSet(visitedElements);
+    }
+
+    public static List<String> getActionHistory() {
+        return Collections.unmodifiableList(actionHistory);
+    }
+
+    public static List<String> getNavigationPath() {
+        return Collections.unmodifiableList(navigationPath);
+    }
+
+    public static int getVisitedStateCount() {
+        return stateVisitCount.size();
+    }
 }

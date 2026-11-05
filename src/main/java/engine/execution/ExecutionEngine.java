@@ -2,16 +2,14 @@ package engine.execution;
 
 import ai.decision.DecisionEngine;
 import ai.goal.GoalEngine;
-import ai.planning.PlanningEngine;
-import ai.planning.Plan;
-
-import ai.learning.*;
 import ai.intelligence.*;
-
-import engine.actions.*;
+import ai.learning.*;
+import ai.planning.Plan;
+import ai.planning.PlanningEngine;
+import engine.actions.ClickAction;
+import engine.actions.FormAction;
+import engine.actions.NavigationAction;
 import engine.state.SessionState;
-
-import org.openqa.selenium.By;
 import org.openqa.selenium.WebDriver;
 
 public class ExecutionEngine {
@@ -22,6 +20,9 @@ public class ExecutionEngine {
 
         System.out.println("🚀 AI Engine V6 START");
 
+        // ===========================================
+        // 🧠 RESET SYSTEM
+        // ===========================================
         GoalEngine.init();
         PlanningEngine.reset();
         ScenarioTracker.reset();
@@ -41,84 +42,156 @@ public class ExecutionEngine {
             // ===========================================
             // 🧠 STATE (BEFORE)
             // ===========================================
-            State prevState = buildState(driver);
+            State prevState =
+                    StateFactory.build(driver);
+
             SessionState.markStateVisited(prevState);
 
             // ===========================================
-            // 🧠 GOAL
+            // 🎯 GOAL
             // ===========================================
             GoalEngine.update(driver);
 
             // ===========================================
             // 🧠 PLAN
             // ===========================================
-            Plan plan = PlanningEngine.getCurrentPlan();
+            Plan plan =
+                    PlanningEngine.getCurrentPlan();
 
-            if (plan == null || plan.completed || plan.failed) {
-                plan = PlanningEngine.build(GoalEngine.getCurrentGoal());
+            if (plan == null
+                    || plan.isCompleted()
+                    || plan.isFailed()) {
+
+                plan =
+                        PlanningEngine.build(driver);
             }
 
-            String currentStep = (plan != null) ? plan.getCurrentStep() : "NONE";
+            String currentStep =
+                    (plan != null)
+                            ? plan.getCurrentStep()
+                            : "NONE";
 
-            System.out.println("📌 Goal → " + safeGoal());
-            System.out.println("📌 Plan Step → " + currentStep);
+            System.out.println(
+                    "📌 Goal → "
+                            + safeGoal()
+            );
+
+            System.out.println(
+                    "📌 Plan Step → "
+                            + currentStep
+            );
 
             // ===========================================
-            // 🧠 DECISION
+            // 🧠 DECISION (PLAN FIRST)
             // ===========================================
-            String action = DecisionEngine.decide(driver, prevState);
-            System.out.println("🤖 Action → " + action);
+            String action;
+
+            String plannedAction =
+                    (plan != null)
+                            ? plan.getCurrentStep()
+                            : null;
+
+            // planner = primary source
+            if (plannedAction != null) {
+
+                action = plannedAction;
+
+                System.out.println(
+                        "🧠 Using Plan → "
+                                + action
+                );
+            }
+
+            // fallback to AI decision
+            else {
+
+                action =
+                        DecisionEngine.decide(
+                                driver,
+                                prevState
+                        );
+
+                System.out.println(
+                        "🧠 Fallback Decision → "
+                                + action
+                );
+            }
+
+            System.out.println(
+                    "🤖 Action → "
+                            + action
+            );
 
             // ===========================================
             // ⚙️ EXECUTION
             // ===========================================
-            boolean success = execute(action, driver);
+            boolean success =
+                    execute(action, driver);
 
             if (!success) {
-                SessionState.recordFailure(action, prevState);
+
+                SessionState.recordFailure(
+                        action,
+                        prevState
+                );
             }
 
             // ===========================================
             // 🧠 STATE (AFTER)
             // ===========================================
-            State nextState = buildState(driver);
+            State nextState =
+                    StateFactory.build(driver);
+
+            SessionState.markStateVisited(nextState);
 
             // ===========================================
             // 🔁 LOOP DETECTION
             // ===========================================
             LoopDetector.record(nextState);
-            boolean revisited = LoopDetector.isLooping(nextState);
+
+            boolean revisited =
+                    LoopDetector.isLooping(nextState);
 
             // ===========================================
-            // 🧠 PROGRESS
+            // 📈 PROGRESS
             // ===========================================
-            double progress = ProgressEngine.evaluateProgress(
-                    driver,
-                    prevState.url,
-                    nextState.url,
-                    prevState.domSize,
-                    nextState.domSize
-            );
+            double progress =
+                    ProgressEngine.evaluateProgress(
+                            driver,
+                            prevState,
+                            nextState
+                    );
 
-            boolean terminal = ProgressEngine.isTerminal(driver);
+            boolean terminal =
+                    ProgressEngine.isTerminal(
+                            driver,
+                            nextState
+                    );
 
-            if (progress > 0) stagnation = 0;
-            else stagnation++;
+            if (progress > 0) {
+                stagnation = 0;
+            } else {
+                stagnation++;
+            }
 
             // ===========================================
-            // 🧠 REWARD (single source)
+            // 🎁 REWARD
             // ===========================================
-            double reward = RewardEngine.calculate(
-                    prevState,
+            double reward =
+                    RewardEngine.calculate(
+                            prevState,
+                            nextState,
+                            action,
+                            success,
+                            revisited,
+                            progress,
+                            terminal
+                    );
+
+            SessionState.reward(
                     nextState,
-                    action,
-                    success,
-                    revisited,
-                    progress,
-                    terminal
+                    reward
             );
-
-            SessionState.reward(nextState, reward);
 
             // ===========================================
             // 🧠 LEARNING
@@ -131,7 +204,12 @@ public class ExecutionEngine {
                     reward
             );
 
-            BehaviorStore.record(prevState, action, success, reward);
+            BehaviorStore.record(
+                    prevState,
+                    action,
+                    success,
+                    reward
+            );
 
             BehaviorGraph.record(
                     prevState,
@@ -143,7 +221,7 @@ public class ExecutionEngine {
             );
 
             // ===========================================
-            // 🧠 SCENARIO TRACK
+            // 📚 SCENARIO TRACKING
             // ===========================================
             ScenarioTracker.record(
                     action,
@@ -155,28 +233,47 @@ public class ExecutionEngine {
             // ===========================================
             // 🧠 PLAN UPDATE
             // ===========================================
-            PlanningEngine.update(success);
+            PlanningEngine.update(
+                    success,
+                    driver
+            );
 
             // ===========================================
             // 🛑 EXIT CONDITIONS
             // ===========================================
             if (terminal) {
-                System.out.println("🏁 TERMINAL STATE REACHED");
+
+                System.out.println(
+                        "🏁 TERMINAL STATE REACHED"
+                );
+
                 break;
             }
 
-            if (plan != null && plan.completed) {
-                System.out.println("🏁 PLAN COMPLETED");
+            if (plan != null
+                    && plan.isCompleted()) {
+
+                System.out.println(
+                        "🏁 PLAN COMPLETED"
+                );
+
                 break;
             }
 
             if (ProgressEngine.isStuck(stagnation)) {
-                System.out.println("⚠️ STUCK → forcing replan");
-                PlanningEngine.build(GoalEngine.getCurrentGoal());
+
+                System.out.println(
+                        "⚠️ STUCK → forcing replan"
+                );
+
+                PlanningEngine.build(driver);
+
                 stagnation = 0;
             }
 
-            // 🔄 decay memory over time
+            // ===========================================
+            // 🔄 MEMORY DECAY
+            // ===========================================
             SessionState.decay();
             BehaviorStore.decay();
             BehaviorGraph.decayAll();
@@ -184,7 +281,7 @@ public class ExecutionEngine {
         }
 
         // ===========================================
-        // 📤 EXPORT SCENARIO
+        // 📤 EXPORT
         // ===========================================
         ScenarioTracker.printSmart();
         ScenarioExporter.exportFull();
@@ -193,54 +290,61 @@ public class ExecutionEngine {
     }
 
     // ===================================================
-    private static boolean execute(String action, WebDriver driver) {
+    // ⚙️ ACTION EXECUTOR
+    // ===================================================
+    private static boolean execute(
+            String action,
+            WebDriver driver
+    ) {
 
-        if (action == null) return false;
+        if (action == null) {
+            return false;
+        }
 
         try {
 
             switch (action) {
 
                 case "ClickAction":
-                    new ClickAction().execute(driver);
+                    new ClickAction()
+                            .execute(driver);
                     return true;
 
                 case "FormAction":
-                    new FormAction().execute(driver);
+                    new FormAction()
+                            .execute(driver);
                     return true;
 
                 case "NavigationAction":
-                    new NavigationAction().execute(driver);
+                    new NavigationAction()
+                            .execute(driver);
                     return true;
 
                 default:
+
+                    System.out.println(
+                            "❌ Unknown action: "
+                                    + action
+                    );
+
                     return false;
             }
 
         } catch (Exception e) {
 
-            System.out.println("❌ Failed: " + action + " | " + e.getMessage());
+            System.out.println(
+                    "❌ Failed: "
+                            + action
+                            + " | "
+                            + e.getMessage()
+            );
+
             return false;
         }
     }
 
     // ===================================================
-    private static State buildState(WebDriver driver) {
-
-        int domSize = driver.findElements(By.xpath("//*")).size();
-
-        boolean hasForm = !driver.findElements(By.tagName("form")).isEmpty();
-        boolean hasLinks = !driver.findElements(By.tagName("a")).isEmpty();
-
-        return new State(
-                driver.getCurrentUrl(),
-                domSize,
-                safeGoal(),
-                hasForm,
-                hasLinks
-        );
-    }
-
+    // 🎯 SAFE GOAL
     // ===================================================
     private static String safeGoal() {
 

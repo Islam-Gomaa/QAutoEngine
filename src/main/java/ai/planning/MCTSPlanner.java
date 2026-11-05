@@ -4,9 +4,8 @@ import ai.goal.GoalEngine;
 import ai.goal.GoalEngine.Goal;
 import ai.learning.State;
 import ai.learning.LoopDetector;
+import ai.learning.StateFactory;
 import engine.state.SessionState;
-
-import org.openqa.selenium.By;
 import org.openqa.selenium.WebDriver;
 
 import java.util.*;
@@ -27,7 +26,8 @@ public class MCTSPlanner {
 
         Goal goal = GoalEngine.getCurrentGoal();
 
-        State rootState = buildState(driver);
+        State rootState =
+                StateFactory.build(driver);
 
         MCTSNode root = new MCTSNode(null, rootState, null);
 
@@ -189,22 +189,5 @@ public class MCTSPlanner {
                 ))
                 .map(n -> n.action)
                 .orElse("NavigationAction");
-    }
-
-    // ===================================================
-    private static State buildState(WebDriver driver) {
-
-        int domSize = driver.findElements(By.xpath("//*")).size();
-
-        boolean hasForm = !driver.findElements(By.tagName("form")).isEmpty();
-        boolean hasLinks = !driver.findElements(By.tagName("a")).isEmpty();
-
-        return new State(
-                driver.getCurrentUrl(),
-                domSize,
-                "PLANNING",
-                hasForm,
-                hasLinks
-        );
     }
 }

@@ -37,7 +37,7 @@ public class EngineOrchestrator {
             // ===================================
             // 🧠 STATE
             // ===================================
-            State prevState = StateBuilder.from(driver);
+            State prevState =StateFactory.build(driver);
 
             // ===================================
             // 🧠 GOAL
@@ -49,8 +49,8 @@ public class EngineOrchestrator {
             // ===================================
             Plan plan = PlanningEngine.getCurrentPlan();
 
-            if (plan == null || plan.completed || plan.failed) {
-                plan = PlanningEngine.build(GoalEngine.getCurrentGoal());
+            if (plan == null || plan.isCompleted() || plan.isFailed()) {
+                plan = PlanningEngine.build(driver);
             }
 
             log("🎯 Goal → " + safeGoal());
@@ -74,7 +74,7 @@ public class EngineOrchestrator {
             // ===================================
             // 🧠 NEXT STATE
             // ===================================
-            State nextState = StateBuilder.from(driver);
+            State nextState = StateFactory.build(driver);
 
             // ===================================
             // 🔁 LOOP
@@ -88,11 +88,7 @@ public class EngineOrchestrator {
             double progress = ProgressEngine.evaluateProgress(
                     driver,
                     prevState,
-                    nextState,
-                    prevState.url,
-                    nextState.url,
-                    prevState.domSize,
-                    nextState.domSize
+                    nextState
             );
 
             boolean terminal =
@@ -121,10 +117,8 @@ public class EngineOrchestrator {
                     prevState,
                     nextState,
                     actionName,
-                    nextState.url,
                     success,
-                    reward,
-                    revisited
+                    reward
             );
 
             BehaviorStore.record(prevState, actionName, success, reward);
@@ -144,7 +138,10 @@ public class EngineOrchestrator {
             // ===================================
             // 🧠 PLAN UPDATE
             // ===================================
-            PlanningEngine.update(success);
+            PlanningEngine.update(
+                    success,
+                    driver
+            );
 
             // ===================================
             // 🛑 EXIT
@@ -154,14 +151,14 @@ public class EngineOrchestrator {
                 break;
             }
 
-            if (plan != null && plan.completed) {
+            if (plan != null && plan.isCompleted()) {
                 log("🏁 PLAN DONE");
                 break;
             }
 
             if (ProgressEngine.isStuck(stagnation)) {
                 log("⚠️ STUCK → Replan");
-                PlanningEngine.build(GoalEngine.getCurrentGoal());
+                PlanningEngine.build(driver);
                 stagnation = 0;
             }
         }

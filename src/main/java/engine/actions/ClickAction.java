@@ -1,5 +1,6 @@
 package engine.actions;
 
+import ai.learning.StateFactory;
 import engine.context.ContextEngine;
 import ai.intelligence.ProgressEngine;
 import ai.intelligence.ScenarioTracker;
@@ -30,7 +31,7 @@ public class ClickAction implements Action {
 
         if (elements.isEmpty()) return;
 
-        State prevState = buildState(driver);
+        State prevState = StateFactory.build(driver);
 
         // 🔥 Smart filtering + sorting
         elements = elements.stream()
@@ -64,17 +65,14 @@ public class ClickAction implements Action {
                 safeClick(driver, el);
                 Waits.waitForPageLoad(driver);
 
-                State after = buildState(driver);
+                State after = StateFactory.build(driver);
 
-                double progress = ProgressEngine.evaluateProgress(
-                        driver,
-                        before,
-                        after,
-                        before.url,
-                        after.url,
-                        before.domSize,
-                        after.domSize
-                );
+                double progress =
+                        ProgressEngine.evaluateProgress(
+                                driver,
+                                before,
+                                after
+                        );
 
                 if (progress > 1.5) {
 

@@ -3,6 +3,7 @@ package engine.actions;
 import ai.intelligence.ProgressEngine;
 import ai.intelligence.ScenarioTracker;
 import ai.learning.State;
+import ai.learning.StateFactory;
 import engine.state.SessionState;
 
 import org.openqa.selenium.*;
@@ -32,7 +33,7 @@ public class FormAction implements Action {
 
                 try {
 
-                    State before = buildState(driver);
+                    State before = StateFactory.build(driver);
 
                     fillForm(driver, form, lastError);
 
@@ -40,16 +41,12 @@ public class FormAction implements Action {
 
                     Waits.waitForPageLoad(driver);
 
-                    State after = buildState(driver);
+                    State after = StateFactory.build(driver);
 
                     double progress = ProgressEngine.evaluateProgress(
                             driver,
                             before,
-                            after,
-                            before.url,
-                            after.url,
-                            before.domSize,
-                            after.domSize
+                            after
                     );
 
                     if (progress > 2) {
