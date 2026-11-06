@@ -27,3 +27,13 @@
 - **Failures recorded:** Playwright first missed the redirect hop (fixed by not following redirects). Selenium BiDi stalled on two versions (root cause not isolated). `--cap-drop=ALL` crashed Chromium (fixed by adding back only `SYS_CHROOT`). Two of my own harness runs were invalid and discarded: a zsh word-splitting error and a mismatched driver.
 - Docker Desktop was started to run gate M6.
 - **Not measured:** Firefox.
+
+## Phase 3: Safety Kernel (complete; external review outstanding)
+
+- `ActionGate`: fixed decision order, interaction allowlist, scoped exceptions, authentication window, budgets, fail-closed errors.
+- `PlaywrightBrowser`: enforces the gate on every request, blocks service workers and WebSockets, never follows redirects, dismisses dialogs.
+- **Tests:** 56 policy unit tests; 17 browser tests judged by the server log, repeated four times without failure.
+- **Trap result:** zero server hits for every trap class. `/tools/nightly` is recorded as residual risk, not as a pass.
+- **Failures recorded:** blocked navigations raced with the next navigation; an `about:blank` reset made it worse; a fresh page per navigation fixed it.
+- **Self-review found four real holes**, each proven by a failing test first: destructive GET through `new Image()`, GraphQL over GET, dot segments escaping path scope, and the auth window relaxing link labels.
+- **Exit gate:** the plan calls for an independent security review. Only a self-review was possible here. Independent review stays a pre-pilot gate requirement.

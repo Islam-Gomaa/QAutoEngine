@@ -10,8 +10,33 @@
     </parent>
     <artifactId>qa-exec-web</artifactId>
     <description>Web executor and browser adapters.</description>
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>tech.wakeb</groupId>
+                <artifactId>qa-bom</artifactId>
+                <version>${project.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
     <dependencies>
         <dependency><groupId>tech.wakeb</groupId><artifactId>qa-core</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>tech.wakeb</groupId><artifactId>qa-fixtures</artifactId><version>${project.version}</version><scope>test</scope></dependency>
+        <dependency><groupId>org.seleniumhq.selenium</groupId><artifactId>selenium-java</artifactId><scope>test</scope></dependency>
+        <dependency><groupId>com.microsoft.playwright</groupId><artifactId>playwright</artifactId></dependency>
         <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>${junit.version}</version><scope>test</scope></dependency>
     </dependencies>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <environmentVariables><PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD>1</PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD></environmentVariables>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>
