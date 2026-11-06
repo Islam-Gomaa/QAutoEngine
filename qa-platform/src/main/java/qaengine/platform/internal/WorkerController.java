@@ -23,6 +23,7 @@ import qaengine.contracts.WorkerContracts.LoginProfile;
 import qaengine.contracts.WorkerContracts.LoginSecret;
 import qaengine.contracts.WorkerContracts.RunCompletion;
 import qaengine.contracts.WorkerContracts.RunLimits;
+import qaengine.contracts.WorkerContracts.RunScope;
 import qaengine.contracts.WorkerContracts.StepReport;
 import qaengine.core.evidence.EvidenceType;
 import qaengine.platform.audit.AuditLog;
@@ -94,16 +95,30 @@ public class WorkerController {
                        ep.max_actions, ep.max_pages, ep.max_depth, ep.max_minutes,
                        e.login_method, e.login_path, e.login_submit_path, e.login_success_path,
                        (SELECT array_agg(origin) FROM allowed_host h WHERE h.organization_id = e.organization_id AND h.environment_id = e.id),
-                       e.channel, e.api_spec_path, e.api_slow_ms, e.api_seed_paths
+                       e.channel, e.api_spec_path, e.api_slow_ms, e.api_seed_paths, r.suite_id, r.max_pages
                 FROM test_run r
                 JOIN environment e ON e.organization_id = r.organization_id AND e.id = r.environment_id
                 JOIN execution_policy ep ON ep.organization_id = e.organization_id AND ep.environment_id = e.id
                 WHERE r.organization_id = ? AND r.id = ?
                 """).params(c.organizationId(), c.runId()).query((rs, n) -> new JobAssignment(c.jobId(), c.runId(), c.attempt(), token,
                 rs.getString(1), rs.getLong(2), rs.getString(3), rs.getString(4), array(rs, 16), array(rs, 5), array(rs, 6),
-                new RunLimits(rs.getInt(8), rs.getInt(9), rs.getInt(10), rs.getInt(11), rs.getString(4).equals("PRODUCTION") ? 1 : 2), array(rs, 7),
+                new RunLimits(rs.getInt(8), rs.getObject(22) == null ? rs.getInt(9) : Math.min(rs.getInt(9), rs.getInt(22)), rs.getInt(10), rs.getInt(11), rs.getString(4).equals("PRODUCTION") ? 1 : 2), array(rs, 7),
                 rs.getString(12) == null ? null : new LoginProfile(rs.getString(12), rs.getString(13), rs.getString(14), rs.getString(15)),
-                rs.getString(17), new ApiProfile(rs.getString(18), rs.getLong(19), array(rs, 20)))).single());
+                rs.getString(17), new ApiProfile(rs.getString(18), rs.getLong(19), array(rs, 20)), scope(c.organizationId(), rs.getObject(21, UUID.class), rs.getString(1)))).single());
+    }
+
+    /** The last recorded step of each automated case in the suite says what to repeat. */
+    private RunScope scope(UUID org, UUID suite, String baseUrl) {
+        if (suite == null) return null;
+        record Target(String url, String label) {}
+        List<Target> targets = db.sql("""
+                SELECT DISTINCT ON (c.id) v.steps -> -1 ->> 'url', v.steps -> -1 ->> 'label'
+                FROM test_case c JOIN test_case_version v ON v.organization_id = c.organization_id AND v.test_case_id = c.id
+                WHERE c.organization_id = ? AND c.suite_id = ? AND c.source = 'AUTOMATED' AND c.archived_at IS NULL
+                ORDER BY c.id, v.version DESC
+                """).params(org, suite).query((rs, n) -> new Target(rs.getString(1), rs.getString(2))).list();
+        return new RunScope(targets.stream().map(Target::url).filter(java.util.Objects::nonNull).distinct().toList(),
+                targets.stream().map(Target::label).filter(java.util.Objects::nonNull).distinct().toList());
     }
 
     private static List<String> array(java.sql.ResultSet rs, int column) throws java.sql.SQLException {
@@ -220,6 +235,25 @@ public class WorkerController {
                 """).params(org, run, attempt, step, org, run, attempt).query(String.class).single();
     }
 
+    /** Each case gets the worst verdict of the steps that repeated it, against its current version. */
+    private void recordSuiteResults(UUID org, UUID run, int attempt, UUID suite) {
+        record Case(UUID version, String url, String label) {}
+        List<Case> cases = db.sql("""
+                SELECT DISTINCT ON (c.id) v.id, v.steps -> -1 ->> 'url', v.steps -> -1 ->> 'label'
+                FROM test_case c JOIN test_case_version v ON v.organization_id = c.organization_id AND v.test_case_id = c.id
+                WHERE c.organization_id = ? AND c.suite_id = ? AND c.source = 'AUTOMATED' AND c.archived_at IS NULL
+                ORDER BY c.id, v.version DESC
+                """).params(org, suite).query((rs, n) -> new Case(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3))).list();
+        for (Case c : cases) {
+            db.sql("""
+                    SELECT verdict FROM run_step
+                    WHERE organization_id = ? AND run_id = ? AND attempt = ? AND (url = ? OR (label <> '' AND label = ?))
+                    ORDER BY array_position(ARRAY['FAIL','BLOCKED','INCONCLUSIVE','PASS'], verdict) LIMIT 1
+                    """).params(org, run, attempt, c.url(), c.label()).query(String.class).optional()
+                    .ifPresent(verdict -> testCases.recordResult(org, run, c.version(), verdict));
+        }
+    }
+
     private static String path(String url) {
         return url == null ? "" : url.replaceAll("^[a-z]+://[^/]+", "").replaceAll("\\?.*$", "");
     }
@@ -232,6 +266,14 @@ public class WorkerController {
         UUID org = s.organizationId();
         UUID run = runOf(s);
         UUID project = projectOf(org, run);
+        UUID suite = db.sql("SELECT suite_id FROM test_run WHERE organization_id = ? AND id = ?").params(org, run).query((rs, n) -> java.util.Optional.ofNullable(rs.getObject(1, UUID.class))).single().orElse(null);
+        if (suite != null) {
+            recordSuiteResults(org, run, s.attempt(), suite);
+            JobQueue.Terminal done = JobQueue.Terminal.valueOf(body.outcome());
+            if (!queue.complete(org, jobId, s.attempt(), done, null, body.stopReason())) throw new Fenced();
+            audit.record(org, project, "worker", "RUN_FINISHED", run.toString(), done + " " + body.stopReason());
+            return ResponseEntity.noContent().build();
+        }
         record Passed(int sequence, String url) {}
         List<Passed> passed = db.sql("""
                 SELECT min(sequence), url FROM run_step
@@ -254,7 +296,7 @@ public class WorkerController {
         }
         JobQueue.Terminal outcome = JobQueue.Terminal.valueOf(body.outcome());
         if (!queue.complete(org, jobId, s.attempt(), outcome, null, body.stopReason())) throw new Fenced();
-        audit.record(org, "worker", "RUN_FINISHED", run.toString(), outcome + " " + body.stopReason());
+        audit.record(org, project, "worker", "RUN_FINISHED", run.toString(), outcome + " " + body.stopReason());
         return ResponseEntity.noContent().build();
     }
 }

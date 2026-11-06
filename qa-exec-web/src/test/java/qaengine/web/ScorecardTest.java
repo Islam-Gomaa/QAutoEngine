@@ -184,4 +184,26 @@ class ScorecardTest {
         var gate = new ActionGate(ExecutionPolicy.readOnly(EnvironmentClass.STAGING, TargetScope.of("https://example.com")), Clock.systemUTC(), l -> { });
         assertThrows(SecurityException.class, () -> new PlaywrightBrowser(gate));
     }
+
+    static RunResult visit(List<String> urls, Path dir) {
+        var scope = TargetScope.of(fixture.baseUrl());
+        var policy = new ExecutionPolicy(ExecutionMode.READ_ONLY, EnvironmentClass.LOCAL, scope, List.of(), Set.of(), RunBudget.defaults());
+        var gate = new ActionGate(policy, Clock.systemUTC(), l -> { });
+        var collector = new EvidenceCollector(new LocalEvidenceSink(dir), new Redactor(List.of(FixtureServer.TEST_PASSWORD)), 1L << 30);
+        try (var browser = new PlaywrightBrowser(gate)) {
+            return new ExplorationEngine(gate, browser, new VerdictEngine(scope), collector, 1, Clock.systemUTC(), List.of()).visitOnly(urls);
+        }
+    }
+
+    @Test
+    void savedCasesRepeatOnlyTheirOwnPages(@TempDir Path dir) {
+        RunResult r = visit(List.of(fixture.url("/")), dir);
+        assertEquals(1, r.steps().size(), "the start page has links, and none are followed");
+    }
+
+    @Test
+    void savedCasesStillPassTheGate(@TempDir Path dir) {
+        RunResult r = visit(List.of("https://real-target.example/"), dir);
+        assertTrue(r.steps().stream().noneMatch(s -> s.verdict() == Verdict.PASS), "an outside page is never visited as a pass");
+    }
 }

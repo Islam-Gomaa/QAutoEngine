@@ -13,7 +13,10 @@ public final class WorkerContracts {
     public record JobAssignment(UUID jobId, UUID runId, int attempt, String jobToken, String startUrl, long seed, String mode,
                                 String environmentClass, List<String> allowedOrigins, List<String> includePaths,
                                 List<String> excludePaths, RunLimits limits, List<String> maskSelectors, LoginProfile login,
-                                String channel, ApiProfile api) {}
+                                String channel, ApiProfile api, RunScope scope) {}
+
+    /** Null for a full exploration. Otherwise only these saved cases run. */
+    public record RunScope(List<String> urls, List<String> labels) {}
 
     /** How to test an API. The spec path is relative to the environment's base URL. */
     public record ApiProfile(String specPath, long slowMillis, List<String> seedPaths) {}

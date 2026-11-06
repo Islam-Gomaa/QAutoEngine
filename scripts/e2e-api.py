@@ -45,7 +45,7 @@ while time.time() < end:
     time.sleep(2)
 check("API run finished", r["status"] == "SUCCEEDED", f"status={r['status']} stop={r['stopReason']}")
 steps = call("GET", f"/api/v1/projects/{project}/runs/{run}/steps")
-defects = call("GET", f"/api/v1/projects/{project}/defects")
+defects = call("GET", f"/api/v1/projects/{project}/defects?size=200")["items"]
 found = sorted((d["type"], d["url"].replace(FIX, "")) for d in defects)
 print("steps", len(steps), "defects", len(defects))
 for d in sorted(defects, key=lambda x: x["severity"]): print("  ", d["severity"], d["type"], d["url"].replace(FIX, ""))
@@ -65,7 +65,7 @@ body = call("GET", f"/api/v1/projects/{project}/evidence/{ev[0]['id']}/content",
 check("evidence holds the exchange", b'"status":200' in body)
 summary = call("GET", f"/api/v1/projects/{project}/summary")
 check("summary reflects stored data", summary["openDefects"] == len(defects))
-cases = call("GET", f"/api/v1/projects/{project}/test-cases")
+cases = call("GET", f"/api/v1/projects/{project}/test-cases?size=200")["items"]
 check("API test cases saved", sum(1 for c in cases if c["title"].startswith("API: ")) > 20, f"cases={len(cases)}")
 
 print("== The fixture's own request log")

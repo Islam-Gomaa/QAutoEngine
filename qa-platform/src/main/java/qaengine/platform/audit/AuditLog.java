@@ -15,7 +15,11 @@ public class AuditLog {
     }
 
     public void record(UUID organizationId, String actor, String action, String object, String detail) {
-        db.sql("INSERT INTO audit_event (organization_id, actor, action, object, detail) VALUES (?,?,?,?,?)")
-                .params(organizationId, actor, action, object, detail).update();
+        record(organizationId, null, actor, action, object, detail);
+    }
+
+    public void record(UUID organizationId, UUID projectId, String actor, String action, String object, String detail) {
+        db.sql("INSERT INTO audit_event (organization_id, project_id, actor, action, object, detail) VALUES (?,?,?,?,?,?)")
+                .params(organizationId, projectId, actor, action, object, detail).update();
     }
 }

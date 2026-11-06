@@ -111,7 +111,8 @@ public class JobQueue {
                 RETURNING id
                 """).params(organizationId, runId).query(UUID.class).list();
         if (jobs.isEmpty()) return false;
-        audit.record(organizationId, actor, "RUN_CANCEL_REQUESTED", runId.toString(), "");
+        UUID project = db.sql("SELECT project_id FROM test_run WHERE organization_id = ? AND id = ?").params(organizationId, runId).query(UUID.class).single();
+        audit.record(organizationId, project, actor, "RUN_CANCEL_REQUESTED", runId.toString(), "");
         int queued = db.sql("""
                 UPDATE run_job SET state = 'CANCELLED' WHERE organization_id = ? AND run_id = ? AND state = 'QUEUED'
                 """).params(organizationId, runId).update();

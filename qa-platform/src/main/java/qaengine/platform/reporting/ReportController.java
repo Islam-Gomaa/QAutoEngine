@@ -105,7 +105,7 @@ public class ReportController {
     public ResponseEntity<String> html(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID runId) {
         access.require(p, projectId, Access.Level.VIEWER);
         requireRun(p, projectId, runId);
-        audit.record(p.organizationId(), p.email(), "REPORT_EXPORTED", runId.toString(), "html");
+        audit.record(p.organizationId(), projectId, p.email(), "REPORT_EXPORTED", runId.toString(), "html");
         var verdicts = grouped("SELECT verdict, count(*) FROM run_step WHERE organization_id = ? AND run_id = ? GROUP BY verdict", p.organizationId(), runId);
         StringBuilder rows = new StringBuilder();
         for (DefectRow d : runDefects(p.organizationId(), runId)) {
@@ -130,7 +130,7 @@ public class ReportController {
     public ResponseEntity<byte[]> excel(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID runId) throws IOException {
         access.require(p, projectId, Access.Level.VIEWER);
         requireRun(p, projectId, runId);
-        audit.record(p.organizationId(), p.email(), "REPORT_EXPORTED", runId.toString(), "xlsx");
+        audit.record(p.organizationId(), projectId, p.email(), "REPORT_EXPORTED", runId.toString(), "xlsx");
         try (XSSFWorkbook book = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             Sheet sheet = book.createSheet("Defects");
             String[] headers = {"Severity", "Type", "Title", "URL", "Status", "Occurrences"};

@@ -15,6 +15,14 @@ import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 @Configuration
 public class SecurityConfig {
 
+    /** Security creates this filter itself, so the servlet container must not register it a second time. */
+    @Bean
+    org.springframework.boot.web.servlet.FilterRegistrationBean<FreshPrincipalFilter> freshPrincipalRegistration(FreshPrincipalFilter filter) {
+        var registration = new org.springframework.boot.web.servlet.FilterRegistrationBean<>(filter);
+        registration.setEnabled(false);
+        return registration;
+    }
+
     @Bean
     PasswordEncoder passwordEncoder() {
         return Argon2PasswordEncoder.defaultsForSpringSecurity_v5_8();
@@ -33,7 +41,7 @@ public class SecurityConfig {
 
     @Bean
     @Order(2)
-    SecurityFilterChain application(HttpSecurity http) throws Exception {
+    SecurityFilterChain application(HttpSecurity http, FreshPrincipalFilter freshPrincipal) throws Exception {
         return http
                 .csrf(c -> c.spa())
                 .headers(h -> h
@@ -43,6 +51,7 @@ public class SecurityConfig {
                 .formLogin(f -> f.disable())
                 .httpBasic(b -> b.disable())
                 .logout(l -> l.disable())
+                .addFilterAfter(freshPrincipal, org.springframework.security.web.context.SecurityContextHolderFilter.class)
                 .authorizeHttpRequests(a -> a
                         .requestMatchers("/api/v1/auth/login", "/api/v1/auth/csrf", "/actuator/health").permitAll()
                         .requestMatchers("/", "/index.html", "/assets/**", "/favicon.svg").permitAll()

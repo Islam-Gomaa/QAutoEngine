@@ -51,7 +51,7 @@ check("logout was not followed", not any(s["url"].endswith("/logout") and s["ver
 print("== Searching for the canary")
 needle = CANARY.encode()
 check("not in API steps", needle not in json.dumps(steps).encode())
-check("not in defects", needle not in json.dumps(call("GET", f"/api/v1/projects/{project}/defects")).encode())
+check("not in defects", needle not in json.dumps(call("GET", f"/api/v1/projects/{project}/defects?size=200")["items"]).encode())
 check("not in any service log", needle not in sh("docker compose --profile fixture logs --no-color 2>&1"))
 check("not in the audit log", needle not in sh("docker compose exec -T postgres psql -U qaengine -d qaengine -c \"select * from audit_event\""))
 dump = sh("docker compose exec -T postgres pg_dump -U qaengine --data-only qaengine")

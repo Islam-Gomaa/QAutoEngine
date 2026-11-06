@@ -34,8 +34,8 @@ while time.time() < deadline:
     time.sleep(3)
 print("status", status)
 steps = call("GET", f"/api/v1/projects/{project}/runs/{run}/steps")
-defects = call("GET", f"/api/v1/projects/{project}/defects")
-cases = call("GET", f"/api/v1/projects/{project}/test-cases")
+defects = call("GET", f"/api/v1/projects/{project}/defects?size=200")["items"]
+cases = call("GET", f"/api/v1/projects/{project}/test-cases?size=200")["items"]
 print("steps", len(steps), "defects", len(defects), "test cases", len(cases))
 for d in sorted(defects, key=lambda x: x["url"]):
     print(" ", d["severity"], d["type"], d["url"].replace("http://fixture.qa.internal:8090", ""))

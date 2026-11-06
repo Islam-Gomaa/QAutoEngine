@@ -211,4 +211,13 @@ class ApiScorecardTest {
         var x = new ApiClient(gate, "http://blocked.invalid", null).send("GET", "/x", Map.of(), null);
         assertEquals(ApiClient.Exchange.Outcome.BLOCKED, x.outcome());
     }
+
+    @Test
+    void savedCasesRepeatOnlyTheirOwnScenarios(@TempDir Path dir) {
+        String label = first.steps().stream().filter(st -> st.verdict() == Verdict.PASS && st.label().startsWith("POSITIVE GET")).findFirst().orElseThrow().label();
+        var config = new ApiRunner.Config(null, FixtureServer.API_ADMIN_TOKEN, FixtureServer.API_USER_TOKEN, 0, List.of(), Set.of(label));
+        RunResult r = runner(gate(RunBudget.defaults()), dir, config).run();
+        var called = r.steps().stream().map(StepRecord::label).filter(l -> !l.startsWith("DISCOVERY")).toList();
+        assertEquals(List.of(label), called, "reading the contract is the only other call");
+    }
 }

@@ -53,6 +53,7 @@ public final class ExplorationEngine {
     private java.util.function.BooleanSupplier stopRequested = () -> false;
     private String loginPath;
     private boolean sessionLost;
+    private boolean listedOnly;
     private java.util.function.Consumer<StepRecord> stepListener = s -> { };
     private java.util.function.Consumer<Observation> findingListener = o -> { };
 
@@ -81,6 +82,13 @@ public final class ExplorationEngine {
         return this;
     }
 
+    /** Repeats exactly these pages and follows nothing, for running saved test cases. */
+    public RunResult visitOnly(List<String> urls) {
+        listedOnly = true;
+        for (String url : urls) frontier.add(new Candidate(url, 0, null, 0));
+        return drain();
+    }
+
     /** Extra starting points, such as pages only reachable after login. */
     public ExplorationEngine seed(String url) {
         frontier.add(new Candidate(url, 0, null, 0));
@@ -95,8 +103,12 @@ public final class ExplorationEngine {
     }
 
     public RunResult explore(String startUrl) {
-        Instant deadline = clock.instant().plus(gate.policy().budget().maxDuration());
         frontier.add(new Candidate(startUrl, 0, null, 0));
+        return drain();
+    }
+
+    private RunResult drain() {
+        Instant deadline = clock.instant().plus(gate.policy().budget().maxDuration());
         RunResult.StopReason stop = RunResult.StopReason.EXHAUSTED;
         while (!frontier.isEmpty()) {
             if (stopRequested.getAsBoolean()) { stop = RunResult.StopReason.CANCELLED; break; }
@@ -147,7 +159,7 @@ public final class ExplorationEngine {
         if (!loaded || snapshot == null) return;
         boolean newState = states.putIfAbsent(state, snapshot.url()) == null;
         if (via != null) transitions.add(new RunResult.Transition(parentState(c.parentStep()), state, via.label()));
-        if (!newState) return;
+        if (!newState || listedOnly) return;
         expand(snapshot, c, seq);
     }
 

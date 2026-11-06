@@ -39,6 +39,12 @@ public class CredentialService {
         return id;
     }
 
+    public void replace(UUID org, UUID id, Material material) {
+        var sealed = box.seal(json.writeValueAsString(material), owner(org, id));
+        db.sql("UPDATE credential SET wrapped_key = ?, ciphertext = ? WHERE organization_id = ? AND id = ?")
+                .params(sealed.wrappedKey(), sealed.ciphertext(), org, id).update();
+    }
+
     /** The seed stays on the server. Only a current code is released. */
     public LoginSecret release(UUID org, UUID id) {
         var sealed = db.sql("SELECT wrapped_key, ciphertext FROM credential WHERE organization_id = ? AND id = ?").params(org, id)

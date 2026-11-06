@@ -33,9 +33,14 @@ import tools.jackson.databind.json.JsonMapper;
 public final class ApiRunner {
 
     /** @param spec path to the spec, or null to search well-known paths */
-    public record Config(String spec, String primaryToken, String lowPrivilegeToken, long pauseMillis, List<String> seeds) {
+    public record Config(String spec, String primaryToken, String lowPrivilegeToken, long pauseMillis, List<String> seeds, Set<String> onlyLabels) {
         public Config {
             seeds = seeds == null ? List.of() : List.copyOf(seeds);
+            onlyLabels = onlyLabels == null ? null : Set.copyOf(onlyLabels);
+        }
+
+        public Config(String spec, String primaryToken, String lowPrivilegeToken, long pauseMillis, List<String> seeds) {
+            this(spec, primaryToken, lowPrivilegeToken, pauseMillis, seeds, null);
         }
     }
 
@@ -80,12 +85,14 @@ public final class ApiRunner {
         operations:
         for (ApiOperation op : operations) {
             for (ApiScenario scenario : generator.generate(op)) {
+                if (config.onlyLabels() != null && !config.onlyLabels().contains(scenario.label())) continue;
                 if (stop.getAsBoolean()) { reason = RunResult.StopReason.CANCELLED; break operations; }
                 Decision allowed = gate.decideAction(new ActionRequest(ActionRequest.Kind.API_CALL, null, Map.of()));
                 if (!allowed.allowed()) { reason = RunResult.StopReason.BUDGET; break operations; }
                 execute(scenario);
             }
-            if (reason == RunResult.StopReason.EXHAUSTED && op.method().equals("GET") && !op.secured()) measure(op);
+            if (reason == RunResult.StopReason.EXHAUSTED && op.method().equals("GET") && !op.secured()
+                    && (config.onlyLabels() == null || config.onlyLabels().contains("RESPONSE_TIME " + op.label()))) measure(op);
         }
         return new RunResult(steps, new ArrayList<>(observations.values()), Map.of(), List.of(), reason);
     }

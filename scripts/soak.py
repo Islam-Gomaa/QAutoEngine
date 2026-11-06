@@ -38,7 +38,7 @@ for i in range(RUNS):
         status = call("GET", f"/api/v1/projects/{project}/runs/{run}")["status"]
         if status not in ("QUEUED", "RUNNING"): break
         time.sleep(2)
-    defects = call("GET", f"/api/v1/projects/{project}/defects")
+    defects = call("GET", f"/api/v1/projects/{project}/defects?size=200")["items"]
     occ = sorted({d["occurrences"] for d in defects})
     times.append(time.time() - start)
     good = status == "SUCCEEDED" and len(defects) == 7 and occ == [i + 1]

@@ -10,6 +10,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -30,7 +31,11 @@ import qaengine.platform.shared.Principal;
 public class CredentialController {
 
     public record CreateCredential(@NotBlank String name, String username, String password, String totpSeed, String cookieName, String cookieValue, String lowPrivilegeToken) {}
-    public record CredentialView(UUID id, String name) {}
+    /** Names and where they are used. There is no field here, or anywhere, that carries a value. */
+    public record CredentialView(UUID id, String name, java.time.OffsetDateTime createdAt, List<String> usedBy) {}
+    public record Rotate(String username, String password, String totpSeed, String cookieName, String cookieValue, String lowPrivilegeToken) {}
+    public record LoginProfile(UUID environmentId, String environmentName, String applicationName, String channel, String method, UUID credentialId, String credentialName,
+                               String loginPath, String submitPath, String successPath) {}
     public record LoginConfig(String method, UUID credentialId, String loginPath, String submitPath, String successPath) {}
 
     private static final Set<String> METHODS = Set.of("PASSWORD", "TOTP", "SESSION_IMPORT", "API_TOKEN");
@@ -50,8 +55,12 @@ public class CredentialController {
     @GetMapping("/credentials")
     public List<CredentialView> list(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId) {
         access.require(p, projectId, Access.Level.PROJECT_ADMIN);
-        return db.sql("SELECT id, name FROM credential WHERE organization_id = ? AND project_id = ? ORDER BY name")
-                .params(p.organizationId(), projectId).query((rs, n) -> new CredentialView(rs.getObject(1, UUID.class), rs.getString(2))).list();
+        return db.sql("""
+                SELECT c.id, c.name, c.created_at,
+                       ARRAY(SELECT e.name FROM environment e WHERE e.organization_id = c.organization_id AND e.login_credential_id = c.id AND e.archived_at IS NULL ORDER BY e.name)
+                FROM credential c WHERE c.organization_id = ? AND c.project_id = ? ORDER BY c.name
+                """).params(p.organizationId(), projectId).query((rs, n) -> new CredentialView(rs.getObject(1, UUID.class), rs.getString(2), rs.getObject(3, java.time.OffsetDateTime.class),
+                java.util.Arrays.asList((String[]) rs.getArray(4).getArray()))).list();
     }
 
     @PostMapping("/credentials")
@@ -61,8 +70,58 @@ public class CredentialController {
         access.require(p, projectId, Access.Level.PROJECT_ADMIN);
         UUID id = credentials.store(p.organizationId(), projectId, body.name(),
                 new CredentialService.Material(body.username(), body.password(), body.totpSeed(), body.cookieName(), body.cookieValue(), body.lowPrivilegeToken()));
-        audit.record(p.organizationId(), p.email(), "CREDENTIAL_CREATED", id.toString(), body.name());
-        return new CredentialView(id, body.name());
+        audit.record(p.organizationId(), projectId, p.email(), "CREDENTIAL_CREATED", id.toString(), body.name());
+        return new CredentialView(id, body.name(), java.time.OffsetDateTime.now(), List.of());
+    }
+
+    private void requireCredential(Principal p, UUID projectId, UUID id) {
+        boolean ok = db.sql("SELECT count(*) FROM credential WHERE organization_id = ? AND project_id = ? AND id = ?").params(p.organizationId(), projectId, id).query(Long.class).single() == 1;
+        if (!ok) throw new NotFoundException("Credential");
+    }
+
+    /** Replaces the sealed material. The old value cannot be read back, so all fields are given again. */
+    @PutMapping("/credentials/{id}")
+    @Transactional
+    public void rotate(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID id, @RequestBody Rotate body) {
+        access.require(p, projectId, Access.Level.PROJECT_ADMIN);
+        requireCredential(p, projectId, id);
+        credentials.replace(p.organizationId(), id, new CredentialService.Material(body.username(), body.password(), body.totpSeed(), body.cookieName(), body.cookieValue(), body.lowPrivilegeToken()));
+        audit.record(p.organizationId(), projectId, p.email(), "CREDENTIAL_ROTATED", id.toString(), "");
+    }
+
+    @DeleteMapping("/credentials/{id}")
+    @Transactional
+    public void delete(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID id) {
+        access.require(p, projectId, Access.Level.PROJECT_ADMIN);
+        requireCredential(p, projectId, id);
+        long inUse = db.sql("SELECT count(*) FROM environment WHERE organization_id = ? AND login_credential_id = ?").params(p.organizationId(), id).query(Long.class).single();
+        if (inUse > 0) throw new ConflictException("This credential is used by a login profile");
+        db.sql("DELETE FROM credential WHERE organization_id = ? AND id = ?").params(p.organizationId(), id).update();
+        audit.record(p.organizationId(), projectId, p.email(), "CREDENTIAL_DELETED", id.toString(), "");
+    }
+
+    @GetMapping("/login-profiles")
+    public List<LoginProfile> loginProfiles(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId) {
+        access.require(p, projectId, Access.Level.PROJECT_ADMIN);
+        return db.sql("""
+                SELECT e.id, e.name, t.name, e.channel, e.login_method, e.login_credential_id, c.name, e.login_path, e.login_submit_path, e.login_success_path
+                FROM environment e JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id
+                LEFT JOIN credential c ON c.organization_id = e.organization_id AND c.id = e.login_credential_id
+                WHERE e.organization_id = ? AND t.project_id = ? AND e.archived_at IS NULL ORDER BY t.name, e.name
+                """).params(p.organizationId(), projectId).query((rs, n) -> new LoginProfile(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5),
+                rs.getObject(6, UUID.class), rs.getString(7), rs.getString(8), rs.getString(9), rs.getString(10))).list();
+    }
+
+    @DeleteMapping("/environments/{environmentId}/login")
+    @Transactional
+    public void clearLogin(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID environmentId) {
+        access.require(p, projectId, Access.Level.PROJECT_ADMIN);
+        int updated = db.sql("""
+                UPDATE environment e SET login_method = NULL, login_credential_id = NULL, login_path = NULL, login_submit_path = NULL, login_success_path = NULL
+                FROM target t WHERE t.organization_id = e.organization_id AND t.id = e.target_id AND e.organization_id = ? AND e.id = ? AND t.project_id = ?
+                """).params(p.organizationId(), environmentId, projectId).update();
+        if (updated == 0) throw new NotFoundException("Environment");
+        audit.record(p.organizationId(), projectId, p.email(), "LOGIN_PROFILE_CLEARED", environmentId.toString(), "");
     }
 
     @PutMapping("/environments/{environmentId}/login")
@@ -85,6 +144,6 @@ public class CredentialController {
                 UPDATE environment SET login_method = ?, login_credential_id = ?, login_path = ?, login_submit_path = ?, login_success_path = ?
                 WHERE organization_id = ? AND id = ?
                 """).params(body.method(), body.credentialId(), body.loginPath(), body.submitPath(), body.successPath(), p.organizationId(), environmentId).update();
-        audit.record(p.organizationId(), p.email(), "LOGIN_PROFILE_SET", environmentId.toString(), body.method());
+        audit.record(p.organizationId(), projectId, p.email(), "LOGIN_PROFILE_SET", environmentId.toString(), body.method());
     }
 }

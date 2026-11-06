@@ -116,7 +116,7 @@ public final class WorkerMain {
                 }
                 engine.sessionEndsAt(job.login().loginPath()).seed(base(job) + job.login().successPath());
             }
-            RunResult result = engine.explore(job.startUrl());
+            RunResult result = job.scope() == null ? engine.explore(job.startUrl()) : engine.visitOnly(job.scope().urls());
             if (lost.get()) return;
             String outcome = result.stop() == RunResult.StopReason.CANCELLED ? "CANCELLED" : "SUCCEEDED";
             platform.complete(new RunCompletion(outcome, result.stop().name(), result.steps().size(), result.states()));
@@ -140,7 +140,8 @@ public final class WorkerMain {
             var profile = job.api();
             var selector = proxy == null || proxy.isBlank() ? null : ProxySelector.of(proxyAddress(proxy));
             var client = new ApiClient(gate, job.startUrl(), selector);
-            var config = new ApiRunner.Config(profile.specPath(), secret == null ? null : secret.password(), secret == null ? null : secret.lowPrivilegeToken(), PAUSE_MILLIS, profile.seedPaths());
+            var config = new ApiRunner.Config(profile.specPath(), secret == null ? null : secret.password(), secret == null ? null : secret.lowPrivilegeToken(), PAUSE_MILLIS, profile.seedPaths(),
+                    job.scope() == null ? null : java.util.Set.copyOf(job.scope().labels()));
             RunResult result = new ApiRunner(gate, client, new ApiVerdictEngine(profile.slowMillis()), evidence, config)
                     .stopWhen(() -> cancelled.get() || lost.get())
                     .onProgress(step -> call(() -> platform.steps(List.of(sanitizer.step(step)))), o -> call(() -> platform.finding(sanitizer.finding(o))))

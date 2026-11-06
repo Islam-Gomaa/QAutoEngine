@@ -183,11 +183,33 @@ class WorkerApiTest extends IntegrationTestBase {
         String trace = mvc.perform(get("/api/v1/projects/" + project + "/defects/" + defect).with(as(admin))).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         assertTrue(trace.contains("SCREENSHOT"), "evidence");
         assertTrue(trace.contains("\"url\":\"http://127.0.0.1:1/\""), "repro path starts at the start page");
-        assertTrue(trace.contains("testCases\":[\""), "linked test case");
+        assertTrue(trace.contains("testCases\":[{"), "linked test case");
         String cases = mvc.perform(get("/api/v1/projects/" + project + "/test-cases").with(as(admin))).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         assertTrue(cases.contains("Reproduce: Page returned a server error at /crash"));
         assertTrue(cases.contains("Page loads: /"));
         mvc.perform(get("/api/v1/projects/" + project + "/defects/" + defect).with(as(outsider))).andExpect(status().isNotFound());
+    }
+
+    @Test void suiteRunsCarryTheirScopeAndRecordResultsOnSavedCases() throws Exception {
+        UUID suite = UUID.randomUUID(), testCase = UUID.randomUUID(), manual = UUID.randomUUID(), version = UUID.randomUUID();
+        db.sql("INSERT INTO test_suite (organization_id, id, project_id, name) VALUES (?,?,?, 's')").params(org, suite, project).update();
+        db.sql("INSERT INTO test_case (organization_id, id, project_id, natural_key, title, suite_id) VALUES (?,?,?, 'page:/a', 'A', ?)").params(org, testCase, project, suite).update();
+        db.sql("INSERT INTO test_case (organization_id, id, project_id, natural_key, title, suite_id, source) VALUES (?,?,?, 'manual:x', 'M', ?, 'MANUAL')").params(org, manual, project, suite).update();
+        db.sql("INSERT INTO test_case_version (organization_id, id, test_case_id, version, steps, content_hash) VALUES (?,?,?, 1, ?::jsonb, 'h')")
+                .params(org, version, testCase, "[{\"kind\":\"NAVIGATE_LINK\",\"url\":\"http://127.0.0.1:1/a\",\"label\":\"A\"}]").update();
+        db.sql("UPDATE test_run SET suite_id = ? WHERE organization_id = ? AND id = ?").params(suite, org, run).update();
+        String json = mvc.perform(post("/internal/v1/jobs/claim").header("X-Worker-Key", KEY).contentType(MediaType.APPLICATION_JSON).content("{}")).andReturn().getResponse().getContentAsString();
+        assertTrue(json.contains("\"urls\":[\"http://127.0.0.1:1/a\"]"), json);
+        String token = json.replaceAll(".*\"jobToken\":\"([^\"]+)\".*", "$1");
+        String path = "/internal/v1/jobs/" + job;
+        mvc.perform(post(path + "/start").header("Authorization", "Bearer " + token)).andExpect(status().isNoContent());
+        mvc.perform(post(path + "/steps").header("Authorization", "Bearer " + token).contentType(MediaType.APPLICATION_JSON)
+                .content("[{\"sequence\":1,\"parent\":0,\"kind\":\"NAVIGATE_LINK\",\"url\":\"http://127.0.0.1:1/a\",\"label\":\"A\",\"locators\":[],\"verdict\":\"FAIL\",\"status\":500,\"state\":\"s\",\"note\":\"\",\"durationMs\":5}]")).andExpect(status().isNoContent());
+        mvc.perform(post(path + "/complete").header("Authorization", "Bearer " + token).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"outcome\":\"SUCCEEDED\",\"stopReason\":\"EXHAUSTED\",\"steps\":1,\"states\":{}}")).andExpect(status().isNoContent());
+        assertEquals("FAIL", db.sql("SELECT verdict FROM test_result WHERE organization_id = ? AND run_id = ? AND test_case_version_id = ?").params(org, run, version).query(String.class).single());
+        assertEquals(2L, db.sql("SELECT count(*) FROM test_case WHERE organization_id = ?").param(org).query(Long.class).single(), "a suite run adds no new cases");
+        assertEquals(1L, db.sql("SELECT count(*) FROM test_result WHERE organization_id = ? AND run_id = ?").params(org, run).query(Long.class).single(), "manual cases get no automated result");
     }
 
     @Test void retentionKeepsOpenDefectEvidenceAndHonoursHold() throws Exception {
