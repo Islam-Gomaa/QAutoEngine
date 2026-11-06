@@ -18,3 +18,5 @@ Decisions made during execution. Architecture-level decisions live in
 | 2026-11-06 | 3 | Fresh page per navigation, one context per run | Reusing a page raced with aborted navigations |
 | 2026-11-06 | 3 | WebSockets blocked in `READ_ONLY` unless an exception exists | Their traffic cannot be inspected per message |
 | 2026-11-06 | 3 | Static assets skip only the one-time token check | Exempting them fully let `new Image()` reach destructive GETs |
+| 2026-11-06 | 5 | `ExecutionLock` has no configuration switch | Lifting the real-target lock must be a reviewed code change |
+| 2026-11-06 | 5 | A failure must repeat before it is reported | False-positive control from the roadmap |

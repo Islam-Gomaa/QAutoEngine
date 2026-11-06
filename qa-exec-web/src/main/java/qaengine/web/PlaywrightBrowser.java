@@ -34,6 +34,15 @@ import qaengine.core.port.BrowserPort;
 public final class PlaywrightBrowser implements BrowserPort {
 
     private static final int NAV_TIMEOUT_MS = 15_000;
+    private static final String DOM_QUIET = """
+        () => new Promise(resolve => {
+          let timer = setTimeout(done, 150);
+          const cap = setTimeout(done, 1500);
+          const observer = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(done, 150); });
+          function done() { observer.disconnect(); clearTimeout(cap); clearTimeout(timer); resolve(true); }
+          observer.observe(document, {subtree: true, childList: true, attributes: true, characterData: true});
+        })
+        """;
 
     private final Playwright playwright;
     private final Browser browser;
@@ -49,6 +58,7 @@ public final class PlaywrightBrowser implements BrowserPort {
     }
 
     public PlaywrightBrowser(ActionGate gate, BrowserType.LaunchOptions launch) {
+        ExecutionLock.requireAllowed(gate.policy().scope());
         this.gate = gate;
         this.playwright = Playwright.create();
         this.browser = playwright.chromium().launch(launch);
@@ -97,7 +107,7 @@ public final class PlaywrightBrowser implements BrowserPort {
 
     private void onResponse(Response r) {
         Request q = r.request();
-        signals.add(Signal.response(r.url(), r.status(), q.isNavigationRequest()));
+        signals.add(Signal.response(r.url(), r.status(), q.resourceType()));
     }
 
     private void guard(Route route) {
@@ -170,6 +180,11 @@ public final class PlaywrightBrowser implements BrowserPort {
         }
     }
 
+    /** Client-side rendering finishes after the network does, so wait for the DOM to stop changing. */
+    private void waitForDomQuiet() {
+        page.evaluate(DOM_QUIET);
+    }
+
     @Override
     public PageSnapshot snapshot() {
         return DomReader.read(page);
@@ -182,6 +197,7 @@ public final class PlaywrightBrowser implements BrowserPort {
             if (candidate.count() > 0) {
                 candidate.first().click(new com.microsoft.playwright.Locator.ClickOptions().setTimeout(3000));
                 settle();
+                waitForDomQuiet();
                 return;
             }
         }

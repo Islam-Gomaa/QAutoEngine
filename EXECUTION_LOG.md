@@ -37,3 +37,17 @@
 - **Failures recorded:** blocked navigations raced with the next navigation; an `about:blank` reset made it worse; a fresh page per navigation fixed it.
 - **Self-review found four real holes**, each proven by a failing test first: destructive GET through `new Image()`, GraphQL over GET, dot segments escaping path scope, and the auth window relaxing link labels.
 - **Exit gate:** the plan calls for an independent security review. Only a self-review was possible here. Independent review stays a pre-pilot gate requirement.
+
+## Phase 4: Verdicts and Evidence (complete)
+
+- `VerdictEngine`: fixed rules on observed signals. `PASS`, `FAIL`, `INCONCLUSIVE`, `BLOCKED`. A blocked request never creates a defect; 401, 403, 405 and 429 are never defects; third-party failures are ignored; a no-op is `INCONCLUSIVE`.
+- `Redactor` and `EvidenceCollector`: known secrets, patterns, sensitive keys, card numbers; redaction failure drops the artifact; size limits and a per-run cap.
+- **Tests:** verdict rule tables, canary redaction, drop-on-failure, limits.
+
+## Phase 5: Discovery Engine (complete)
+
+- Frontier, state fingerprints, per-run state, confirmation retry, step recording with locators, replay, loopback-only CLI, `ExecutionLock`.
+- **Scorecard (judged by the server log):** 6 of 6 planted defects found; 0 false findings; 0 traps reached; only GET and HEAD reached the server; every finding has 3 evidence artifacts with verified hashes; same seed gives the same run; a different seed finds the same defects; SPA, iframe, shadow DOM and new-tab content discovered; the infinite calendar does not trap the crawl.
+- **Baseline comparison:** the legacy engine stopped after one action, found 0 of these defects through its engine path, and hit the trap endpoints.
+- **Failure recorded:** SPA content was missed because the snapshot ran before client rendering finished. Fixed with a MutationObserver quiet wait, not a sleep.
+- **Note:** the Phase 2 commit does not build alone because the `qa-exec-web/pom.xml` change landed in the Phase 3 commit. History was left as is.
