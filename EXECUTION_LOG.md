@@ -19,3 +19,11 @@
 - **Failure recorded:** the wrapper picked up Java 17 and Enforcer refused it. Correct behaviour; documented `JAVA_HOME` requirement.
 - **Tests:** qa-core 3 passed, legacy 15 passed. Chrome containment proven for a raw non-loopback IP.
 - **Not run:** GitHub Actions, since nothing is pushed.
+
+## Phase 2: Fixture and Driver Bake-off (complete)
+
+- `qa-fixtures`: planted defects, traps, clean pages, modern-DOM pages, request recorder, machine-readable scorecard.
+- Bake-off across Selenium BiDi, Selenium CDP and Playwright. Result: Playwright. See `docs/decisions/bakeoff-results.md`.
+- **Failures recorded:** Playwright first missed the redirect hop (fixed by not following redirects). Selenium BiDi stalled on two versions (root cause not isolated). `--cap-drop=ALL` crashed Chromium (fixed by adding back only `SYS_CHROOT`). Two of my own harness runs were invalid and discarded: a zsh word-splitting error and a mismatched driver.
+- Docker Desktop was started to run gate M6.
+- **Not measured:** Firefox.

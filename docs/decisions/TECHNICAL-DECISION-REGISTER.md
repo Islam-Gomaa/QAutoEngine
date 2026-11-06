@@ -12,11 +12,11 @@ The full comparison text lives in the planning record; this register tracks the 
 | 005 | PostgreSQL, Flyway, JPA, native SQL for reports | Accepted | High | Analytics outgrow PostgreSQL |
 | 006 | Shared schema, `organization_id`, server-side context; RLS before a second org | Accepted | High | A second organization is approved |
 | 007 | PostgreSQL queue, leases, fencing; workers use internal API only | Accepted | High | Sustained load exceeds polling |
-| 008 | Browser driver decided by Phase 2 bake-off; Selenium is incumbent | Provisional | Low | See bake-off report |
+| 008 | Playwright for Java behind `BrowserPort`, chosen by [bake-off](bakeoff-results.md) | Accepted | Medium-High | Java binding support declines; bulk interception cost matters |
 | 009 | Layered fail-closed `READ_ONLY` policy with scoped exceptions | Accepted | High | Blocked-action rates show it is too coarse |
 | 010 | Deterministic verdicts; MCTS and learning retired from execution | Accepted | High | Enough labelled outcomes exist |
 | 011 | Frontier discovery with structural fingerprints | Accepted | High | Fingerprint collisions exceed threshold |
-| 012 | One job per worker container; sandbox on; no docker socket, `--ipc=host`, `--no-sandbox`, `SYS_ADMIN` | Accepted | High for one org | Multi-tenant execution begins |
+| 012 | One job per worker container; sandbox on; only `SYS_CHROOT` added back; no docker socket, `--ipc=host`, `--no-sandbox`, `SYS_ADMIN` | Accepted | High for one org | Multi-tenant execution begins |
 | 013 | Egress proxy for hosts and addresses; no TLS interception | Provisional | Medium | Squid cannot support per-run rules |
 | 014 | Evidence on volume behind a port; limits, redaction, API-only retrieval | Accepted | High | Multiple hosts are needed |
 | 015 | React, TypeScript, Vite, served same-origin | Accepted | High | TypeScript cannot be maintained |
