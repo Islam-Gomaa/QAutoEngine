@@ -22,8 +22,9 @@ public class JobTokens {
 
     private final byte[] key;
 
-    public JobTokens(@Value("${qa.worker-key:}") String workerKey) {
-        this.key = workerKey.getBytes(StandardCharsets.UTF_8);
+    public JobTokens(@Value("${qa.worker-key:}") String workerKey, @Value("${qa.worker-key-file:}") String workerKeyFile) throws java.io.IOException {
+        String value = workerKeyFile.isBlank() ? workerKey : java.nio.file.Files.readString(java.nio.file.Path.of(workerKeyFile)).trim();
+        this.key = value.getBytes(StandardCharsets.UTF_8);
     }
 
     public boolean workerKeyMatches(String presented) {

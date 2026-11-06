@@ -23,3 +23,7 @@ Decisions made during execution. Architecture-level decisions live in
 | 2026-11-06 | 6 | ADR-005 amended: `JdbcClient` with explicit SQL instead of JPA | Tenant predicates stay visible in every query and are easier to audit |
 | 2026-11-06 | 6 | Worker API on the same app, separate port | Keeps one deployable while workers stay out of the public surface |
 | 2026-11-06 | 7 | `AUTHORIZED_MUTATION` not built for R1 | The pilot is READ_ONLY, and refusal is the safe default |
+| 2026-11-06 | 8 | `gateway` forwarder added | Takes the platform off the worker network entirely |
+| 2026-11-06 | 8 | Raw IP destinations always refused by the proxy | Targets are named hosts; avoids reverse DNS delay |
+| 2026-11-06 | 8 | Proxy allowlist is a static file | Simple and reliable; the gate enforces per-run scope |
+| 2026-11-06 | 8 | `fixture.qa.internal` allowed by `ExecutionLock` | Needed to test through the real proxy; it is never a real system |

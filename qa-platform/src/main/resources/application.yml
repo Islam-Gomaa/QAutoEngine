@@ -27,3 +27,10 @@ management:
 qa:
   evidence:
     root: ${QA_EVIDENCE_ROOT:/var/lib/qa-engine/evidence}
+  internal-port: ${QA_INTERNAL_PORT:0}
+  master-key-file: ${QA_MASTER_KEY_FILE:}
+  worker-key-file: ${QA_WORKER_KEY_FILE:}
+  worker-key: ${QA_WORKER_KEY:}
+  bootstrap:
+    admin-email: ${QA_BOOTSTRAP_ADMIN_EMAIL:}
+    admin-password-file: ${QA_BOOTSTRAP_ADMIN_PASSWORD_FILE:}

@@ -1,0 +1,133 @@
+# QA Engine on one host (ADR-024). Secrets come from files in deploy/secrets, which are never committed.
+# The fixture profile adds the planted-defect site for end-to-end and attack tests.
+name: qa-engine
+
+x-worker: &worker
+  build: { context: ., dockerfile: deploy/worker/Dockerfile }
+  image: qa-engine/worker:dev
+  restart: always
+  init: true
+  read_only: true
+  user: pwuser
+  cap_drop: [ALL]
+  cap_add: [SYS_CHROOT]
+  security_opt:
+    - no-new-privileges:true
+    - seccomp=deploy/worker/seccomp.json
+  shm_size: 256m
+  tmpfs:
+    - /tmp:rw,exec,size=512m
+    - /home/pwuser:rw,exec,size=128m,uid=1001
+  mem_limit: 2g
+  cpus: 2
+  pids_limit: 512
+  environment:
+    QA_INTERNAL_URL: http://gateway:8081
+    QA_EGRESS_PROXY: http://egress:3128
+    QA_WORKER_KEY_FILE: /run/secrets/worker_key
+  secrets: [worker_key]
+  networks: [exec]
+  depends_on: [gateway, egress]
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: qaengine
+      POSTGRES_USER: qaengine
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes: [pgdata:/var/lib/postgresql]
+    networks: [core]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U qaengine]
+      interval: 5s
+      retries: 20
+
+  platform:
+    build: { context: ., dockerfile: deploy/platform/Dockerfile }
+    image: qa-engine/platform:dev
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    environment:
+      QA_DB_URL: jdbc:postgresql://postgres:5432/qaengine
+      QA_DB_USER: qaengine
+      QA_DB_PASSWORD_FILE: /run/secrets/db_password
+      QA_WORKER_KEY_FILE: /run/secrets/worker_key
+      QA_INTERNAL_PORT: "8081"
+      QA_EVIDENCE_ROOT: /var/lib/qa-engine/evidence
+      QA_MASTER_KEY_FILE: /run/secrets/master_key
+      QA_BOOTSTRAP_ADMIN_EMAIL: ${QA_ADMIN_EMAIL:-admin@qa.local}
+      QA_BOOTSTRAP_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+      QA_COOKIE_SECURE: ${QA_COOKIE_SECURE:-true}
+    secrets: [db_password, master_key, admin_password, worker_key]
+    volumes: [evidence:/var/lib/qa-engine/evidence]
+    networks: [edge, core]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  # Workers reach the platform only through this, and only on the internal port.
+  gateway:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp, /config, /data]
+    command: caddy reverse-proxy --from :8081 --to platform:8081
+    networks: [core, exec]
+    depends_on: [platform]
+
+  egress:
+    image: ubuntu/squid:latest
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/var/spool/squid, /var/log/squid, /var/run, /run, /tmp]
+    volumes:
+      - ./deploy/egress/squid.conf:/etc/squid/squid.conf:ro
+      - ./deploy/egress/allowed-hosts.txt:/etc/squid/allowed-hosts.txt:ro
+      - ./deploy/egress/private-approved.txt:/etc/squid/private-approved.txt:ro
+    networks: [exec, egress]
+
+  worker:
+    <<: *worker
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["${QA_HTTPS_PORT:-8443}:443"]
+    command: caddy reverse-proxy --from https://localhost --to platform:8080 --internal-certs
+    networks: [edge]
+    depends_on: [platform]
+
+  fixture:
+    profiles: [fixture]
+    build: { context: ., dockerfile: deploy/fixture/Dockerfile }
+    image: qa-engine/fixture:dev
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    networks:
+      egress:
+        aliases: [fixture.qa.internal, rebind.qa.internal]
+
+networks:
+  edge: {}
+  core: { internal: true }
+  exec: { internal: true }
+  egress: {}
+
+volumes:
+  pgdata: {}
+  evidence: {}
+
+secrets:
+  db_password: { file: deploy/secrets/db_password }
+  master_key: { file: deploy/secrets/master_key }
+  admin_password: { file: deploy/secrets/admin_password }
+  worker_key: { file: deploy/secrets/worker_key }

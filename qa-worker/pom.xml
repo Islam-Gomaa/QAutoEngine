@@ -10,8 +10,39 @@
     </parent>
     <artifactId>qa-worker</artifactId>
     <description>Plain Java worker. Outside the Spring Boot BOM (ADR-026).</description>
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>tech.wakeb</groupId>
+                <artifactId>qa-bom</artifactId>
+                <version>${project.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
     <dependencies>
+        <dependency><groupId>tech.wakeb</groupId><artifactId>qa-core</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>tech.wakeb</groupId><artifactId>qa-contracts</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>tech.wakeb</groupId><artifactId>qa-exec-web</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>com.google.code.gson</groupId><artifactId>gson</artifactId><version>2.14.0</version></dependency>
 
         <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>${junit.version}</version><scope>test</scope></dependency>
     </dependencies>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.9.0</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals><goal>copy-dependencies</goal></goals>
+                        <configuration><includeScope>runtime</includeScope><outputDirectory>${project.build.directory}/lib</outputDirectory></configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 </project>

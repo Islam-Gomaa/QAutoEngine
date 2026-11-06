@@ -10,8 +10,9 @@
 | 5 Discovery engine | Complete | 6/6 defects, 0 false findings, 0 traps |
 | 6 Backend and domain | Complete | |
 | 7 Identity and credentials | Complete | Mutation approval deferred; mode stays refused |
-| 8 Isolated workers | Next | |
-| 9–10 | Pending | |
+| 8 Isolated workers | Complete | 29/29 attacks refused, 6/6 failure tests |
+| 9 Dashboard and reporting | Next | |
+| 10 Target connectivity | Pending | |
 | Pre-pilot gate, pilot, R1 | Blocked until earlier phases pass | Requires written target authorization |
 | 11–14 | Pending | Follow R1 |
 

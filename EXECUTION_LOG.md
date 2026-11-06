@@ -64,3 +64,15 @@
 - **Resolved provisional:** Flyway 12.4 works with PostgreSQL 18.
 - **Deferred:** `AUTHORIZED_MUTATION` stays refused. R1 and the pilot are READ_ONLY, so this is the safe direction. Credential API lands in Phase 10.
 - **Second-organization suite:** cross-organization access tested for projects, targets, environments, runs, defects and evidence.
+
+## Phase 8: Isolated Workers and Network Containment (complete)
+
+- Plain Java worker: one job then exit, heartbeats, self-stop at 45 seconds without acknowledgement, live step and finding streaming, evidence upload with hashes.
+- Compose topology: `edge`, `core` (internal), `exec` (internal), `egress`. Workers reach only the `gateway` and the `egress` proxy.
+- **End-to-end through the public API:** hardened worker, sandboxed Chromium, egress proxy: 6 of 6 planted defects, 48 steps, evidence and reproduction steps linked, worker restarted clean.
+- **Attack tests:** 29 of 29 refused (`scripts/attack-tests.sh`): metadata address, private and loopback literals, non-allowlisted hosts, allowlisted name resolving to a private address, internal API and database through the proxy, every direct route out.
+- **Failure injection:** 6 of 6 (`scripts/resilience-tests.py`): SIGKILL mid-run recovers on attempt 2 with no duplicate defects; cancel in 14 seconds; platform restart mid-run still finishes; across 168 requests no trap was reached and only safe methods were used.
+- **Design fix:** workers could reach the platform public port, which broke an acceptance criterion. Added a `gateway` forwarder and removed the platform from `exec`.
+- **Failures recorded:** Squid could not write to stdout; a metadata request timed out instead of being refused (reverse DNS; IP literals now refused outright); a port filter returned 401 through an error dispatch; a tmpfs UID mismatch made a state-leak test pass for the wrong reason; a regex typo took the proxy down, which failed closed.
+- **Process failure:** the secret scan flagged a test file and my script committed anyway (commit dcf3322). The strings were synthetic and the test now builds them at runtime. Commits are now gated on the scan.
+- **ADR-013 outcome:** Squid works with a static allowlist. Per-run proxy rules were not built; per-run scope is enforced by the gate. Allowlist changes are an operations step.

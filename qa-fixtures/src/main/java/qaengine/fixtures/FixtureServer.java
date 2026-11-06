@@ -29,6 +29,7 @@ public final class FixtureServer implements AutoCloseable {
     private final HttpServer server;
     private final ExecutorService pool;
     private final List<Recorded> log = new CopyOnWriteArrayList<>();
+    boolean exposeLog;
 
     private FixtureServer(HttpServer server, ExecutorService pool) {
         this.server = server;
@@ -40,7 +41,12 @@ public final class FixtureServer implements AutoCloseable {
     }
 
     public static FixtureServer start(int port) throws IOException {
-        HttpServer http = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 0);
+        return start(new InetSocketAddress(InetAddress.getLoopbackAddress(), port));
+    }
+
+    /** Used by {@link FixtureMain} on the isolated test network. Everything else stays on loopback. */
+    static FixtureServer start(InetSocketAddress address) throws IOException {
+        HttpServer http = HttpServer.create(address, 0);
         ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor();
         FixtureServer fixture = new FixtureServer(http, pool);
         http.createContext("/", fixture::handle);
@@ -71,6 +77,10 @@ public final class FixtureServer implements AutoCloseable {
 
     private void handle(HttpExchange x) throws IOException {
         String path = x.getRequestURI().getPath();
+        if (exposeLog && path.equals("/__requests")) {
+            try (x) { send(x, 200, "text/plain", String.join("\n", log.stream().map(r -> r.method() + " " + r.target()).toList())); }
+            return;
+        }
         String body = new String(x.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
         log.add(new Recorded(x.getRequestMethod(), path, x.getRequestURI().getRawQuery(), body));
         try (x) {

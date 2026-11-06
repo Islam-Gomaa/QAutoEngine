@@ -42,3 +42,5 @@ learning_v6.dat
 learning_v6.dat.tmp
 allure-results/
 allure-report/
+deploy/secrets/*
+!deploy/secrets/.gitkeep
