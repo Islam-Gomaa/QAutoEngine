@@ -112,6 +112,10 @@ public final class WorkerMain {
             platform.complete(new RunCompletion(outcome, result.stop().name(), result.steps().size(), result.states()));
         } catch (PlatformClient.LostLease e) {
             System.err.println("lease lost; stopping");
+        } catch (java.io.UncheckedIOException e) {
+            // The platform stayed away too long. That says nothing about the target, so do not
+            // report a failure: stop, and let lease recovery retry the run.
+            System.err.println("platform unreachable; leaving the job for lease recovery");
         } catch (RuntimeException e) {
             System.err.println("run failed: " + e.getClass().getSimpleName());
             if (!lost.get()) platform.complete(new RunCompletion("FAILED", e.getClass().getSimpleName(), 0, java.util.Map.of()));

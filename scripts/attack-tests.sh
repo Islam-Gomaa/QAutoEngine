@@ -35,7 +35,8 @@ code() { tlsnet -s -o /dev/null -m 6 -w '%{http_code}' "$@"; }
 claim='-X POST -H Content-Type:application/json -d {} https://gateway:8081/internal/v1/jobs/claim'
 # The TLS connector answers plain HTTP with its own fixed error. Anything else means the app saw the request.
 plain=$(execnet -s -m 5 -X POST -H 'X-Worker-Key: probe' http://gateway:8081/internal/v1/jobs/claim)
-check "plain HTTP refused by the TLS connector" refused "$(case "$plain" in *'requires TLS'*) echo refused ;; *) echo reached-app ;; esac)"
+if [[ "$plain" == *"requires TLS"* ]]; then verdict=refused; else verdict=reached-app; fi
+check "plain HTTP refused by the TLS connector" refused "$verdict"
 check "TLS without a client certificate fails"    000 "$(code --cacert /e/ca.crt $claim)"
 check "self-signed client certificate fails"      000 "$(code --cacert /e/ca.crt --cert /r/r.crt --key /r/r.key $claim)"
 check "server is verified against the CA"         000 "$(code --cacert /r/r.crt --cert /w/worker.crt --key /w/worker.key $claim)"

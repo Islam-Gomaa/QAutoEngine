@@ -27,6 +27,8 @@ final class PlatformClient {
     static final class LostLease extends RuntimeException { }
 
     private static final Duration TIMEOUT = Duration.ofSeconds(10);
+    private static final long RETRY_WINDOW_MILLIS = 40_000;
+    private static final long RETRY_DELAY_MILLIS = 2_000;
 
     private final HttpClient http;
     private final Gson gson = new Gson();
@@ -55,7 +57,25 @@ final class PlatformClient {
         return Optional.of(job);
     }
 
+    /**
+     * Rides out a platform restart. Every write is idempotent, so a retry is safe. Stays inside the
+     * worker's self-stop limit: past this, the job is left for lease recovery.
+     */
     private HttpResponse<String> post(String path, String contentType, HttpRequest.BodyPublisher body) throws IOException, InterruptedException {
+        long giveUp = System.currentTimeMillis() + RETRY_WINDOW_MILLIS;
+        while (true) {
+            try {
+                return send(path, contentType, body);
+            } catch (LostLease e) {
+                throw e;
+            } catch (IOException e) {
+                if (System.currentTimeMillis() >= giveUp) throw e;
+                Thread.sleep(RETRY_DELAY_MILLIS);
+            }
+        }
+    }
+
+    private HttpResponse<String> send(String path, String contentType, HttpRequest.BodyPublisher body) throws IOException, InterruptedException {
         var request = HttpRequest.newBuilder(URI.create(base + "/internal/v1/jobs/" + jobId + path)).timeout(TIMEOUT)
                 .header("Authorization", "Bearer " + jobToken).header("Content-Type", contentType).POST(body).build();
         var response = http.send(request, HttpResponse.BodyHandlers.ofString());
@@ -78,7 +98,7 @@ final class PlatformClient {
 
     /** Returns whether cancellation was requested, and renews the token. */
     boolean heartbeat() throws IOException, InterruptedException {
-        var response = post("/heartbeat", "application/json", HttpRequest.BodyPublishers.noBody());
+        var response = send("/heartbeat", "application/json", HttpRequest.BodyPublishers.noBody());
         HeartbeatResponse beat = gson.fromJson(response.body(), HeartbeatResponse.class);
         jobToken = beat.jobToken();
         return beat.cancelRequested();

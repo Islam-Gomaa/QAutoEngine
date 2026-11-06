@@ -95,4 +95,55 @@ class InternalTlsTest {
     void workerRefusesAPlainHttpPlatform() {
         assertThrows(SecurityException.class, () -> new PlatformClient("http://gateway:8081", "k", InternalTls.load(dir)));
     }
+
+    @Test
+    void workerRidesOutAShortPlatformOutage() throws Exception {
+        var hits = new AtomicInteger();
+        var first = server("trusted.p12", hits);
+        int port = first.getAddress().getPort();
+        var client = new PlatformClient("https://localhost:" + port, "k", InternalTls.load(dir));
+        first.createContext("/internal/v1/jobs/claim", x -> {
+            byte[] b = "{\"jobId\":\"00000000-0000-0000-0000-000000000001\",\"jobToken\":\"t\"}".getBytes();
+            x.sendResponseHeaders(200, b.length); x.getResponseBody().write(b); x.close();
+        });
+        client.claim("w");
+        first.stop(0);
+        var restarted = new AtomicInteger();
+        var thread = Thread.ofVirtual().start(() -> {
+            try {
+                Thread.sleep(3000);
+                KeyStore store = KeyStore.getInstance("PKCS12");
+                try (var in = Files.newInputStream(dir.resolve("trusted.p12"))) { store.load(in, PASSWORD.toCharArray()); }
+                KeyManagerFactory keys = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+                keys.init(store, PASSWORD.toCharArray());
+                SSLContext tls = SSLContext.getInstance("TLS");
+                tls.init(keys.getKeyManagers(), null, null);
+                HttpsServer s = HttpsServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 0);
+                s.setHttpsConfigurator(new HttpsConfigurator(tls));
+                s.createContext("/", x -> { restarted.incrementAndGet(); x.sendResponseHeaders(204, -1); x.close(); });
+                s.start();
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        });
+        client.steps(List.of());
+        thread.join();
+        assertEquals(1, restarted.get(), "the report arrives once the platform is back");
+    }
+
+    @Test
+    void heartbeatDoesNotRetrySoSelfStopStaysPrompt() throws Exception {
+        var s = server("trusted.p12", new AtomicInteger());
+        int port = s.getAddress().getPort();
+        s.createContext("/internal/v1/jobs/claim", x -> {
+            byte[] b = "{\"jobId\":\"00000000-0000-0000-0000-000000000001\",\"jobToken\":\"t\"}".getBytes();
+            x.sendResponseHeaders(200, b.length); x.getResponseBody().write(b); x.close();
+        });
+        var client = new PlatformClient("https://localhost:" + port, "k", InternalTls.load(dir));
+        client.claim("w");
+        s.stop(0);
+        long t = System.currentTimeMillis();
+        assertThrows(IOException.class, client::heartbeat);
+        assertTrue(System.currentTimeMillis() - t < 12_000);
+    }
 }

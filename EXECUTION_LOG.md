@@ -146,3 +146,7 @@ No failures. Note: `credential` had 0 rows in that drill, so credential restore 
 **Result (`scripts/transport-sniff-test.sh after`):** all six exposures absent from about 560 KB of capture, with the run still succeeding. Attack suite extended: no client certificate, self-signed certificate, rogue server, TLS 1.2 and plain HTTP all refused. Worker refuses a rogue server and sends nothing. `egress` and `caddy` lost `NET_RAW`. The gateway left the database network.
 
 **Failure recorded:** one new attack check expected a connection failure, but Tomcat answers plain HTTP with a fixed 400. The check was tightened to prove the TLS connector refused it, rather than relaxed.
+
+**Correction:** commit `84b7231` was made by a chained script before I had read two failing results. Neither involved a leak. One was a shell bug in a new check. The other (`only safe methods`) was traced: the single non-safe request was the approved login `POST /session`, and the check now enforces exactly that. Commits are now a separate step after results are read.
+
+**Regression found by this re-run:** `run survives a platform restart` ended `FAILED`. Root cause: a report failing during a platform restart was treated as a run failure. The worker now retries transient outages for up to 40 seconds (every write is idempotent), heartbeats stay unretried so self-stop stays prompt, and a long outage leaves the job for lease recovery instead of reporting a false failure. Verified: resilience 6 of 6 on three consecutive runs, attacks 44 of 44, capture clean.
