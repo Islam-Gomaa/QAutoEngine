@@ -27,9 +27,31 @@ check "no direct route to platform public port"   000 "$(direct http://platform:
 check "no direct route to postgres"               000 "$(direct http://postgres:5432/)"
 check "no direct internet route"                  000 "$(direct http://1.1.1.1/)"
 
-echo "== Gateway surface"
-check "gateway serves only worker paths"          404 "$(direct http://gateway:8081/api/v1/projects)"
-check "claim needs the worker key"                401 "$(execnet -s -o /dev/null -m 5 -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' http://gateway:8081/internal/v1/jobs/claim)"
+echo "== Mutual TLS on the worker path"
+pki="$PWD/deploy/secrets/pki"
+rogue=$(mktemp -d); openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$rogue/r.key" -out "$rogue/r.crt" -subj /CN=worker -days 1 2> /dev/null; chmod 644 "$rogue"/*
+tlsnet() { docker run --rm --network qa-engine_exec -v "$pki/worker:/w:ro" -v "$pki/edge:/e:ro" -v "$rogue:/r:ro" curlimages/curl:latest "$@"; }
+code() { tlsnet -s -o /dev/null -m 6 -w '%{http_code}' "$@"; }
+claim='-X POST -H Content-Type:application/json -d {} https://gateway:8081/internal/v1/jobs/claim'
+# The TLS connector answers plain HTTP with its own fixed error. Anything else means the app saw the request.
+plain=$(execnet -s -m 5 -X POST -H 'X-Worker-Key: probe' http://gateway:8081/internal/v1/jobs/claim)
+check "plain HTTP refused by the TLS connector" refused "$(case "$plain" in *'requires TLS'*) echo refused ;; *) echo reached-app ;; esac)"
+check "TLS without a client certificate fails"    000 "$(code --cacert /e/ca.crt $claim)"
+check "self-signed client certificate fails"      000 "$(code --cacert /e/ca.crt --cert /r/r.crt --key /r/r.key $claim)"
+check "server is verified against the CA"         000 "$(code --cacert /r/r.crt --cert /w/worker.crt --key /w/worker.key $claim)"
+check "TLS 1.2 is refused"                        000 "$(code --tls-max 1.2 --cacert /e/ca.crt --cert /w/worker.crt --key /w/worker.key $claim)"
+check "valid certificate still needs the key"     401 "$(code --cacert /e/ca.crt --cert /w/worker.crt --key /w/worker.key $claim)"
+check "valid certificate cannot reach the UI API" 404 "$(code --cacert /e/ca.crt --cert /w/worker.crt --key /w/worker.key https://gateway:8081/api/v1/projects)"
+check "forged job token refused"                  401 "$(code --cacert /e/ca.crt --cert /w/worker.crt --key /w/worker.key -X POST -H 'Authorization: Bearer forged.token' https://gateway:8081/internal/v1/jobs/00000000-0000-0000-0000-000000000000/login)"
+rm -rf "$rogue"
+
+echo "== Capabilities on hops that touch hostile traffic"
+for svc in egress caddy gateway worker; do
+  id=$(docker compose ps -q $svc)
+  check "$svc cannot use raw sockets" 0 "$(docker inspect "$id" --format '{{.HostConfig.CapAdd}}' | grep -c NET_RAW)"
+  check "$svc drops all capabilities first" "[ALL]" "$(docker inspect "$id" --format '{{.HostConfig.CapDrop}}')"
+done
+check "gateway has left the database network" 0 "$(docker inspect "$(docker compose ps -q gateway)" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' | grep -c core)"
 
 echo "== Worker container hardening"
 W=$(docker compose ps -q worker)

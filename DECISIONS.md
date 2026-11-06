@@ -33,3 +33,9 @@ Decisions made during execution. Architecture-level decisions live in
 | 2026-11-06 | Gate | One run per environment at a time, enforced in the claim query | Protects targets and single-session accounts |
 | 2026-11-06 | Gate | WebKit media packages removed from the worker | Unfixed HIGH advisory in code that never runs here |
 | 2026-11-06 | Gate | Stopped before Phases 11 to 13 | The agreed dependency order puts them after R1, which needs external decisions |
+| 2026-11-06 | Transport | Mutual TLS 1.3 end to end on the worker path; TLS on the edge hop | Measured capture showed credentials, keys, tokens and sessions in cleartext |
+| 2026-11-06 | Transport | Gateway replaced by HAProxy in TCP mode | A TLS-terminating gateway would be a plaintext point |
+| 2026-11-06 | Transport | New `workerapi` network; gateway removed from `core` | Only the platform shares a network with PostgreSQL |
+| 2026-11-06 | Transport | `NET_RAW` removed from `egress` and `caddy` | The proxy handles hostile traffic and must not be able to spoof the network |
+| 2026-11-06 | Transport | Credentials refused over plain HTTP except to loopback or the fixture | A password on `http://` is readable at the proxy |
+| 2026-11-06 | Transport | `ExecutionLock` moved to `qa-core` | All executors must share one lock |

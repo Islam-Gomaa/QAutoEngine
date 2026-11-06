@@ -28,16 +28,18 @@ final class PlatformClient {
 
     private static final Duration TIMEOUT = Duration.ofSeconds(10);
 
-    private final HttpClient http = HttpClient.newBuilder().connectTimeout(TIMEOUT).version(HttpClient.Version.HTTP_1_1).build();
+    private final HttpClient http;
     private final Gson gson = new Gson();
     private final String base;
     private final String workerKey;
     private volatile String jobToken;
     private UUID jobId;
 
-    PlatformClient(String base, String workerKey) {
+    PlatformClient(String base, String workerKey, javax.net.ssl.SSLContext tls) {
+        if (!base.startsWith("https://")) throw new SecurityException("The platform must be reached over TLS");
         this.base = base;
         this.workerKey = workerKey;
+        this.http = HttpClient.newBuilder().connectTimeout(TIMEOUT).version(HttpClient.Version.HTTP_1_1).sslContext(tls).build();
     }
 
     Optional<JobAssignment> claim(String workerId) throws IOException, InterruptedException {

@@ -59,7 +59,7 @@ public final class WorkerMain {
         String key = Files.readString(Path.of(System.getenv("QA_WORKER_KEY_FILE"))).trim();
         String proxy = System.getenv("QA_EGRESS_PROXY");
         String workerId = InetAddress.getLocalHost().getHostName();
-        PlatformClient platform = new PlatformClient(base, key);
+        PlatformClient platform = new PlatformClient(base, key, InternalTls.load(Path.of(System.getenv("QA_TLS_DIR"))));
 
         JobAssignment job = null;
         while (job == null) {

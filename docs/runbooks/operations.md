@@ -49,6 +49,12 @@ The egress proxy refuses everything not listed.
 
 `deploy/secrets` is `700`, but files inside are readable so non-root containers can use them. On a shared host, use a secrets manager or a dedicated host.
 
+## Internal certificates
+
+`scripts/generate-pki.sh` creates a private CA and certificates, keeping any that exist. Leaf certificates last 397 days. To rotate one, delete it and rerun the script, then recreate the containers. The CA key in `deploy/secrets/pki/ca` is never mounted into a container: keep it off the host if you can.
+
+Verify transport with `scripts/transport-sniff-test.sh after`, which needs the fixture profile.
+
 ## Worker sizing
 
 Each worker runs one job at a time and needs up to 2 GB. Runs on one environment never overlap, so more workers only help across environments.

@@ -28,6 +28,7 @@ public final class LoginFlow {
     }
 
     public Outcome signIn(Spec spec, Credentials credentials) {
+        qaengine.core.policy.ExecutionLock.requireSecureForSecrets(spec.baseUrl());
         if (spec.method() == Method.SESSION_IMPORT) {
             browser.importCookies(credentials.cookieName(), credentials.cookieValue(), spec.baseUrl());
             return verified(spec);

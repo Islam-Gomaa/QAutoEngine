@@ -31,7 +31,7 @@ import qaengine.platform.runs.JobQueue;
 import qaengine.platform.shared.Principal;
 
 @AutoConfigureMockMvc
-@TestPropertySource(properties = "qa.worker-key=test-worker-key-0123456789abcdef0123456789")
+@TestPropertySource(properties = {"qa.worker-key=test-worker-key-0123456789abcdef0123456789", "qa.master-key-file=${java.io.tmpdir}/qa-test-master.key"})
 class WorkerApiTest extends IntegrationTestBase {
 
     static final String KEY = "test-worker-key-0123456789abcdef0123456789";
@@ -42,10 +42,19 @@ class WorkerApiTest extends IntegrationTestBase {
     @Autowired JobQueue queue;
     @Autowired JobTokens tokens;
     @Autowired EvidenceService evidence;
+    @Autowired qaengine.platform.credentials.CredentialService credentials;
     @org.springframework.beans.factory.annotation.Value("${qa.evidence.root}") String evidenceRoot;
 
     UUID org, project, env, run, job, other, otherProject;
     Principal admin, outsider;
+
+    static {
+        try {
+            Files.writeString(Path.of(System.getProperty("java.io.tmpdir"), "qa-test-master.key"), java.util.Base64.getEncoder().encodeToString(new byte[32]));
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
 
     @BeforeEach
     void seed() {
@@ -196,6 +205,20 @@ class WorkerApiTest extends IntegrationTestBase {
         assertEquals(1, evidence.deleteExpired());
         assertEquals(free, db.sql("SELECT id FROM evidence WHERE deleted_at IS NOT NULL").query(UUID.class).single());
         mvc.perform(get("/api/v1/projects/" + project + "/evidence/" + free + "/content").with(as(admin))).andExpect(status().isNotFound());
+    }
+
+    @Test void credentialIsReleasedOncePerAttemptAndOnlyToTheOwner() throws Exception {
+        UUID cred = credentials.store(org, project, "acct", new qaengine.platform.credentials.CredentialService.Material("u", "canary-value-123", null, null, null));
+        db.sql("UPDATE environment SET login_credential_id = ?, login_method = 'PASSWORD' WHERE id = ?").params(cred, env).update();
+        String token = claim();
+        String url = "/internal/v1/jobs/" + job + "/login";
+        mvc.perform(post(url)).andExpect(status().isUnauthorized());
+        mvc.perform(post("/internal/v1/jobs/" + UUID.randomUUID() + "/login").header("Authorization", "Bearer " + token)).andExpect(status().isUnauthorized());
+        String body = mvc.perform(post(url).header("Authorization", "Bearer " + token)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertTrue(body.contains("canary-value-123"));
+        mvc.perform(post(url).header("Authorization", "Bearer " + token)).andExpect(status().isForbidden());
+        assertEquals(1L, db.sql("SELECT count(*) FROM audit_event WHERE action = 'CREDENTIAL_RELEASED'").query(Long.class).single());
+        assertEquals(0L, db.sql("SELECT count(*) FROM audit_event WHERE detail LIKE '%canary-value-123%'").query(Long.class).single());
     }
 
     @Test void tamperingIsDetected() throws Exception {

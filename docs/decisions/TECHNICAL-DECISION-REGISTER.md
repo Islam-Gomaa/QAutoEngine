@@ -31,3 +31,4 @@ The full comparison text lives in the planning record; this register tracks the 
 | 024 | Docker Compose on one host | Accepted | High | Availability needs exceed one host |
 | 025 | Native versioned test cases and reports; Allure legacy only | Accepted | High | External tools need a standard format |
 | 026 | Two dependency domains; executors outside the Boot BOM | Accepted | High | Executors need Spring |
+| 027 | Internal transport: mutual TLS 1.3 from a private CA, gateway as TCP pass-through, TLS on the edge hop | Accepted | High | A managed PKI or service mesh is adopted |

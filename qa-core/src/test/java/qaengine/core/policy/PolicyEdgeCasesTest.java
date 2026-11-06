@@ -127,4 +127,16 @@ class PolicyEdgeCasesTest {
         assertEquals(RunBudget.production(), ExecutionPolicy.readOnly(EnvironmentClass.PRODUCTION, scoped).budget());
         assertEquals(RunBudget.defaults(), ExecutionPolicy.readOnly(EnvironmentClass.DEV, scoped).budget());
     }
+
+    @Test void secretsNeverTravelOverPlainHttpToRealHosts() {
+        ExecutionLock.requireSecureForSecrets("https://app.test/");
+        ExecutionLock.requireSecureForSecrets("http://127.0.0.1:9/");
+        ExecutionLock.requireSecureForSecrets("http://fixture.qa.internal:8090/");
+        assertThrows(SecurityException.class, () -> ExecutionLock.requireSecureForSecrets("http://app.test/"));
+    }
+
+    @Test void realTargetsStayLocked() {
+        assertThrows(SecurityException.class, () -> ExecutionLock.requireAllowed(TargetScope.of("https://app.test")));
+        ExecutionLock.requireAllowed(TargetScope.of("http://127.0.0.1:1"));
+    }
 }

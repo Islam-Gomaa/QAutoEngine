@@ -111,3 +111,38 @@ Everything possible without an external party:
 ## Stop point
 
 Stopped at the pre-pilot security gate. It needs an independent penetration test, independent review, and written target authorization. See `docs/PILOT-READINESS.md`. Phases 11 to 13 follow R1, so they were not started.
+
+## Pre-Phase 11 Verification (authorized re-run)
+
+Run on `roadmap/implementation` at `281f43c`, after a clean build and fresh stack.
+
+| Check | Command | Result |
+|---|---|---|
+| Browser journey | `java -cp ... qaengine.web.DashboardJourney` | 17 of 17 |
+| Soak | `python3 scripts/soak.py 4` | 4 of 4, memory stable |
+| Restore drill | `scripts/backup.sh`, `scripts/restore-drill.sh` | 19 of 19 |
+
+No failures. Note: `credential` had 0 rows in that drill, so credential restore was not exercised.
+
+## Credential Transport Investigation
+
+**Measured before the fix (`scripts/transport-sniff-test.sh before`):** packet capture at the gateway and Caddy positions during an authenticated run found, in cleartext, the target password (worker path and edge hop), the worker key (20 matches), job tokens (158 matches), the admin password, and session cookies. This was worse than previously reported. `egress` and `caddy` also ran as root with default capabilities including `NET_RAW`.
+
+**Data flow of a target credential:**
+
+| # | Hop | Before | After |
+|---|---|---|---|
+| 1 | Browser to Caddy | TLS | TLS |
+| 2 | Caddy to platform | Plain HTTP | TLS 1.3, verified against the internal CA |
+| 3 | At rest in PostgreSQL | Envelope encrypted | Unchanged |
+| 4 | Platform to gateway to worker | Plain HTTP | Mutual TLS 1.3, gateway is a blind TCP pass-through |
+| 5 | In worker memory, to the browser | Local | Unchanged; residual risk |
+| 6 | Browser through egress to target | Depends on target | Refused unless HTTPS (or the fixture) |
+
+**Threat model:** the realistic attacker is hostile target content that compromises something on the `exec` network, most likely the proxy. Isolation does not help against an attacker already on the network.
+
+**Options:** relying on isolation (rejected); job-scoped credentials alone (target passwords are issued by the target, and tokens would still travel in cleartext); payload-only encryption (leaves the worker key and tokens exposed, and an active attacker could substitute the key); end-to-end mutual TLS (selected).
+
+**Result (`scripts/transport-sniff-test.sh after`):** all six exposures absent from about 560 KB of capture, with the run still succeeding. Attack suite extended: no client certificate, self-signed certificate, rogue server, TLS 1.2 and plain HTTP all refused. Worker refuses a rogue server and sends nothing. `egress` and `caddy` lost `NET_RAW`. The gateway left the database network.
+
+**Failure recorded:** one new attack check expected a connection failure, but Tomcat answers plain HTTP with a fixed 400. The check was tightened to prove the TLS connector refused it, rather than relaxed.

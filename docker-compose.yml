@@ -22,10 +22,12 @@ x-worker: &worker
   cpus: 2
   pids_limit: 512
   environment:
-    QA_INTERNAL_URL: http://gateway:8081
+    QA_INTERNAL_URL: https://gateway:8081
+    QA_TLS_DIR: /etc/qa-pki
     QA_EGRESS_PROXY: http://egress:3128
     QA_WORKER_KEY_FILE: /run/secrets/worker_key
   secrets: [worker_key]
+  volumes: [./deploy/secrets/pki/worker:/etc/qa-pki:ro]
   networks: [exec]
   depends_on: [gateway, egress]
 
@@ -64,22 +66,25 @@ services:
       QA_BOOTSTRAP_ADMIN_EMAIL: ${QA_ADMIN_EMAIL:-admin@qa.local}
       QA_BOOTSTRAP_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
       QA_COOKIE_SECURE: ${QA_COOKIE_SECURE:-true}
+      SPRING_PROFILES_ACTIVE: tls
     secrets: [db_password, master_key, admin_password, worker_key]
-    volumes: [evidence:/var/lib/qa-engine/evidence]
-    networks: [edge, core]
+    volumes:
+      - evidence:/var/lib/qa-engine/evidence
+      - ./deploy/secrets/pki/platform:/etc/qa-pki:ro
+    networks: [edge, core, workerapi]
     depends_on:
       postgres: { condition: service_healthy }
 
-  # Workers reach the platform only through this, and only on the internal port.
+  # Workers reach the platform only through this. It forwards TCP and cannot read the TLS inside.
   gateway:
-    image: caddy@sha256:ae5e525ca6773b0a4ce579c774cb39b3147e1576084139229517bdbcfe3ed812
+    image: haproxy@sha256:96ec3c75a9264ba94e733eeacb44051ed6e7b79bb77a73c2c36f236b6423f1f0
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    tmpfs: [/tmp, /config, /data]
-    command: caddy reverse-proxy --from :8081 --to platform:8081
-    networks: [core, exec]
+    tmpfs: [/tmp]
+    volumes: [./deploy/gateway/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro]
+    networks: [workerapi, exec]
     depends_on: [platform]
 
   egress:
@@ -87,6 +92,10 @@ services:
     image: qa-engine/egress:dev
     restart: unless-stopped
     read_only: true
+    # No NET_RAW: this container handles hostile traffic and must not be able to spoof the network.
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE]
+    security_opt: [no-new-privileges:true]
     tmpfs: [/var/spool/squid, /var/log/squid, /var/run, /run, /tmp]
     volumes:
       - ./deploy/egress/squid.conf:/etc/squid/squid.conf:ro
@@ -101,7 +110,11 @@ services:
     image: caddy@sha256:ae5e525ca6773b0a4ce579c774cb39b3147e1576084139229517bdbcfe3ed812
     restart: unless-stopped
     ports: ["${QA_HTTPS_PORT:-8443}:443"]
-    command: caddy reverse-proxy --from https://localhost --to platform:8080 --internal-certs
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    volumes:
+      - ./deploy/edge/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/secrets/pki/edge:/etc/qa-pki:ro
     networks: [edge]
     depends_on: [platform]
 
@@ -120,6 +133,7 @@ services:
 networks:
   edge: {}
   core: { internal: true }
+  workerapi: { internal: true }
   exec: { internal: true }
   egress: {}
 

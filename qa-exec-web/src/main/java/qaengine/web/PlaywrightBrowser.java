@@ -23,6 +23,7 @@ import qaengine.core.model.PageSnapshot;
 import qaengine.core.model.Signal;
 import qaengine.core.policy.ActionGate;
 import qaengine.core.policy.Decision;
+import qaengine.core.policy.ExecutionLock;
 import qaengine.core.policy.HttpRequestInfo;
 import qaengine.core.port.BrowserPort;
 

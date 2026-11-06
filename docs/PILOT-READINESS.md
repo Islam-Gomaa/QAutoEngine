@@ -23,7 +23,8 @@ Lifting `ExecutionLock` is a reviewed code change, made only after the three ope
 - **Unmarked destructive GET:** cannot be detected in advance. Mitigated by least-privilege test accounts, non-production targets and explicit scopes.
 - **Screenshots** can show personal data that was not masked. There is no OCR.
 - **Real HTTPS targets are untested.** All testing used the fixture over HTTP, though traffic did tunnel through the proxy.
-- **Worker to gateway traffic is plain HTTP** on an isolated internal network, including released credentials.
+- **Compromised worker:** credentials are in worker memory during a job, and its certificate and key are readable there. Mutual TLS protects the network, not a fully compromised worker.
+- **Platform to PostgreSQL is not TLS.** Only those two share that network, and stored credentials are ciphertext.
 - **Shared kernel:** containers are not sufficient isolation for hostile multi-tenant use.
 - **Firefox** was not measured.
 - **Local secret files** are readable inside their restricted directory.

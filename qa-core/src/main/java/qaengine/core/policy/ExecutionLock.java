@@ -1,8 +1,7 @@
-package qaengine.web;
+package qaengine.core.policy;
 
 import java.net.URI;
 import java.util.Set;
-import qaengine.core.policy.TargetScope;
 
 /**
  * Keeps every executor on loopback until the pre-pilot security gate passes. There is deliberately
@@ -16,6 +15,19 @@ public final class ExecutionLock {
     private static final Set<String> ALLOWED = Set.of("127.0.0.1", "localhost", "[::1]", "::1", FIXTURE_HOST);
 
     private ExecutionLock() {}
+
+    /** Loopback or the fixture: the only places a secret may travel without TLS to the target. */
+    public static boolean isLocal(String url) {
+        String host = URI.create(url).getHost();
+        return host != null && ALLOWED.contains(host);
+    }
+
+    /** A password sent to an http:// target would be readable at the proxy and on every hop after it. */
+    public static void requireSecureForSecrets(String url) {
+        if (!url.startsWith("https://") && !isLocal(url)) {
+            throw new SecurityException("Refusing to send credentials over plain HTTP: " + url);
+        }
+    }
 
     public static void requireAllowed(TargetScope scope) {
         for (String origin : scope.origins()) {
