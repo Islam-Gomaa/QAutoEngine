@@ -95,4 +95,39 @@ class VerdictEngineTest {
         var s = Signal.of(Signal.Type.PAGE_EXCEPTION, O + "/p", "boom");
         assertEquals(page(200, s), page(200, s));
     }
+
+    @Test void redirectIsInconclusive() {
+        var e = engine.evaluate(Navigation.redirected(O + "/a", O + "/b"), ExpectedOutcome.PAGE_LOADS, false, List.of());
+        assertEquals(Verdict.INCONCLUSIVE, e.verdict());
+    }
+
+    @Test void failedNavigationIsAFinding() {
+        var e = engine.evaluate(Navigation.failed(O + "/a", "net::ERR_FAILED"), ExpectedOutcome.PAGE_LOADS, false, List.of());
+        assertEquals(Finding.Type.NAVIGATION_FAILURE, e.findings().getFirst().type());
+    }
+
+    @Test void consoleErrorIsLowAndStateChangePasses() {
+        var s = Signal.of(Signal.Type.CONSOLE_ERROR, O + "/p", "boom\nsecond line");
+        var e = page(200, s);
+        assertEquals(Severity.LOW, e.findings().getFirst().severity());
+        assertEquals("boom", e.findings().getFirst().detail());
+        assertEquals(Verdict.PASS, engine.evaluate(Navigation.loaded(200, O + "/p"), ExpectedOutcome.STATE_CHANGES, true, List.of()).verdict());
+    }
+
+    @Test void unknownStatusIsInconclusiveNotAPass() {
+        assertEquals(Verdict.INCONCLUSIVE, page(304).verdict());
+        assertEquals(Verdict.INCONCLUSIVE, page(0).verdict());
+    }
+
+    @Test void clientErrorOnARequestIsMedium() {
+        assertEquals(Severity.MEDIUM, page(200, Signal.response(O + "/api", 404, "fetch")).findings().getFirst().severity());
+    }
+
+    @Test void otherSignalsAreIgnored() {
+        assertEquals(Verdict.PASS, page(200, Signal.of(Signal.Type.DIALOG_DISMISSED, O + "/p", "confirm"), Signal.of(Signal.Type.REQUEST_FAILED, O + "/x", "y"), Signal.response(O + "/ok", 200, "script")).verdict());
+    }
+
+    @Test void nullsAreHandled() {
+        assertEquals(Verdict.FAIL, page(200, new Signal(Signal.Type.PAGE_EXCEPTION, null, 0, null, "")).verdict());
+    }
 }

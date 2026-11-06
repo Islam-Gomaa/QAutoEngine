@@ -22,12 +22,17 @@ Wrapper:
 | `qa-contracts` | Internal worker API contracts |
 | `qa-fixtures` | Planted-defect regression site and scorecard |
 | `qa-worker` | Plain Java job runner, outside the Spring Boot BOM |
+| `qa-dashboard` | React dashboard, served by the platform |
 | `qa-platform` | Spring Boot control plane |
 | `qa-bom` | Executor dependency versions (ADR-026) |
 | `legacy-prototype` | Frozen V6 prototype, contained to loopback |
 
+## Run it
+
+See the [operations runbook](docs/runbooks/operations.md).
+
 ## Safety
 
 No executor may contact a real target until the pre-pilot security gate has passed and written
-authorization exists. See [DECISIONS.md](DECISIONS.md) and
-[the decision register](docs/decisions/TECHNICAL-DECISION-REGISTER.md).
+authorization exists. See [the gate status](docs/PILOT-READINESS.md),
+[DECISIONS.md](DECISIONS.md) and [the decision register](docs/decisions/TECHNICAL-DECISION-REGISTER.md).

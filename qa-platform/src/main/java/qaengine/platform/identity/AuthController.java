@@ -3,7 +3,6 @@ package qaengine.platform.identity;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -74,7 +73,7 @@ public class AuthController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
         Account a = found.get();
-        if (a.totpSecret() != null && !Totp.verify(Base64.getDecoder().decode(a.totpSecret()), body.totp(), Instant.now())) {
+        if (a.totpSecret() != null && !Totp.verify(TotpSeal.open(box, a.id(), a.totpSecret()), body.totp(), Instant.now())) {
             throttle.failed(email);
             audit.record(a.organizationId(), email, "LOGIN_FAILED_TOTP", "", "");
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();

@@ -193,12 +193,32 @@ class ApiSecurityTest extends IntegrationTestBase {
         assertTrue(encoder.encode("x").startsWith("$argon2id$"));
     }
 
-    @Test void totpIsRequiredWhenEnrolled() throws Exception {
-        byte[] key = new byte[20];
-        account("t@x.test", "correct-horse", Base64.getEncoder().encodeToString(key));
+    @Test void totpIsRequiredWhenEnrolledAndStoredSealed() throws Exception {
+        account("t@x.test", "correct-horse", null);
+        UUID id = db.sql("SELECT id FROM app_user WHERE email = 't@x.test'").query(UUID.class).single();
+        var me = new Principal(id, orgA, "t@x.test", false);
+        String body = mvc.perform(post("/api/v1/auth/totp").with(as(me)).with(csrf())).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String seed = body.replaceAll(".*\"seedBase64\":\"([^\"]+)\".*", "$1");
+        byte[] key = Base64.getDecoder().decode(seed);
+        assertFalse(db.sql("SELECT totp_secret FROM app_user WHERE id = ?").param(id).query(String.class).single().contains(seed), "seed is sealed at rest");
         assertEquals(401, login("t@x.test", "correct-horse", null));
         assertEquals(401, login("t@x.test", "correct-horse", "000000".equals(Totp.code(key, Instant.now().getEpochSecond() / 30)) ? "111111" : "000000"));
         assertEquals(200, login("t@x.test", "correct-horse", Totp.code(key, Instant.now().getEpochSecond() / 30)));
+    }
+
+    @Test void onlyAdminsManageUsersAndOnlyTheirOwn() throws Exception {
+        String body = "{\"email\":\"new@x.test\",\"password\":\"long-enough-password\",\"organizationAdmin\":false}";
+        mvc.perform(post("/api/v1/users").with(as(testerA)).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/users").with(as(adminA)).with(csrf()).contentType(MediaType.APPLICATION_JSON).content("{\"email\":\"s@x.test\",\"password\":\"short\",\"organizationAdmin\":false}")).andExpect(status().isBadRequest());
+        String created = mvc.perform(post("/api/v1/users").with(as(adminA)).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        assertFalse(created.contains("long-enough-password"));
+        assertEquals(200, login("new@x.test", "long-enough-password", null));
+        UUID id = db.sql("SELECT id FROM app_user WHERE email = 'new@x.test'").query(UUID.class).single();
+        mvc.perform(post("/api/v1/users/" + id + "/disable").with(as(adminB)).with(csrf())).andExpect(status().isNotFound());
+        mvc.perform(post("/api/v1/users/" + id + "/disable").with(as(adminA)).with(csrf())).andExpect(status().isOk());
+        assertEquals(401, login("new@x.test", "long-enough-password", null));
+        String listB = mvc.perform(get("/api/v1/users").with(as(adminB))).andReturn().getResponse().getContentAsString();
+        assertFalse(listB.contains("new@x.test"), "other organizations are invisible");
     }
 
     @Test void loginIsThrottled() throws Exception {

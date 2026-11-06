@@ -45,10 +45,21 @@ class JobQueueTest extends IntegrationTestBase {
     }
 
     UUID newRun() {
+        return newRun(environment);
+    }
+
+    UUID newRun(UUID env) {
         UUID id = UUID.randomUUID();
         db.sql("INSERT INTO test_run (organization_id, id, project_id, environment_id, seed, idempotency_key, created_by) VALUES (?,?,?,?, 1, ?, ?)")
-                .params(org, id, project, environment, id.toString(), user).update();
+                .params(org, id, project, env, id.toString(), user).update();
         return id;
+    }
+
+    UUID newEnvironment() {
+        UUID target = db.sql("SELECT target_id FROM environment WHERE id = ?").param(environment).query(UUID.class).single();
+        UUID e = UUID.randomUUID();
+        db.sql("INSERT INTO environment (organization_id, id, target_id, name, classification, base_url) VALUES (?,?,?, 'e', 'LOCAL', 'http://127.0.0.1')").params(org, e, target).update();
+        return e;
     }
 
     String state(UUID job) {
@@ -61,7 +72,7 @@ class JobQueueTest extends IntegrationTestBase {
 
     @Test
     void concurrentClaimsNeverShareAJob() throws Exception {
-        for (int i = 0; i < 20; i++) queue.enqueue(org, newRun(), 2, 60);
+        for (int i = 0; i < 20; i++) queue.enqueue(org, newRun(newEnvironment()), 2, 60);
         queue.enqueue(org, run, 2, 60);
         List<Callable<JobQueue.Claim>> workers = new ArrayList<>();
         for (int i = 0; i < 40; i++) {
@@ -74,6 +85,19 @@ class JobQueueTest extends IntegrationTestBase {
         }
         assertEquals(21, claimed.size());
         assertEquals(21, claimed.stream().distinct().count());
+    }
+
+    @Test
+    void oneRunPerEnvironmentAtATime() {
+        UUID first = queue.enqueue(org, run, 2, 60);
+        UUID second = queue.enqueue(org, newRun(), 2, 60);
+        var c = queue.claim("w1").orElseThrow();
+        assertEquals(first, c.jobId());
+        assertTrue(queue.claim("w2").isEmpty(), "same environment waits");
+        UUID other = queue.enqueue(org, newRun(newEnvironment()), 2, 60);
+        assertEquals(other, queue.claim("w3").orElseThrow().jobId(), "another environment is not held up");
+        queue.complete(org, first, c.attempt(), JobQueue.Terminal.SUCCEEDED, null, "EXHAUSTED");
+        assertEquals(second, queue.claim("w2").orElseThrow().jobId());
     }
 
     @Test
@@ -185,6 +209,7 @@ class JobQueueTest extends IntegrationTestBase {
         db.sql("INSERT INTO audit_event (organization_id, actor, action) VALUES (?, 'a', 'x')").param(org).update();
         assertThrows(Exception.class, () -> db.sql("UPDATE audit_event SET actor = 'b'").update());
         assertThrows(Exception.class, () -> db.sql("DELETE FROM audit_event").update());
+        assertThrows(Exception.class, () -> db.sql("TRUNCATE audit_event").update());
     }
 
     @Test

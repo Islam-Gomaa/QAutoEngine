@@ -30,3 +30,6 @@ Decisions made during execution. Architecture-level decisions live in
 | 2026-11-06 | 9 | Polling instead of SSE for run status | Simpler, and sufficient at 3-second refresh |
 | 2026-11-06 | 9 | HTML report plus browser print instead of a PDF library | Avoids a dependency for little gain |
 | 2026-11-06 | 9 | Hash routing | Static hosting with no server-side route forwarding |
+| 2026-11-06 | Gate | One run per environment at a time, enforced in the claim query | Protects targets and single-session accounts |
+| 2026-11-06 | Gate | WebKit media packages removed from the worker | Unfixed HIGH advisory in code that never runs here |
+| 2026-11-06 | Gate | Stopped before Phases 11 to 13 | The agreed dependency order puts them after R1, which needs external decisions |

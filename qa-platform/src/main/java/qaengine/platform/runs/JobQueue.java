@@ -50,10 +50,17 @@ public class JobQueue {
                 UPDATE run_job j SET state = 'LEASED', attempt = attempt + 1, worker_id = ?,
                        lease_expires_at = %s
                 WHERE (j.organization_id, j.id) = (
-                    SELECT organization_id, id FROM run_job
-                    WHERE state = 'QUEUED' AND cancel_requested_at IS NULL
-                    ORDER BY created_at
-                    FOR UPDATE SKIP LOCKED LIMIT 1)
+                    SELECT q.organization_id, q.id FROM run_job q
+                    JOIN test_run qr ON qr.organization_id = q.organization_id AND qr.id = q.run_id
+                    WHERE q.state = 'QUEUED' AND q.cancel_requested_at IS NULL
+                      -- One run per environment at a time: protects the target and single-session accounts.
+                      AND NOT EXISTS (
+                        SELECT 1 FROM run_job a
+                        JOIN test_run ar ON ar.organization_id = a.organization_id AND ar.id = a.run_id
+                        WHERE a.state IN ('LEASED','RUNNING')
+                          AND ar.organization_id = qr.organization_id AND ar.environment_id = qr.environment_id)
+                    ORDER BY q.created_at
+                    FOR UPDATE OF q SKIP LOCKED LIMIT 1)
                 RETURNING organization_id, id, run_id, attempt
                 """.formatted(LEASE_SQL))
                 .param(workerId)

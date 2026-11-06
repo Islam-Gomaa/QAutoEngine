@@ -94,3 +94,20 @@
 - **End-to-end (`scripts/e2e-auth.py`), 12 of 12:** authenticated run through the hardened stack, protected page reached, and the canary password absent from API output, every service log, audit log, a full database dump and stored evidence.
 - **Failures recorded:** a session lost on the last queued item reported `EXHAUSTED` (real bug, fixed). A later rerun failed only because `-pl` used a stale `qa-core` from the local repository.
 - **Limit:** only fixture targets are possible. `ExecutionLock` still refuses every real target.
+
+## Pre-Pilot Gate Preparation
+
+Everything possible without an external party:
+
+- **Coverage:** policy 93%, verdict 97% (target 90%).
+- **Scans:** Trivy found outdated packages in the proxy, `apt` in the platform, and Maven tooling plus WebKit media libraries in the worker base image. All patched or removed. Final result: 0 HIGH or CRITICAL on all three images. gitleaks clean across history, with one documented synthetic token.
+- **Images:** every base image pinned by digest; `latest` removed.
+- **Restore drill:** 19 of 19, on a separate database, every evidence hash verified.
+- **Soak:** 8 and 4 consecutive runs, identical results, stable memory, one worker restart per job.
+- **Gaps found in phases I had marked complete, now fixed:** no API to add users; TOTP seeds stored unsealed; per-environment concurrency limit missing; audit trigger did not cover `TRUNCATE`.
+- **Failures recorded:** digest lookup wrote invalid `FROM` lines twice before validation was added; a `pipefail` bug falsely reported audit deletion as allowed; a scan with no output was treated as unverified, not clean.
+- **Final clean rebuild:** 233 tests; attacks 29 of 29; failure injection 6 of 6; authenticated run and leak search 12 of 12.
+
+## Stop point
+
+Stopped at the pre-pilot security gate. It needs an independent penetration test, independent review, and written target authorization. See `docs/PILOT-READINESS.md`. Phases 11 to 13 follow R1, so they were not started.

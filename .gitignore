@@ -46,3 +46,4 @@ deploy/secrets/*
 !deploy/secrets/.gitkeep
 qa-dashboard/node_modules/
 qa-dashboard/dist/
+backups/

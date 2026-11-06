@@ -31,7 +31,7 @@ x-worker: &worker
 
 services:
   postgres:
-    image: postgres:18-alpine
+    image: postgres@sha256:80df0884d0d3b7f0f7b2c37f273b1c12d5fd66e25aaef2e19ebf95908d620f11
     restart: unless-stopped
     environment:
       POSTGRES_DB: qaengine
@@ -72,7 +72,7 @@ services:
 
   # Workers reach the platform only through this, and only on the internal port.
   gateway:
-    image: caddy:2-alpine
+    image: caddy@sha256:ae5e525ca6773b0a4ce579c774cb39b3147e1576084139229517bdbcfe3ed812
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
@@ -83,7 +83,8 @@ services:
     depends_on: [platform]
 
   egress:
-    image: ubuntu/squid:latest
+    build: { context: deploy/egress }
+    image: qa-engine/egress:dev
     restart: unless-stopped
     read_only: true
     tmpfs: [/var/spool/squid, /var/log/squid, /var/run, /run, /tmp]
@@ -97,7 +98,7 @@ services:
     <<: *worker
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy@sha256:ae5e525ca6773b0a4ce579c774cb39b3147e1576084139229517bdbcfe3ed812
     restart: unless-stopped
     ports: ["${QA_HTTPS_PORT:-8443}:443"]
     command: caddy reverse-proxy --from https://localhost --to platform:8080 --internal-certs

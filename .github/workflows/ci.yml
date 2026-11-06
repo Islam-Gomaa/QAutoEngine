@@ -9,7 +9,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '25', cache: maven }
+      - uses: actions/setup-node@v4
+        with: { node-version: '24' }
       - run: ./scripts/secret-scan.sh
+      - run: ./mvnw -B install -DskipTests
+      - run: ./mvnw -B exec:java -pl qa-exec-web -Dexec.classpathScope=test -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.args="install --with-deps chromium"
       - run: ./mvnw -B verify
   dependencies:
     if: github.event_name == 'pull_request'

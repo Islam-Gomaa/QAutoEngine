@@ -13,12 +13,13 @@
 | 8 Isolated workers | Complete | 29/29 attacks refused, 6/6 failure tests |
 | 9 Dashboard and reporting | Complete | 17/17 browser checks |
 | 10 Target connectivity | Complete on the fixture | Real targets stay locked |
-| Pre-pilot gate, pilot, R1 | Blocked until earlier phases pass | Requires written target authorization |
-| 11–14 | Pending | Follow R1 |
+| Pre-pilot gate | **Blocked** | Needs independent penetration test, independent review, written authorization. See `docs/PILOT-READINESS.md` |
+| Pilot, R1 | Blocked by the gate | |
+| 11 API testing, 12 AI, 13 Mobile | Not started | Follow R1 in the agreed dependency order |
+| 14 Hardening | Partly done for R1 | Scans, restore drill and soak done; penetration test open |
 
 **Safety rule in force:** every executor is restricted to loopback until the pre-pilot gate passes.
 
-## Open quality items
+## Current verified state
 
-- `qa-core` branch coverage: policy 83%, verdict 82%, target 90%.
-- Independent security review of `ActionGate` not yet done.
+233 automated tests; 29 of 29 attacks refused; 6 of 6 failure-injection checks; 0 HIGH or CRITICAL image findings; 7 of 7 planted defects, 0 false findings, 0 traps reached.
