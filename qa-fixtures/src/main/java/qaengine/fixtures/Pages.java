@@ -20,7 +20,8 @@ final class Pages {
             <a href="/defects/failed-xhr">Data</a> <a href="/defects/broken-image">Gallery</a>
             <a href="/traps/danger">Account</a> <a href="/traps/get">Items</a> <a href="/traps/forms">Forms</a>
             <a href="/traps/external">Partners</a> <a href="/modern/spa">Spa</a> <a href="/modern/frames">Frames</a>
-            <a href="/modern/shadow">Shadow</a> <a href="/modern/tabs">Tabs</a> <a href="/calendar?month=1">Calendar</a></nav>""");
+            <a href="/modern/shadow">Shadow</a> <a href="/modern/tabs">Tabs</a> <a href="/calendar?month=1">Calendar</a>
+            <a href="/hostile">Hostile</a></nav>""");
         page("/about", "About", "<p>About us.</p><a href=\"/\">Home</a> <a href=\"/team\">Team</a>");
         page("/team", "Team", "<p>The team.</p><a href=\"/about\">About</a>");
         page("/docs", "Docs", "<p>Docs.</p><a href=\"/faq\">FAQ</a>");
@@ -65,6 +66,10 @@ final class Pages {
         page("/shadow-deep", "Shadow Deep", "<a href=\"/\">Home</a>");
         page("/modern/tabs", "Tabs", "<a href=\"/\">Home</a> <a href=\"/tab-deep\" target=_blank>Open</a>");
         page("/tab-deep", "Tab Deep", "<a href=\"/\">Home</a>");
+        ALL.put("/hostile", "<!doctype html><html><head><title>&lt;img src=x onerror=window.__xss=1&gt;</title></head><body>"
+                + "<a href=\"/hostile-next\" title=\"&lt;script&gt;window.__xss=1&lt;/script&gt;\">&lt;img src=x onerror=window.__xss=1&gt;</a>"
+                + "<script>console.error('<img src=x onerror=window.__xss=1>');</script></body></html>");
+        page("/hostile-next", "Hostile Next", "<a href=\"/\">Home</a>");
         page("/items", "Item List", "<a href=\"/\">Home</a>");
         page("/submitted", "Received", "<a href=\"/\">Home</a>");
 

@@ -76,3 +76,11 @@
 - **Failures recorded:** Squid could not write to stdout; a metadata request timed out instead of being refused (reverse DNS; IP literals now refused outright); a port filter returned 401 through an error dispatch; a tmpfs UID mismatch made a state-leak test pass for the wrong reason; a regex typo took the proxy down, which failed closed.
 - **Process failure:** the secret scan flagged a test file and my script committed anyway (commit dcf3322). The strings were synthetic and the test now builds them at runtime. Commits are now gated on the scan.
 - **ADR-013 outcome:** Squid works with a static allowlist. Per-run proxy rules were not built; per-run scope is enforced by the gate. Allowlist changes are an operations step.
+
+## Phase 9: Dashboard and Reporting (complete)
+
+- React, TypeScript, Vite, MUI, TanStack Query, served same-origin. `npm audit`: 0 vulnerabilities.
+- Reporting API: summary from stored rows, printable HTML, Excel with formula neutralization.
+- **Browser journey (`DashboardJourney`), 17 checks passed:** refused and successful sign-in, READ_ONLY default, run started and finished from the UI, 7 of 7 defects shown, screenshot evidence loads, linked test case, HTML and Excel export, sign-out, no CSP violations, and no script injection from a hostile fixture page.
+- **Deviations from plan:** run progress uses polling instead of SSE; the API client is hand-typed instead of generated; PDF is the browser's print of the HTML report. All are simpler and can be revisited.
+- **Not done:** an automated accessibility check.

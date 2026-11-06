@@ -90,7 +90,7 @@ class ScorecardTest {
 
     @Test
     void noFalseFindings() {
-        Set<String> expected = Set.of("/missing-page", "/crash", "/defects/js-error", "/defects/console-error", "/api/fail", "/missing-image.png");
+        Set<String> expected = Set.of("/missing-page", "/crash", "/defects/js-error", "/defects/console-error", "/api/fail", "/missing-image.png", "/hostile");
         var unexpected = first.observations().stream().map(o -> o.finding().url().replace(fixture.baseUrl(), ""))
                 .filter(u -> !expected.contains(u)).toList();
         assertEquals(List.of(), unexpected);

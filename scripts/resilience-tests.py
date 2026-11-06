@@ -78,7 +78,7 @@ steps = call("GET", f"/api/v1/projects/{project}/runs/{run}/steps")
 attempts = sorted({s["attempt"] for s in steps})
 check("run recovers on a new attempt", final == "SUCCEEDED" and attempts == [1, 2], f"status={final} attempts={attempts}")
 defects = call("GET", f"/api/v1/projects/{project}/defects")
-check("defects not duplicated by the retry", len(defects) == 6 and len({d['url'] for d in defects}) == 6, f"defects={len(defects)}")
+check("defects not duplicated by the retry", len(defects) == 7 and len({d['url'] for d in defects}) == 7, f"defects={len(defects)}")
 
 print("== Cancel a running job")
 run = start(project, env)

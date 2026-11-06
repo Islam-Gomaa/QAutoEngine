@@ -55,7 +55,7 @@ class FixtureServerTest {
     @Test
     void scorecardIsMachineReadable() {
         assertTrue(Scorecard.toJson().contains("\"id\":\"D-404\""));
-        assertEquals(6, Scorecard.of(Scorecard.Kind.DEFECT).size());
+        assertEquals(7, Scorecard.of(Scorecard.Kind.DEFECT).size());
         assertEquals(1, Scorecard.of(Scorecard.Kind.RESIDUAL_RISK).size());
     }
 

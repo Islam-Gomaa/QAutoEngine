@@ -16,6 +16,7 @@
         <module>qa-fixtures</module>
         <module>qa-exec-web</module>
         <module>qa-worker</module>
+        <module>qa-dashboard</module>
         <module>qa-platform</module>
         <module>legacy-prototype</module>
     </modules>

@@ -27,3 +27,6 @@ Decisions made during execution. Architecture-level decisions live in
 | 2026-11-06 | 8 | Raw IP destinations always refused by the proxy | Targets are named hosts; avoids reverse DNS delay |
 | 2026-11-06 | 8 | Proxy allowlist is a static file | Simple and reliable; the gate enforces per-run scope |
 | 2026-11-06 | 8 | `fixture.qa.internal` allowed by `ExecutionLock` | Needed to test through the real proxy; it is never a real system |
+| 2026-11-06 | 9 | Polling instead of SSE for run status | Simpler, and sufficient at 3-second refresh |
+| 2026-11-06 | 9 | HTML report plus browser print instead of a PDF library | Avoids a dependency for little gain |
+| 2026-11-06 | 9 | Hash routing | Static hosting with no server-side route forwarding |

@@ -18,6 +18,7 @@ public final class Scorecard {
             new Item("D-CONSOLE", Kind.DEFECT, "/defects/console-error", "console.error during load"),
             new Item("D-XHR", Kind.DEFECT, "/defects/failed-xhr", "First-party request returns 500"),
             new Item("D-IMG", Kind.DEFECT, "/defects/broken-image", "First-party image returns 404"),
+            new Item("D-HOSTILE", Kind.DEFECT, "/hostile", "console.error with a script-injection payload, for dashboard escaping"),
             new Item("T-DELETE-ICON", Kind.TRAP, "/m/delete-account", "Unlabelled icon button"),
             new Item("T-PAY", Kind.TRAP, "/m/confirm-payment", "Confirm payment button"),
             new Item("T-REMOVE", Kind.TRAP, "/m/remove-user", "Remove user button"),
