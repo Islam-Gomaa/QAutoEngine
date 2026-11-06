@@ -51,6 +51,8 @@ public final class ExplorationEngine {
     private int sequence;
     private int pages;
     private java.util.function.BooleanSupplier stopRequested = () -> false;
+    private String loginPath;
+    private boolean sessionLost;
     private java.util.function.Consumer<StepRecord> stepListener = s -> { };
     private java.util.function.Consumer<Observation> findingListener = o -> { };
 
@@ -73,6 +75,18 @@ public final class ExplorationEngine {
         return this;
     }
 
+    /** A redirect to this path during a run means the session ended, so the run stops honestly. */
+    public ExplorationEngine sessionEndsAt(String path) {
+        this.loginPath = path;
+        return this;
+    }
+
+    /** Extra starting points, such as pages only reachable after login. */
+    public ExplorationEngine seed(String url) {
+        frontier.add(new Candidate(url, 0, null, 0));
+        return this;
+    }
+
     /** Receives each step and confirmed finding as it happens, so progress is visible during a run. */
     public ExplorationEngine onProgress(java.util.function.Consumer<StepRecord> steps, java.util.function.Consumer<Observation> findings) {
         this.stepListener = steps;
@@ -86,10 +100,13 @@ public final class ExplorationEngine {
         RunResult.StopReason stop = RunResult.StopReason.EXHAUSTED;
         while (!frontier.isEmpty()) {
             if (stopRequested.getAsBoolean()) { stop = RunResult.StopReason.CANCELLED; break; }
+            if (sessionLost) { stop = RunResult.StopReason.SESSION_EXPIRED; break; }
             if (clock.instant().isAfter(deadline)) { stop = RunResult.StopReason.DEADLINE; break; }
             if (pages >= gate.policy().budget().maxPages()) { stop = RunResult.StopReason.BUDGET; break; }
             visit(frontier.next());
         }
+        // The queue can empty on the very step that lost the session. That must not read as a finished crawl.
+        if (sessionLost) stop = RunResult.StopReason.SESSION_EXPIRED;
         return new RunResult(steps, new ArrayList<>(observations.values()), states, new ArrayList<>(transitions), stop);
     }
 
@@ -109,6 +126,11 @@ public final class ExplorationEngine {
         StepEvaluation eval = verdicts.evaluate(nav, ExpectedOutcome.PAGE_LOADS, true, signals);
 
         if (nav.outcome() == Navigation.Outcome.REDIRECTED) {
+            if (loginPath != null && nav.redirectTarget().contains(loginPath)) {
+                record(c, via, Verdict.INCONCLUSIVE, 0, "", "session ended");
+                sessionLost = true;
+                return;
+            }
             int seq = record(c, via, eval.verdict(), 0, "", eval.note());
             frontier.add(new Candidate(nav.redirectTarget(), c.depth(), null, seq));
             return;

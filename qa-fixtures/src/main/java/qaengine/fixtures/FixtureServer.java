@@ -25,6 +25,7 @@ public final class FixtureServer implements AutoCloseable {
 
     public static final String TEST_USER = "fixture-user";
     public static final String TEST_PASSWORD = "fixture-canary-password-7Q2x";
+    public static final String TEST_TOTP = "654321";
 
     private final HttpServer server;
     private final ExecutorService pool;
@@ -96,7 +97,10 @@ public final class FixtureServer implements AutoCloseable {
         if (path.equals("/redirect-external")) { redirect(x, "http://blocked.invalid/landing"); return; }
         if (path.equals("/calendar")) { calendar(x); return; }
         if (path.equals("/session")) { login(x, body); return; }
-        if (path.equals("/account")) { account(x); return; }
+        if (path.equals("/session-totp")) { loginTotp(x, body); return; }
+        if (path.equals("/session-push")) { redirect(x, "/mfa-wait"); return; }
+        if (path.equals("/account") || path.equals("/account/profile")) { account(x, path); return; }
+        if (path.equals("/account/expire")) { expire(x); return; }
         if (path.equals("/refresh")) { send(x, 200, "application/json", "{\"ok\":true}"); return; }
         if (path.equals("/sw.js")) {
             send(x, 200, "application/javascript", "self.addEventListener('install',e=>self.skipWaiting());"
@@ -137,10 +141,28 @@ public final class FixtureServer implements AutoCloseable {
         send(x, 401, "text/html", "<title>Login failed</title><a href=\"/login\">Retry</a>");
     }
 
-    private void account(HttpExchange x) throws IOException {
+    private void loginTotp(HttpExchange x, String body) throws IOException {
+        if (body.contains("password=" + TEST_PASSWORD) && body.contains("code=" + TEST_TOTP)) {
+            x.getResponseHeaders().add("Set-Cookie", "session=fixture-session; HttpOnly; Path=/");
+            redirect(x, "/account");
+            return;
+        }
+        send(x, 401, "text/html", "<title>Login failed</title>");
+    }
+
+    private void account(HttpExchange x, String path) throws IOException {
         String cookie = x.getRequestHeaders().getFirst("Cookie");
         if (cookie == null || !cookie.contains("session=fixture-session")) { redirect(x, "/login"); return; }
+        if (path.equals("/account/profile")) {
+            send(x, 200, "text/html", "<title>Profile</title><a href=\"/account\">Back</a> <a href=\"/account/expire\">Refresh session</a>");
+            return;
+        }
         send(x, 200, "text/html", "<title>Your Account</title><a href=\"/account/profile\">Profile</a> <a href=\"/logout\">Sign out</a>");
+    }
+
+    private void expire(HttpExchange x) throws IOException {
+        x.getResponseHeaders().add("Set-Cookie", "session=gone; Max-Age=0; Path=/");
+        redirect(x, "/login");
     }
 
     private void redirect(HttpExchange x, String location) throws IOException {

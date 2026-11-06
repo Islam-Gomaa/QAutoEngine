@@ -77,6 +77,14 @@ final class Pages {
             <form action="/session" method=post><input name=username autocomplete=username>
             <input name=password type=password><button type=submit>Sign in</button></form>""");
 
+        page("/login-totp", "Login", """
+            <form action="/session-totp" method=post><input name=username><input name=password type=password>
+            <input name=code autocomplete=one-time-code><button type=submit>Sign in</button></form>""");
+        page("/login-push", "Login", """
+            <form action="/session-push" method=post><input name=username><input name=password type=password>
+            <button type=submit>Sign in</button></form>""");
+        page("/mfa-wait", "Approve on your phone", "<p>Waiting for approval.</p>");
+
         page("/bake/paths", "Paths", """
             <iframe id=f src="/bake/frame"></iframe><form id=fp method=post action="/m/form-post" target=f><input name=a value=1></form>
             <a id=redirect href="/redirect-internal">r</a> <a id=chain href="/redirect-chain">c</a>

@@ -84,3 +84,13 @@
 - **Browser journey (`DashboardJourney`), 17 checks passed:** refused and successful sign-in, READ_ONLY default, run started and finished from the UI, 7 of 7 defects shown, screenshot evidence loads, linked test case, HTML and Excel export, sign-out, no CSP violations, and no script injection from a hostile fixture page.
 - **Deviations from plan:** run progress uses polling instead of SSE; the API client is hand-typed instead of generated; PDF is the browser's print of the HTML report. All are simpler and can be revisited.
 - **Not done:** an automated accessibility check.
+
+## Phase 10: Target Connectivity (complete, on the fixture)
+
+- Write-only credentials with envelope encryption; login profiles; password, TOTP and session import. Anything else ends as `BLOCKED`.
+- A credential is released once per attempt, audited; the TOTP seed never leaves the platform.
+- Sessions that end stop the run as `SESSION_EXPIRED`, never as a finished crawl.
+- **Tests:** 9 login tests (attempt limit: no third attempt reached the server; push MFA blocked; stale imported session refused; POST blocked again after login; logout never followed).
+- **End-to-end (`scripts/e2e-auth.py`), 12 of 12:** authenticated run through the hardened stack, protected page reached, and the canary password absent from API output, every service log, audit log, a full database dump and stored evidence.
+- **Failures recorded:** a session lost on the last queued item reported `EXHAUSTED` (real bug, fixed). A later rerun failed only because `-pl` used a stale `qa-core` from the local repository.
+- **Limit:** only fixture targets are possible. `ExecutionLock` still refuses every real target.

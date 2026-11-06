@@ -205,6 +205,36 @@ public final class PlaywrightBrowser implements BrowserPort {
     }
 
     @Override
+    public Navigation submitLogin(String username, String password, String oneTimeCode) {
+        var secret = page.locator("input[type=password]").first();
+        if (secret.count() == 0) return Navigation.failed(page.url(), "no password field");
+        var form = secret.locator("xpath=ancestor::form[1]");
+        var user = form.locator("input:not([type=password]):not([type=hidden]):not([type=submit])").first();
+        if (user.count() > 0) user.fill(username);
+        secret.fill(password);
+        if (oneTimeCode != null) {
+            var code = form.locator("input[autocomplete=one-time-code], input[name=code], input[name=otp], input[name=totp]").first();
+            if (code.count() == 0) return Navigation.failed(page.url(), "no one-time code field");
+            code.fill(oneTimeCode);
+        }
+        String submitUrl = URI.create(page.url()).resolve(String.valueOf(form.getAttribute("action"))).toString();
+        redirects.remove(submitUrl);
+        try {
+            Response response = page.waitForNavigation(new Page.WaitForNavigationOptions().setTimeout(NAV_TIMEOUT_MS),
+                    () -> form.locator("button[type=submit], input[type=submit], button").first().click());
+            return Navigation.loaded(response == null ? 0 : response.status(), page.url());
+        } catch (PlaywrightException e) {
+            String target = redirects.remove(submitUrl);
+            return target != null ? Navigation.redirected(submitUrl, target) : Navigation.failed(submitUrl, "login did not complete");
+        }
+    }
+
+    @Override
+    public void importCookies(String name, String value, String url) {
+        context.addCookies(List.of(new com.microsoft.playwright.options.Cookie(name, value).setUrl(url).setHttpOnly(true)));
+    }
+
+    @Override
     public List<Signal> drainSignals() {
         page.waitForTimeout(20);
         List<Signal> copy = new ArrayList<>(signals);

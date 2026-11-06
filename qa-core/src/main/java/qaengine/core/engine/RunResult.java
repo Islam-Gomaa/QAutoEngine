@@ -11,7 +11,7 @@ import qaengine.core.verdict.Verdict;
 public record RunResult(List<StepRecord> steps, List<Observation> observations, Map<String, String> states,
                         List<Transition> transitions, StopReason stop) {
 
-    public enum StopReason { EXHAUSTED, BUDGET, DEADLINE, CANCELLED }
+    public enum StopReason { EXHAUSTED, BUDGET, DEADLINE, CANCELLED, SESSION_EXPIRED, AUTH_BLOCKED }
 
     /** An edge in the application model. */
     public record Transition(String from, String to, String via) {}

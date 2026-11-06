@@ -16,6 +16,7 @@ import java.util.UUID;
 import qaengine.contracts.WorkerContracts.FindingReport;
 import qaengine.contracts.WorkerContracts.HeartbeatResponse;
 import qaengine.contracts.WorkerContracts.JobAssignment;
+import qaengine.contracts.WorkerContracts.LoginSecret;
 import qaengine.contracts.WorkerContracts.RunCompletion;
 import qaengine.contracts.WorkerContracts.StepReport;
 
@@ -63,6 +64,10 @@ final class PlatformClient {
 
     private void postJson(String path, Object body) throws IOException, InterruptedException {
         post(path, "application/json", HttpRequest.BodyPublishers.ofString(gson.toJson(body)));
+    }
+
+    LoginSecret login() throws IOException, InterruptedException {
+        return gson.fromJson(post("/login", "application/json", HttpRequest.BodyPublishers.noBody()).body(), LoginSecret.class);
     }
 
     void start() throws IOException, InterruptedException {

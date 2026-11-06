@@ -13,6 +13,10 @@ public interface BrowserPort extends AutoCloseable {
     /** Uses a disclosure control in place. The caller has already passed it through the gate. */
     void activate(Control control);
     List<Signal> drainSignals();
+    /** Fills and submits the login form. The caller must have opened the gate's login window. */
+    Navigation submitLogin(String username, String password, String oneTimeCode);
+    /** Restores a session a person created, as cookies. */
+    void importCookies(String name, String value, String url);
     byte[] screenshot(List<String> maskSelectors);
     String domSnapshot();
     @Override void close();

@@ -18,12 +18,15 @@ import org.springframework.web.bind.annotation.RestController;
 import qaengine.contracts.WorkerContracts.FindingReport;
 import qaengine.contracts.WorkerContracts.HeartbeatResponse;
 import qaengine.contracts.WorkerContracts.JobAssignment;
+import qaengine.contracts.WorkerContracts.LoginProfile;
+import qaengine.contracts.WorkerContracts.LoginSecret;
 import qaengine.contracts.WorkerContracts.RunCompletion;
 import qaengine.contracts.WorkerContracts.RunLimits;
 import qaengine.contracts.WorkerContracts.StepReport;
 import qaengine.core.evidence.EvidenceType;
 import qaengine.platform.audit.AuditLog;
 import qaengine.platform.defects.DefectService;
+import qaengine.platform.credentials.CredentialService;
 import qaengine.platform.evidence.EvidenceService;
 import qaengine.platform.runs.JobQueue;
 import qaengine.platform.testcases.TestCaseService;
@@ -43,9 +46,10 @@ public class WorkerController {
     private final DefectService defects;
     private final TestCaseService testCases;
     private final AuditLog audit;
+    private final CredentialService credentials;
 
     public WorkerController(JdbcClient db, JobTokens tokens, JobQueue queue, EvidenceService evidence, DefectService defects,
-                            TestCaseService testCases, AuditLog audit) {
+                            TestCaseService testCases, AuditLog audit, CredentialService credentials) {
         this.db = db;
         this.tokens = tokens;
         this.queue = queue;
@@ -53,6 +57,7 @@ public class WorkerController {
         this.defects = defects;
         this.testCases = testCases;
         this.audit = audit;
+        this.credentials = credentials;
     }
 
     private JobTokens.Scope scope(String authorization, UUID jobId) {
@@ -86,19 +91,42 @@ public class WorkerController {
         return ResponseEntity.ok(db.sql("""
                 SELECT e.base_url, r.seed, ep.mode, e.classification, ep.include_paths, ep.exclude_paths, ep.mask_selectors,
                        ep.max_actions, ep.max_pages, ep.max_depth, ep.max_minutes,
+                       e.login_method, e.login_path, e.login_submit_path, e.login_success_path,
                        (SELECT array_agg(origin) FROM allowed_host h WHERE h.organization_id = e.organization_id AND h.environment_id = e.id)
                 FROM test_run r
                 JOIN environment e ON e.organization_id = r.organization_id AND e.id = r.environment_id
                 JOIN execution_policy ep ON ep.organization_id = e.organization_id AND ep.environment_id = e.id
                 WHERE r.organization_id = ? AND r.id = ?
                 """).params(c.organizationId(), c.runId()).query((rs, n) -> new JobAssignment(c.jobId(), c.runId(), c.attempt(), token,
-                rs.getString(1), rs.getLong(2), rs.getString(3), rs.getString(4), array(rs, 12), array(rs, 5), array(rs, 6),
-                new RunLimits(rs.getInt(8), rs.getInt(9), rs.getInt(10), rs.getInt(11), rs.getString(4).equals("PRODUCTION") ? 1 : 2), array(rs, 7))).single());
+                rs.getString(1), rs.getLong(2), rs.getString(3), rs.getString(4), array(rs, 16), array(rs, 5), array(rs, 6),
+                new RunLimits(rs.getInt(8), rs.getInt(9), rs.getInt(10), rs.getInt(11), rs.getString(4).equals("PRODUCTION") ? 1 : 2), array(rs, 7),
+                rs.getString(12) == null ? null : new LoginProfile(rs.getString(12), rs.getString(13), rs.getString(14), rs.getString(15)))).single());
     }
 
     private static List<String> array(java.sql.ResultSet rs, int column) throws java.sql.SQLException {
         var a = rs.getArray(column);
         return a == null ? List.of() : Arrays.asList((String[]) a.getArray());
+    }
+
+    /** Once per attempt: a second request is refused, so a stolen token cannot keep asking. */
+    @PostMapping("/{jobId}/login")
+    @Transactional
+    public ResponseEntity<LoginSecret> login(@RequestHeader(value = "Authorization", required = false) String auth, @PathVariable UUID jobId) {
+        JobTokens.Scope s = scope(auth, jobId);
+        int claimed = db.sql("""
+                UPDATE run_job SET credential_released_attempt = attempt
+                WHERE organization_id = ? AND id = ? AND attempt = ? AND credential_released_attempt IS DISTINCT FROM attempt
+                """).params(s.organizationId(), jobId, s.attempt()).update();
+        if (claimed != 1) return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        UUID run = runOf(s);
+        UUID credential = db.sql("""
+                SELECT e.login_credential_id FROM test_run r
+                JOIN environment e ON e.organization_id = r.organization_id AND e.id = r.environment_id
+                WHERE r.organization_id = ? AND r.id = ?
+                """).params(s.organizationId(), run).query(UUID.class).optional().orElse(null);
+        if (credential == null) return ResponseEntity.notFound().build();
+        audit.record(s.organizationId(), "worker", "CREDENTIAL_RELEASED", credential.toString(), "run " + run + " attempt " + s.attempt());
+        return ResponseEntity.ok(credentials.release(s.organizationId(), credential));
     }
 
     @PostMapping("/{jobId}/start")

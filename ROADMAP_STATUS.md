@@ -12,7 +12,7 @@
 | 7 Identity and credentials | Complete | Mutation approval deferred; mode stays refused |
 | 8 Isolated workers | Complete | 29/29 attacks refused, 6/6 failure tests |
 | 9 Dashboard and reporting | Complete | 17/17 browser checks |
-| 10 Target connectivity | Next | |
+| 10 Target connectivity | Complete on the fixture | Real targets stay locked |
 | Pre-pilot gate, pilot, R1 | Blocked until earlier phases pass | Requires written target authorization |
 | 11–14 | Pending | Follow R1 |
 

@@ -12,7 +12,13 @@ public final class WorkerContracts {
     /** A claimed job. The token is scoped to this job and attempt. */
     public record JobAssignment(UUID jobId, UUID runId, int attempt, String jobToken, String startUrl, long seed, String mode,
                                 String environmentClass, List<String> allowedOrigins, List<String> includePaths,
-                                List<String> excludePaths, RunLimits limits, List<String> maskSelectors) {}
+                                List<String> excludePaths, RunLimits limits, List<String> maskSelectors, LoginProfile login) {}
+
+    /** How to sign in. Holds no secret: the worker fetches that once, after claiming the job. */
+    public record LoginProfile(String method, String loginPath, String submitPath, String successPath) {}
+
+    /** Returned only to the running attempt, and never stored by the worker. */
+    public record LoginSecret(String username, String password, String oneTimeCode, String sessionCookieName, String sessionCookieValue) {}
 
     public record RunLimits(int maxActions, int maxPages, int maxDepth, int maxMinutes, int maxLoginAttempts) {}
 
