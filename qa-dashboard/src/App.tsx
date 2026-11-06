@@ -5,7 +5,7 @@ import {
   Alert, AppBar, Box, Button, Card, CardContent, Chip, Container, Link, MenuItem, Stack, Tab, Table, TableBody, TableCell,
   TableHead, TableRow, Tabs, TextField, Toolbar, Typography,
 } from '@mui/material';
-import { api, ApiError, type Defect, type Environment, type Me, type Project, type Run, type Step, type Summary, type Target, type TestCase, type Trace } from './api';
+import { api, ApiError, type ApiMetric, type Defect, type Environment, type Me, type Project, type Run, type Step, type Summary, type Target, type TestCase, type Trace } from './api';
 
 const severityColor: Record<string, 'error' | 'warning' | 'info' | 'default'> = { CRITICAL: 'error', HIGH: 'error', MEDIUM: 'warning', LOW: 'info' };
 
@@ -168,6 +168,8 @@ function Targets({ projectId }: { projectId: string }) {
   const [envName, setEnvName] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [classification, setClassification] = useState('LOCAL');
+  const [channel, setChannel] = useState('WEB');
+  const [specPath, setSpecPath] = useState('');
   const [target, setTarget] = useState('');
   const targets = useQuery({ queryKey: ['targets', projectId], queryFn: () => api<Target[]>(`/projects/${projectId}/targets`) });
   const envs = useQuery({ queryKey: ['envs', projectId], queryFn: () => api<Environment[]>(`/projects/${projectId}/environments`) });
@@ -176,7 +178,7 @@ function Targets({ projectId }: { projectId: string }) {
     onSuccess: () => { setTargetName(''); client.invalidateQueries({ queryKey: ['targets', projectId] }); },
   });
   const addEnv = useMutation({
-    mutationFn: () => api(`/projects/${projectId}/targets/${target}/environments`, 'POST', { name: envName, classification, baseUrl }),
+    mutationFn: () => api(`/projects/${projectId}/targets/${target}/environments`, 'POST', { name: envName, classification, baseUrl, channel, apiSpecPath: specPath || null }),
     onSuccess: () => { setEnvName(''); setBaseUrl(''); client.invalidateQueries({ queryKey: ['envs', projectId] }); },
   });
   return (
@@ -194,14 +196,18 @@ function Targets({ projectId }: { projectId: string }) {
           {['LOCAL', 'DEV', 'STAGING', 'PRODUCTION'].map((c) => <MenuItem key={c} value={c}>{c}</MenuItem>)}
         </TextField>
         <TextField size="small" label="Base URL" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} sx={{ minWidth: 280 }} />
+        <TextField select size="small" label="Channel" value={channel} onChange={(e) => setChannel(e.target.value)} sx={{ minWidth: 100 }}>
+          {['WEB', 'API'].map((c) => <MenuItem key={c} value={c}>{c}</MenuItem>)}
+        </TextField>
+        {channel === 'API' && <TextField size="small" label="OpenAPI path (optional)" value={specPath} onChange={(e) => setSpecPath(e.target.value)} />}
         <Button variant="outlined" disabled={!target || !envName || !baseUrl} onClick={() => addEnv.mutate()}>Add environment</Button>
       </Stack>
       {addEnv.isError && <Alert severity="error">The environment could not be added. Production needs explicit include paths.</Alert>}
       <Table size="small">
-        <TableHead><TableRow><TableCell>Environment</TableCell><TableCell>Class</TableCell><TableCell>Base URL</TableCell><TableCell>Mode</TableCell></TableRow></TableHead>
+        <TableHead><TableRow><TableCell>Environment</TableCell><TableCell>Class</TableCell><TableCell>Channel</TableCell><TableCell>Base URL</TableCell><TableCell>Mode</TableCell></TableRow></TableHead>
         <TableBody>
           {envs.data?.map((e) => (
-            <TableRow key={e.id}><TableCell>{e.name}</TableCell><TableCell>{e.classification}</TableCell><TableCell>{e.baseUrl}</TableCell><TableCell><Chip size="small" label={e.mode} /></TableCell></TableRow>
+            <TableRow key={e.id}><TableCell>{e.name}</TableCell><TableCell>{e.classification}</TableCell><TableCell>{e.channel}</TableCell><TableCell>{e.baseUrl}</TableCell><TableCell><Chip size="small" label={e.mode} /></TableCell></TableRow>
           ))}
         </TableBody>
       </Table>
@@ -254,6 +260,7 @@ function Runs({ projectId }: { projectId: string }) {
 function RunPage() {
   const { projectId, runId } = useParams();
   const steps = useQuery({ queryKey: ['steps', runId], queryFn: () => api<Step[]>(`/projects/${projectId}/runs/${runId}/steps`), refetchInterval: 4000 });
+  const metrics = useQuery({ queryKey: ['metrics', runId], queryFn: () => api<ApiMetric[]>(`/projects/${projectId}/runs/${runId}/api-metrics`), refetchInterval: 4000 });
   return (
     <Stack spacing={2}>
       <Typography variant="h5">Run steps</Typography>
@@ -261,6 +268,21 @@ function RunPage() {
         <Link href={`/api/v1/projects/${projectId}/runs/${runId}/report.html`} target="_blank" rel="noreferrer">Report (HTML, printable)</Link>
         <Link href={`/api/v1/projects/${projectId}/runs/${runId}/report.xlsx`}>Report (Excel)</Link>
       </Stack>
+      {(metrics.data?.length ?? 0) > 0 && (
+        <>
+          <Typography variant="h6">API operations</Typography>
+          <Table size="small" data-testid="api-metrics">
+            <TableHead><TableRow><TableCell>Operation</TableCell><TableCell>Calls</TableCell><TableCell>Passed</TableCell><TableCell>Failed</TableCell><TableCell>Blocked</TableCell><TableCell>Average ms</TableCell><TableCell>p95 ms</TableCell><TableCell>Max ms</TableCell></TableRow></TableHead>
+            <TableBody>
+              {metrics.data?.map((m) => (
+                <TableRow key={m.operation}>
+                  <TableCell>{m.operation}</TableCell><TableCell>{m.calls}</TableCell><TableCell>{m.passed}</TableCell><TableCell>{m.failed}</TableCell><TableCell>{m.blocked}</TableCell><TableCell>{m.averageMs}</TableCell><TableCell>{m.p95Ms}</TableCell><TableCell>{m.maxMs}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </>
+      )}
       <Table size="small">
         <TableHead><TableRow><TableCell>#</TableCell><TableCell>Action</TableCell><TableCell>URL</TableCell><TableCell>Label</TableCell><TableCell>Verdict</TableCell><TableCell>Note</TableCell></TableRow></TableHead>
         <TableBody>

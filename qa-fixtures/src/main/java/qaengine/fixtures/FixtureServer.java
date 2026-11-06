@@ -26,6 +26,8 @@ public final class FixtureServer implements AutoCloseable {
     public static final String TEST_USER = "fixture-user";
     public static final String TEST_PASSWORD = "fixture-canary-password-7Q2x";
     public static final String TEST_TOTP = "654321";
+    public static final String API_ADMIN_TOKEN = "fixture-admin-token-canary-K9";
+    public static final String API_USER_TOKEN = "fixture-user-token-canary-M3";
 
     private final HttpServer server;
     private final ExecutorService pool;
@@ -90,6 +92,7 @@ public final class FixtureServer implements AutoCloseable {
     }
 
     private void route(HttpExchange x, String path, String body) throws IOException {
+        if (ApiRoutes.handles(path)) { ApiRoutes.route(x, path); return; }
         if (path.equals("/crash") || path.equals("/api/fail")) { send(x, 500, "text/html", "<h1>Server error</h1>"); return; }
         if (path.startsWith("/m/") || path.equals("/graphql")) { send(x, 200, "application/json", "{}"); return; }
         if (path.equals("/redirect-internal")) { redirect(x, "/m/redirect-target"); return; }

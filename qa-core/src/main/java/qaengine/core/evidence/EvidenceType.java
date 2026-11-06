@@ -6,7 +6,8 @@ import java.time.Duration;
 public enum EvidenceType {
     SCREENSHOT("png", "image/png", 10L << 20, Duration.ofDays(90), false),
     DOM_SNAPSHOT("html", "text/html", 5L << 20, Duration.ofDays(90), true),
-    SIGNAL_LOG("json", "application/json", 10L << 20, Duration.ofDays(90), true);
+    SIGNAL_LOG("json", "application/json", 10L << 20, Duration.ofDays(90), true),
+    API_EXCHANGE("json", "application/json", 1L << 20, Duration.ofDays(90), true);
 
     public final String extension;
     public final String mediaType;

@@ -30,7 +30,7 @@ public class RunController {
     public record CreateRun(UUID environmentId) {}
     public record RunView(UUID id, UUID environmentId, String status, OffsetDateTime createdAt, OffsetDateTime finishedAt, String stopReason) {}
     public record StepView(int attempt, int sequence, int parent, String kind, String url, String label, List<String> locators,
-                           String verdict, int status, String note) {}
+                           String verdict, int status, String note, long durationMs) {}
 
     private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -106,10 +106,10 @@ public class RunController {
         access.require(p, projectId, Access.Level.VIEWER);
         view(p, projectId, runId);
         return db.sql("""
-                SELECT attempt, sequence, parent, kind, url, label, locators, verdict, status, note FROM run_step
+                SELECT attempt, sequence, parent, kind, url, label, locators, verdict, status, note, duration_ms FROM run_step
                 WHERE organization_id = ? AND run_id = ? ORDER BY attempt, sequence
                 """).params(p.organizationId(), runId).query((rs, n) -> new StepView(rs.getInt(1), rs.getInt(2), rs.getInt(3), rs.getString(4),
-                rs.getString(5), rs.getString(6), Arrays.asList((String[]) rs.getArray(7).getArray()), rs.getString(8), rs.getInt(9), rs.getString(10))).list();
+                rs.getString(5), rs.getString(6), Arrays.asList((String[]) rs.getArray(7).getArray()), rs.getString(8), rs.getInt(9), rs.getString(10), rs.getLong(11))).list();
     }
 
     @PostMapping("/{runId}/cancel")

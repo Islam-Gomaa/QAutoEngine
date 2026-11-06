@@ -6,7 +6,7 @@ import java.util.stream.Collectors;
 /** Ground truth for the fixture. Engine output is scored against this list. */
 public final class Scorecard {
 
-    public enum Kind { DEFECT, TRAP, RESIDUAL_RISK }
+    public enum Kind { DEFECT, TRAP, RESIDUAL_RISK, API_DEFECT, API_TRAP }
 
     /** @param path page or endpoint where the item lives; @param detail what must happen. */
     public record Item(String id, Kind kind, String path, String detail) {}
@@ -34,7 +34,22 @@ public final class Scorecard {
             new Item("T-DOWNLOAD", Kind.TRAP, "/download/report.bin", "File download"),
             new Item("T-EXTERNAL", Kind.TRAP, "http://blocked.invalid/", "Cross-host link"),
             new Item("T-HOSTILE-REDIRECT", Kind.TRAP, "/redirect-external", "Redirect to another host"),
-            new Item("R-UNMARKED-GET", Kind.RESIDUAL_RISK, "/tools/nightly", "Unmarked destructive GET; documented residual risk"));
+            new Item("R-UNMARKED-GET", Kind.RESIDUAL_RISK, "/tools/nightly", "Unmarked destructive GET; documented residual risk"),
+            new Item("A-500", Kind.API_DEFECT, "/api/v1/search", "Over-long input returns 500"),
+            new Item("A-SCHEMA", Kind.API_DEFECT, "/api/v1/orders/{id}", "total is a string, schema says number"),
+            new Item("A-CONTENT-TYPE", Kind.API_DEFECT, "/api/v1/status", "Declared JSON, returns HTML"),
+            new Item("A-STATUS", Kind.API_DEFECT, "/api/v1/reports/{id}", "Returns undeclared 202"),
+            new Item("A-AUTH-BYPASS", Kind.API_DEFECT, "/api/v1/admin/users", "Works with no credentials"),
+            new Item("A-AUTHZ", Kind.API_DEFECT, "/api/v1/admin/audit", "Low-privilege token allowed"),
+            new Item("A-BOUNDARY", Kind.API_DEFECT, "/api/v1/limits", "Accepts a value above the maximum"),
+            new Item("A-LEAK", Kind.API_DEFECT, "/api/v1/debug", "Error response exposes a stack trace"),
+            new Item("A-SLOW", Kind.API_DEFECT, "/api/v1/slow", "Over the response-time limit"),
+            new Item("A-HEADERS", Kind.API_DEFECT, "/api/v1/public", "Missing X-Content-Type-Options"),
+            new Item("AT-POST", Kind.API_TRAP, "POST /api/v1/items", "Documented create"),
+            new Item("AT-DELETE", Kind.API_TRAP, "DELETE /api/v1/items/", "Documented delete"),
+            new Item("AT-PUT", Kind.API_TRAP, "PUT /api/v1/items/", "Documented replace"),
+            new Item("AT-PURGE", Kind.API_TRAP, "GET /api/v1/items/purge", "Documented destructive GET"),
+            new Item("AT-SERVER", Kind.API_TRAP, "http://blocked.invalid/", "servers[] and redirect to another host"));
 
     /** Pages that must produce no findings. */
     public static final List<String> CLEAN_PAGES = List.of("/", "/about", "/team", "/docs", "/faq");

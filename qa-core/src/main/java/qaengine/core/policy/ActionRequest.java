@@ -10,7 +10,9 @@ public record ActionRequest(Kind kind, String url, Map<String, String> attribute
         NAVIGATE_LINK,
         /** Tab, accordion, menu, pagination: reveals existing content. */
         DISCLOSURE,
-        FORM_FILL, FORM_SUBMIT, BUTTON, DOWNLOAD, UPLOAD, DIALOG_ACCEPT, UNKNOWN
+        FORM_FILL, FORM_SUBMIT, BUTTON, DOWNLOAD, UPLOAD, DIALOG_ACCEPT, UNKNOWN,
+        /** One API request. The request itself is still decided separately. */
+        API_CALL
     }
 
     public ActionRequest {

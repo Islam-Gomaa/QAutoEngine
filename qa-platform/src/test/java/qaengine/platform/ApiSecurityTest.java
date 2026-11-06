@@ -189,6 +189,50 @@ class ApiSecurityTest extends IntegrationTestBase {
         assertEquals(401, login("nobody@x.test", "wrong", null));
     }
 
+    private UUID channelEnvironment(String channel) {
+        UUID t = UUID.randomUUID();
+        UUID e = UUID.randomUUID();
+        db.sql("INSERT INTO target (organization_id, id, project_id, name) VALUES (?,?,?, 't')").params(orgA, t, projectA).update();
+        db.sql("INSERT INTO environment (organization_id, id, target_id, name, classification, base_url, channel) VALUES (?,?,?, 'e', 'LOCAL', 'http://127.0.0.1', ?)").params(orgA, e, t, channel).update();
+        return e;
+    }
+
+    private String credential() throws Exception {
+        String body = mvc.perform(post("/api/v1/projects/" + projectA + "/credentials").with(as(adminA)).with(csrf()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"c" + UUID.randomUUID() + "\",\"password\":\"token-canary-value\"}")).andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        assertFalse(body.contains("token-canary-value"));
+        return body.replaceAll(".*\"id\":\"([^\"]+)\".*", "$1");
+    }
+
+    private int configureLogin(UUID env, String method, String cred) throws Exception {
+        return mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/projects/" + projectA + "/environments/" + env + "/login").with(as(adminA)).with(csrf()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"method\":\"" + method + "\",\"credentialId\":\"" + cred + "\",\"successPath\":\"/a\"}")).andReturn().getResponse().getStatus();
+    }
+
+    @Test void loginMethodMustFitTheChannel() throws Exception {
+        String cred = credential();
+        assertEquals(409, configureLogin(channelEnvironment("API"), "PASSWORD", cred), "a password must not become a bearer token");
+        assertEquals(409, configureLogin(channelEnvironment("WEB"), "API_TOKEN", cred));
+        assertEquals(200, configureLogin(channelEnvironment("API"), "API_TOKEN", cred));
+        assertEquals(200, configureLogin(channelEnvironment("WEB"), "PASSWORD", cred));
+    }
+
+    @Test void apiEnvironmentInputsAreChecked() throws Exception {
+        UUID t = UUID.randomUUID();
+        db.sql("INSERT INTO target (organization_id, id, project_id, name) VALUES (?,?,?, 't')").params(orgA, t, projectA).update();
+        String url = "/api/v1/projects/" + projectA + "/targets/" + t + "/environments";
+        for (String bad : List.of("\"channel\":\"FTP\"", "\"channel\":\"API\",\"apiSpecPath\":\"http://evil.test/x\"", "\"channel\":\"API\",\"apiSeedPaths\":[\"http://evil.test\"]")) {
+            mvc.perform(post(url).with(as(adminA)).with(csrf()).contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"name\":\"e\",\"classification\":\"LOCAL\",\"baseUrl\":\"http://127.0.0.1:1\"," + bad + "}")).andExpect(status().isConflict());
+        }
+    }
+
+    @Test void apiMetricsAreScoped() throws Exception {
+        String path = "/api/v1/projects/" + projectB + "/runs/" + UUID.randomUUID() + "/api-metrics";
+        mvc.perform(get(path).with(as(adminA))).andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/projects/" + projectA + "/runs/" + UUID.randomUUID() + "/api-metrics").with(as(viewerA))).andExpect(status().isNotFound());
+    }
+
     @Test void passwordsAreArgon2() {
         assertTrue(encoder.encode("x").startsWith("$argon2id$"));
     }

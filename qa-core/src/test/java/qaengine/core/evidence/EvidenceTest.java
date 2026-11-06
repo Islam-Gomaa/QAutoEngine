@@ -35,6 +35,15 @@ class EvidenceTest {
         for (String v : List.of(CANARY, "hunter2xyz", "abc123def", "abcdefgh12345678", "abcdefghijk", "4111 1111")) assertFalse(out.contains(v), out);
     }
 
+    @Test void secretsInQueryStringsAreRemoved() {
+        for (String url : List.of("https://t/a?token=abc123xyz&page=2", "https://t/a?page=2&access_token=abc123xyz", "see http://t/a?api_key=abc123xyz#frag",
+                "<a href=\"/x?session=abc123xyz\">", "https://t/a?a=1;sid=abc123xyz")) {
+            String out = redactor.redact(url);
+            assertFalse(out.contains("abc123xyz"), out);
+        }
+        assertTrue(redactor.redact("https://t/a?token=abc123xyz&page=2").contains("page=2"));
+    }
+
     @Test void ordinaryTextIsKept() {
         String text = "Order 1234 shipped to room 5, total=20";
         assertEquals(text, redactor.redact(text));

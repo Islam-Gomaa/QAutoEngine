@@ -168,7 +168,7 @@ class WorkerApiTest extends IntegrationTestBase {
         String token = claim();
         String path = "/internal/v1/jobs/" + job;
         mvc.perform(post(path + "/start").header("Authorization", "Bearer " + token)).andExpect(status().isNoContent());
-        String step = "{\"sequence\":%d,\"parent\":%d,\"kind\":\"NAVIGATE_LINK\",\"url\":\"http://127.0.0.1:1%s\",\"label\":\"x\",\"locators\":[\"a\"],\"verdict\":\"%s\",\"status\":%d,\"state\":\"s\",\"note\":\"\"}";
+        String step = "{\"sequence\":%d,\"parent\":%d,\"kind\":\"NAVIGATE_LINK\",\"url\":\"http://127.0.0.1:1%s\",\"label\":\"x\",\"locators\":[\"a\"],\"verdict\":\"%s\",\"status\":%d,\"state\":\"s\",\"note\":\"\",\"durationMs\":12}";
         mvc.perform(post(path + "/steps").header("Authorization", "Bearer " + token).contentType(MediaType.APPLICATION_JSON)
                 .content("[" + step.formatted(1, 0, "/", "PASS", 200) + "," + step.formatted(2, 1, "/crash", "FAIL", 500) + "]")).andExpect(status().isNoContent());
         upload(token, 2, "SCREENSHOT", PNG);
@@ -208,7 +208,7 @@ class WorkerApiTest extends IntegrationTestBase {
     }
 
     @Test void credentialIsReleasedOncePerAttemptAndOnlyToTheOwner() throws Exception {
-        UUID cred = credentials.store(org, project, "acct", new qaengine.platform.credentials.CredentialService.Material("u", "canary-value-123", null, null, null));
+        UUID cred = credentials.store(org, project, "acct", new qaengine.platform.credentials.CredentialService.Material("u", "canary-value-123", null, null, null, null));
         db.sql("UPDATE environment SET login_credential_id = ?, login_method = 'PASSWORD' WHERE id = ?").params(cred, env).update();
         String token = claim();
         String url = "/internal/v1/jobs/" + job + "/login";

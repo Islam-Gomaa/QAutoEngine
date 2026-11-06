@@ -4,6 +4,8 @@ import com.microsoft.playwright.BrowserType;
 import com.microsoft.playwright.options.Proxy;
 import java.io.IOException;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ProxySelector;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -14,16 +16,15 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import qaengine.contracts.WorkerContracts.FindingReport;
+import qaengine.api.ApiClient;
+import qaengine.api.ApiRunner;
+import qaengine.api.ApiVerdictEngine;
 import qaengine.contracts.WorkerContracts.JobAssignment;
 import qaengine.contracts.WorkerContracts.LoginSecret;
 import qaengine.contracts.WorkerContracts.RunCompletion;
-import qaengine.contracts.WorkerContracts.StepReport;
 import qaengine.core.engine.ExplorationEngine;
 import qaengine.core.engine.LoginFlow;
-import qaengine.core.engine.Observation;
 import qaengine.core.engine.RunResult;
-import qaengine.core.engine.StepRecord;
 import qaengine.core.evidence.EvidenceCollector;
 import qaengine.core.evidence.EvidenceRef;
 import qaengine.core.evidence.EvidenceSink;
@@ -32,6 +33,7 @@ import qaengine.core.evidence.LocalEvidenceSink;
 import qaengine.core.evidence.Redactor;
 import qaengine.core.policy.ActionGate;
 import qaengine.core.policy.EnvironmentClass;
+import qaengine.core.policy.ExecutionLock;
 import qaengine.core.policy.ExecutionMode;
 import qaengine.core.policy.ExecutionPolicy;
 import qaengine.core.policy.RunBudget;
@@ -51,6 +53,7 @@ public final class WorkerMain {
     private static final long RUN_CAP_BYTES = 1L << 30;
     static final int EXIT_SELF_STOPPED = 3;
     private static final String AUTH_EXCEPTION = "environment-login";
+    private static final long PAUSE_MILLIS = 20;
 
     private WorkerMain() {}
 
@@ -86,7 +89,14 @@ public final class WorkerMain {
         ExecutionPolicy policy = policy(job);
         ActionGate gate = new ActionGate(policy, Clock.systemUTC(), line -> { });
         EvidenceSink sink = (type, step, content) -> upload(platform, type, step, content);
-        EvidenceCollector evidence = new EvidenceCollector(sink, new Redactor(knownSecrets(secret)), RUN_CAP_BYTES);
+        Redactor redactor = new Redactor(knownSecrets(secret));
+        Sanitizer sanitizer = new Sanitizer(redactor);
+        EvidenceCollector evidence = new EvidenceCollector(sink, redactor, RUN_CAP_BYTES);
+
+        if ("API".equals(job.channel())) {
+            runApi(platform, job, gate, sanitizer, evidence, secret, proxy, cancelled, lost);
+            return;
+        }
 
         BrowserType.LaunchOptions launch = new BrowserType.LaunchOptions().setHeadless(true).setChromiumSandbox(true);
         if (proxy != null && !proxy.isBlank()) {
@@ -97,7 +107,7 @@ public final class WorkerMain {
         try (PlaywrightBrowser browser = new PlaywrightBrowser(gate, launch)) {
             ExplorationEngine engine = new ExplorationEngine(gate, browser, new VerdictEngine(policy.scope()), evidence, job.seed(), Clock.systemUTC(), job.maskSelectors())
                     .stopWhen(() -> cancelled.get() || lost.get())
-                    .onProgress(step -> report(platform, step), o -> report(platform, o));
+                    .onProgress(step -> call(() -> platform.steps(List.of(sanitizer.step(step)))), o -> call(() -> platform.finding(sanitizer.finding(o))));
             if (job.login() != null) {
                 LoginFlow.Outcome signedIn = signIn(gate, browser, job, secret);
                 if (signedIn != LoginFlow.Outcome.SIGNED_IN) {
@@ -122,9 +132,40 @@ public final class WorkerMain {
         }
     }
 
+    /** No browser here: requests go straight through the egress proxy, after the same gate. */
+    private static void runApi(PlatformClient platform, JobAssignment job, ActionGate gate, Sanitizer sanitizer, EvidenceCollector evidence,
+                               LoginSecret secret, String proxy, AtomicBoolean cancelled, AtomicBoolean lost) throws Exception {
+        try {
+            if (secret != null) ExecutionLock.requireSecureForSecrets(job.startUrl());
+            var profile = job.api();
+            var selector = proxy == null || proxy.isBlank() ? null : ProxySelector.of(proxyAddress(proxy));
+            var client = new ApiClient(gate, job.startUrl(), selector);
+            var config = new ApiRunner.Config(profile.specPath(), secret == null ? null : secret.password(), secret == null ? null : secret.lowPrivilegeToken(), PAUSE_MILLIS, profile.seedPaths());
+            RunResult result = new ApiRunner(gate, client, new ApiVerdictEngine(profile.slowMillis()), evidence, config)
+                    .stopWhen(() -> cancelled.get() || lost.get())
+                    .onProgress(step -> call(() -> platform.steps(List.of(sanitizer.step(step)))), o -> call(() -> platform.finding(sanitizer.finding(o))))
+                    .run();
+            if (lost.get()) return;
+            String outcome = result.stop() == RunResult.StopReason.CANCELLED ? "CANCELLED" : "SUCCEEDED";
+            platform.complete(new RunCompletion(outcome, result.stop().name(), result.steps().size(), java.util.Map.of()));
+        } catch (PlatformClient.LostLease e) {
+            System.err.println("lease lost; stopping");
+        } catch (java.io.UncheckedIOException e) {
+            System.err.println("platform unreachable; leaving the job for lease recovery");
+        } catch (RuntimeException e) {
+            System.err.println("run failed: " + e.getClass().getSimpleName());
+            if (!lost.get()) platform.complete(new RunCompletion("FAILED", e.getClass().getSimpleName(), 0, java.util.Map.of()));
+        }
+    }
+
+    private static InetSocketAddress proxyAddress(String proxy) {
+        var uri = java.net.URI.create(proxy);
+        return new InetSocketAddress(uri.getHost(), uri.getPort());
+    }
+
     private static List<String> knownSecrets(LoginSecret s) {
         if (s == null) return List.of();
-        return java.util.stream.Stream.of(s.password(), s.oneTimeCode(), s.sessionCookieValue()).filter(java.util.Objects::nonNull).toList();
+        return java.util.stream.Stream.of(s.password(), s.oneTimeCode(), s.sessionCookieValue(), s.lowPrivilegeToken()).filter(java.util.Objects::nonNull).toList();
     }
 
     private static String base(JobAssignment job) {
@@ -142,7 +183,7 @@ public final class WorkerMain {
         var limits = job.limits();
         TargetScope scope = new TargetScope(Set.copyOf(job.allowedOrigins()), job.includePaths(), job.excludePaths());
         RunBudget budget = new RunBudget(limits.maxActions(), limits.maxPages(), limits.maxDepth(), Duration.ofMinutes(limits.maxMinutes()), limits.maxLoginAttempts());
-        List<ScopedException> exceptions = job.login() == null || job.login().submitPath() == null ? List.of() : List.of(new ScopedException(
+        List<ScopedException> exceptions = job.login() == null || job.login().submitPath() == null || "API".equals(job.channel()) ? List.of() : List.of(new ScopedException(
                 AUTH_EXCEPTION, ScopedException.Purpose.AUTH, job.allowedOrigins().getFirst(), "POST", job.login().submitPath(), null,
                 Instant.now().plus(Duration.ofMinutes(limits.maxMinutes())), limits.maxLoginAttempts(), "environment login profile",
                 ScopedException.ApproverRole.ORGANIZATION_ADMIN));
@@ -182,17 +223,6 @@ public final class WorkerMain {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(e);
         }
-    }
-
-    private static void report(PlatformClient platform, StepRecord s) {
-        call(() -> platform.steps(List.of(new StepReport(s.sequence(), s.parent(), s.kind().name(), s.url(), s.label(), s.locators(),
-                s.verdict().name(), s.status(), s.state(), s.note()))));
-    }
-
-    private static void report(PlatformClient platform, Observation o) {
-        var f = o.finding();
-        var shas = o.evidence().stream().filter(e -> e.status() == EvidenceRef.Status.STORED).map(EvidenceRef::sha256).toList();
-        call(() -> platform.finding(new FindingReport(o.step(), f.fingerprint(), f.type().name(), f.severity().name(), f.url(), f.title(), f.detail(), shas)));
     }
 
     private interface Call { void run() throws IOException, InterruptedException; }

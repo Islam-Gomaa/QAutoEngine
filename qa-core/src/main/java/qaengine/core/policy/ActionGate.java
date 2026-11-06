@@ -157,6 +157,7 @@ public final class ActionGate {
                 yield Decision.allow(Decision.Reason.ALLOWED_INTERACTION, "link");
             }
             case DISCLOSURE -> Decision.allow(Decision.Reason.ALLOWED_INTERACTION, "disclosure");
+            case API_CALL -> Decision.allow(Decision.Reason.ALLOWED_INTERACTION, "api call");
             case FORM_FILL -> authWindow != null || policy.mode() == ExecutionMode.VALIDATION_ONLY
                     ? Decision.allow(Decision.Reason.ALLOWED_INTERACTION, "fill")
                     : Decision.block(Decision.Reason.ACTION_NOT_ALLOWED, "forms are not filled in READ_ONLY");

@@ -29,11 +29,11 @@ import qaengine.platform.shared.Principal;
 @RequestMapping("/api/v1/projects/{projectId}")
 public class CredentialController {
 
-    public record CreateCredential(@NotBlank String name, String username, String password, String totpSeed, String cookieName, String cookieValue) {}
+    public record CreateCredential(@NotBlank String name, String username, String password, String totpSeed, String cookieName, String cookieValue, String lowPrivilegeToken) {}
     public record CredentialView(UUID id, String name) {}
-    public record LoginConfig(String method, UUID credentialId, String loginPath, String submitPath, @NotBlank String successPath) {}
+    public record LoginConfig(String method, UUID credentialId, String loginPath, String submitPath, String successPath) {}
 
-    private static final Set<String> METHODS = Set.of("PASSWORD", "TOTP", "SESSION_IMPORT");
+    private static final Set<String> METHODS = Set.of("PASSWORD", "TOTP", "SESSION_IMPORT", "API_TOKEN");
 
     private final JdbcClient db;
     private final Access access;
@@ -60,7 +60,7 @@ public class CredentialController {
     public CredentialView create(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @Valid @RequestBody CreateCredential body) {
         access.require(p, projectId, Access.Level.PROJECT_ADMIN);
         UUID id = credentials.store(p.organizationId(), projectId, body.name(),
-                new CredentialService.Material(body.username(), body.password(), body.totpSeed(), body.cookieName(), body.cookieValue()));
+                new CredentialService.Material(body.username(), body.password(), body.totpSeed(), body.cookieName(), body.cookieValue(), body.lowPrivilegeToken()));
         audit.record(p.organizationId(), p.email(), "CREDENTIAL_CREATED", id.toString(), body.name());
         return new CredentialView(id, body.name());
     }
@@ -70,11 +70,14 @@ public class CredentialController {
     public void configure(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID environmentId, @Valid @RequestBody LoginConfig body) {
         access.require(p, projectId, Access.Level.PROJECT_ADMIN);
         if (!METHODS.contains(body.method())) throw new ConflictException("Unsupported login method");
-        String classification = db.sql("""
-                SELECT e.classification FROM environment e JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id
+        String[] environment = db.sql("""
+                SELECT e.classification, e.channel FROM environment e JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id
                 WHERE e.organization_id = ? AND e.id = ? AND t.project_id = ?
-                """).params(p.organizationId(), environmentId, projectId).query(String.class).optional().orElseThrow(() -> new NotFoundException("Environment"));
-        if (classification.equals("PRODUCTION") && !p.organizationAdmin()) throw new AccessDeniedException("Production login needs Organization Admin");
+                """).params(p.organizationId(), environmentId, projectId).query((rs, n) -> new String[] {rs.getString(1), rs.getString(2)}).optional().orElseThrow(() -> new NotFoundException("Environment"));
+        if (environment[0].equals("PRODUCTION") && !p.organizationAdmin()) throw new AccessDeniedException("Production login needs Organization Admin");
+        // A password must never be sent as a bearer token, and a token never typed into a login form.
+        if (environment[1].equals("API") != body.method().equals("API_TOKEN")) throw new ConflictException("Login method does not fit this channel");
+        if (environment[1].equals("WEB") && (body.successPath() == null || body.successPath().isBlank())) throw new ConflictException("A web login needs a success path");
         boolean sameProject = db.sql("SELECT count(*) FROM credential WHERE organization_id = ? AND project_id = ? AND id = ?")
                 .params(p.organizationId(), projectId, body.credentialId()).query(Long.class).single() == 1;
         if (!sameProject) throw new NotFoundException("Credential");

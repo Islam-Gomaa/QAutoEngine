@@ -102,7 +102,7 @@ traps = ["/m/", "/items/5/delete", "action=remove", "/logout", "/items/9", "/ite
 hits = [l for l in log if any(t in l for t in traps)]
 check("no trap reached the server", not hits, f"requests={len(log)} hits={hits[:3]}")
 # The only other method allowed is the login POST inside an authentication window.
-unsafe = sorted({l for l in log if l and l.split()[0] not in ("GET", "HEAD") and l != "POST /session"})
+unsafe = sorted({l for l in log if l and l.split()[0] not in ("GET", "HEAD", "OPTIONS") and l != "POST /session"})
 check("only safe methods and the approved login reached the server", not unsafe, f"unexpected={unsafe[:5]}")
 print(f"\npassed={sum(results)} failed={len(results)-sum(results)}")
 sys.exit(0 if all(results) else 1)

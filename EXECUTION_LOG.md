@@ -150,3 +150,44 @@ No failures. Note: `credential` had 0 rows in that drill, so credential restore 
 **Correction:** commit `84b7231` was made by a chained script before I had read two failing results. Neither involved a leak. One was a shell bug in a new check. The other (`only safe methods`) was traced: the single non-safe request was the approved login `POST /session`, and the check now enforces exactly that. Commits are now a separate step after results are read.
 
 **Regression found by this re-run:** `run survives a platform restart` ended `FAILED`. Root cause: a report failing during a platform restart was treated as a run failure. The worker now retries transient outages for up to 40 seconds (every write is idempotent), heartbeats stay unretried so self-stop stays prompt, and a long outage leaves the job for lease recovery instead of reporting a false failure. Verified: resilience 6 of 6 on three consecutive runs, attacks 44 of 44, capture clean.
+
+## Phase 11: API Testing (complete on the fixture)
+
+**Authorized ahead of the original order.** Executed against the local fixture only.
+
+**Capabilities:** discovery from a spec, well-known paths or links; generated positive, negative, boundary, authentication and authorization scenarios; status, content-type, schema, header and information-leak rules; response-time measurement; evidence, defects and versioned test cases; worker, platform and dashboard integration.
+
+**Results (clean build, fresh stack):**
+
+| Check | Command | Result |
+|---|---|---|
+| All automated tests | `./mvnw clean install` | 319 passed |
+| API end-to-end | `python3 scripts/e2e-api.py` | 18 of 18 |
+| Attacks | `scripts/attack-tests.sh` | 44 of 44 |
+| Transport capture | `scripts/transport-sniff-test.sh after` | Passed, all six secrets absent |
+| Authenticated web | `python3 scripts/e2e-auth.py` | 12 of 12 |
+| Failure injection | `python3 scripts/resilience-tests.py` | 6 of 6 |
+| Browser journey | `java ... DashboardJourney` | 21 of 21 |
+| Soak | `python3 scripts/soak.py 4` | 4 of 4 |
+| Restore drill | `scripts/restore-drill.sh` | 20 of 20, with credentials present |
+| Images | Trivy, HIGH and CRITICAL | 0 on platform, worker, egress, gateway |
+| Secrets | `scripts/secret-scan.sh`, gitleaks | Clean |
+| Dashboard packages | `npm audit --omit=dev` | 0 |
+
+**Scorecard:** every planted API defect found, no finding on clean endpoints, and across the whole stack the only requests other than `GET`, `HEAD` and `OPTIONS` were two approved login POSTs.
+
+**Self-review (hypotheses tested, not assumed):**
+
+| Item | Result |
+|---|---|
+| `$schema` or `$id` could make the validator fetch a URL | **Not reproduced.** Stripped anyway as hardening |
+| Schema errors could echo response data | **Not reproduced** in the tested case. Detail now uses keyword and location only |
+| Step URLs and notes reached the platform unredacted | **Confirmed.** Also affected the web engine. `Sanitizer` added |
+| Redactor missed secrets in query strings | **Confirmed by a new test.** Key-value matching consumed the URL as the value of `https:`. Query pass added |
+| API environment could use a password as a bearer token | **Confirmed.** Now refused |
+| One root cause made two defects | **Confirmed.** Fixed |
+| Parsed but unused `readOnlyPost` | Removed |
+
+**Failures recorded:** a broad test assertion looked like a POST had got through; the fixture log showed only `OPTIONS`, and the assertion was corrected. An expected-defect list missed a true finding. The resilience safe-method check was widened to include `OPTIONS` after confirming every method the fixture had received.
+
+**Deviation from ADR-018:** `swagger-parser` was not used, because it can fetch remote references outside the gate. A small reader was written instead, using the JSON Schema validator as planned.

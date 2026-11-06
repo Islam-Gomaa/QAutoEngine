@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import qaengine.contracts.WorkerContracts.ApiProfile;
 import qaengine.contracts.WorkerContracts.FindingReport;
 import qaengine.contracts.WorkerContracts.HeartbeatResponse;
 import qaengine.contracts.WorkerContracts.JobAssignment;
@@ -92,7 +93,8 @@ public class WorkerController {
                 SELECT e.base_url, r.seed, ep.mode, e.classification, ep.include_paths, ep.exclude_paths, ep.mask_selectors,
                        ep.max_actions, ep.max_pages, ep.max_depth, ep.max_minutes,
                        e.login_method, e.login_path, e.login_submit_path, e.login_success_path,
-                       (SELECT array_agg(origin) FROM allowed_host h WHERE h.organization_id = e.organization_id AND h.environment_id = e.id)
+                       (SELECT array_agg(origin) FROM allowed_host h WHERE h.organization_id = e.organization_id AND h.environment_id = e.id),
+                       e.channel, e.api_spec_path, e.api_slow_ms, e.api_seed_paths
                 FROM test_run r
                 JOIN environment e ON e.organization_id = r.organization_id AND e.id = r.environment_id
                 JOIN execution_policy ep ON ep.organization_id = e.organization_id AND ep.environment_id = e.id
@@ -100,7 +102,8 @@ public class WorkerController {
                 """).params(c.organizationId(), c.runId()).query((rs, n) -> new JobAssignment(c.jobId(), c.runId(), c.attempt(), token,
                 rs.getString(1), rs.getLong(2), rs.getString(3), rs.getString(4), array(rs, 16), array(rs, 5), array(rs, 6),
                 new RunLimits(rs.getInt(8), rs.getInt(9), rs.getInt(10), rs.getInt(11), rs.getString(4).equals("PRODUCTION") ? 1 : 2), array(rs, 7),
-                rs.getString(12) == null ? null : new LoginProfile(rs.getString(12), rs.getString(13), rs.getString(14), rs.getString(15)))).single());
+                rs.getString(12) == null ? null : new LoginProfile(rs.getString(12), rs.getString(13), rs.getString(14), rs.getString(15)),
+                rs.getString(17), new ApiProfile(rs.getString(18), rs.getLong(19), array(rs, 20)))).single());
     }
 
     private static List<String> array(java.sql.ResultSet rs, int column) throws java.sql.SQLException {
@@ -161,11 +164,11 @@ public class WorkerController {
         UUID run = runOf(s);
         for (StepReport r : steps) {
             db.sql("""
-                    INSERT INTO run_step (organization_id, run_id, attempt, sequence, parent, kind, url, label, locators, verdict, status, state, note)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    INSERT INTO run_step (organization_id, run_id, attempt, sequence, parent, kind, url, label, locators, verdict, status, state, note, duration_ms)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT (organization_id, run_id, attempt, sequence) DO NOTHING
                     """).params(s.organizationId(), run, s.attempt(), r.sequence(), r.parent(), r.kind(), r.url(), r.label(),
-                    r.locators().toArray(String[]::new), r.verdict(), r.status(), r.state(), r.note()).update();
+                    r.locators().toArray(String[]::new), r.verdict(), r.status(), r.state(), r.note(), r.durationMs()).update();
         }
         return ResponseEntity.noContent().build();
     }
@@ -238,6 +241,16 @@ public class WorkerController {
         for (Passed p : passed) {
             var saved = testCases.save(org, project, "page:" + path(p.url()), "Page loads: " + path(p.url()), reproJson(org, run, s.attempt(), p.sequence()));
             testCases.recordResult(org, run, saved.versionId(), "PASS");
+        }
+        record ApiStep(int sequence, String label, String verdict) {}
+        List<ApiStep> apiSteps = db.sql("""
+                SELECT min(sequence), label, min(verdict) FROM run_step
+                WHERE organization_id = ? AND run_id = ? AND attempt = ? AND kind = 'API_CALL' AND verdict IN ('PASS','FAIL')
+                GROUP BY label
+                """).params(org, run, s.attempt()).query((rs, n) -> new ApiStep(rs.getInt(1), rs.getString(2), rs.getString(3))).list();
+        for (ApiStep a : apiSteps) {
+            var saved = testCases.save(org, project, "api:" + a.label(), "API: " + a.label(), reproJson(org, run, s.attempt(), a.sequence()));
+            testCases.recordResult(org, run, saved.versionId(), a.verdict());
         }
         JobQueue.Terminal outcome = JobQueue.Terminal.valueOf(body.outcome());
         if (!queue.complete(org, jobId, s.attempt(), outcome, null, body.stopReason())) throw new Fenced();

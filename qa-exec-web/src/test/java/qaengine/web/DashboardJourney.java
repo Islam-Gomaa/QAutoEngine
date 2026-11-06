@@ -111,6 +111,36 @@ public final class DashboardJourney {
 
             check("no Content Security Policy violations: " + cspErrors, cspErrors.isEmpty());
 
+            page.navigate(BASE);
+            page.getByLabel("New project name").fill(project + "-api");
+            page.getByRole(AriaRole.BUTTON, named("Create project")).click();
+            page.getByRole(AriaRole.TAB, named("Targets")).click();
+            page.getByLabel("Target name").fill("Fixture API");
+            page.getByRole(AriaRole.BUTTON, named("Add target")).click();
+            page.waitForTimeout(500);
+            page.getByLabel("Target", new Page.GetByLabelOptions().setExact(true)).click();
+            page.getByRole(AriaRole.OPTION, new Page.GetByRoleOptions().setName("Fixture API")).click();
+            page.getByLabel("Environment name").fill("api");
+            page.getByLabel("Base URL").fill("http://fixture.qa.internal:8090/");
+            page.getByLabel("Channel").click();
+            page.getByRole(AriaRole.OPTION, named("API")).click();
+            page.getByLabel("OpenAPI path (optional)").fill("/openapi.json");
+            page.getByRole(AriaRole.BUTTON, named("Add environment")).click();
+            page.getByRole(AriaRole.CELL, named("API")).waitFor();
+            check("API environment can be created", true);
+            page.getByRole(AriaRole.TAB, named("Runs")).click();
+            page.getByLabel("Environment", new Page.GetByLabelOptions().setExact(true)).click();
+            page.getByRole(AriaRole.OPTION).first().click();
+            page.getByRole(AriaRole.BUTTON, named("Start read-only run")).click();
+            var apiStatus = page.getByTestId("run-status").first();
+            apiStatus.waitFor();
+            for (int i = 0; i < 90 && !List.of("SUCCEEDED", "FAILED", "CANCELLED").contains(apiStatus.innerText()); i++) page.waitForTimeout(2000);
+            check("API run finishes from the dashboard: " + apiStatus.innerText(), apiStatus.innerText().equals("SUCCEEDED"));
+            page.getByRole(AriaRole.LINK).filter(new com.microsoft.playwright.Locator.FilterOptions().setHasText("/")).last().click();
+            page.getByTestId("api-metrics").waitFor();
+            check("API operations and timings are shown", page.getByTestId("api-metrics").innerText().contains("GET /api/v1/slow"));
+            noXss(page, "API run");
+
             page.getByRole(AriaRole.BUTTON, named("Sign out")).click();
             page.getByRole(AriaRole.BUTTON, named("Sign in")).waitFor();
             check("sign out works", true);

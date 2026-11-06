@@ -19,6 +19,7 @@ Wrapper:
 |---|---|
 | `qa-core` | Policy, verdicts and run model. JDK only |
 | `qa-exec-web` | Web executor and browser adapters |
+| `qa-exec-api` | REST API executor. See [API testing](docs/api-testing.md) |
 | `qa-contracts` | Internal worker API contracts |
 | `qa-fixtures` | Planted-defect regression site and scorecard |
 | `qa-worker` | Plain Java job runner, outside the Spring Boot BOM |

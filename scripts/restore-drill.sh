@@ -22,6 +22,11 @@ for t in organization app_user project environment test_run run_job run_step def
   check "rows in $t" "$(q "$live" "select count(*) from $t")" "$(q "$name" "select count(*) from $t")"
 done
 
+# Decryption needs the master key, which is not in the backup. Identical ciphertext plus the unchanged
+# key is the proof a restored credential still opens.
+sealed="select coalesce(md5(string_agg(encode(wrapped_key,'hex') || encode(ciphertext,'hex'), '' order by id)), 'none') from credential"
+check "credential ciphertext restored exactly" "$(q "$live" "$sealed")" "$(q "$name" "$sealed")"
+
 mkdir -p "$work/evidence" && tar -xzf "$work/evidence.tar.gz" -C "$work/evidence"
 total=0; bad=0
 while IFS='|' read -r key_path sha; do

@@ -21,6 +21,8 @@ To include the planted-defect site, add `--profile fixture`.
 | Network and container attacks | `./scripts/attack-tests.sh` |
 | Failure injection | `python3 scripts/resilience-tests.py` |
 | Authenticated run and leak search | `python3 scripts/e2e-auth.py` |
+| API run and leak search | `python3 scripts/e2e-api.py` |
+| Transport capture | `scripts/transport-sniff-test.sh after` |
 | Repeated runs | `python3 scripts/soak.py 8` |
 
 These need the fixture profile running.

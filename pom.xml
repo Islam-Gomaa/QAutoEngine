@@ -15,6 +15,7 @@
         <module>qa-contracts</module>
         <module>qa-fixtures</module>
         <module>qa-exec-web</module>
+        <module>qa-exec-api</module>
         <module>qa-worker</module>
         <module>qa-dashboard</module>
         <module>qa-platform</module>

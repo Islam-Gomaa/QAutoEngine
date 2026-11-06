@@ -15,7 +15,7 @@ import qaengine.platform.identity.Totp;
 public class CredentialService {
 
     /** @param totpSeed base64 seed of an organization-issued test account */
-    public record Material(String username, String password, String totpSeed, String cookieName, String cookieValue) {}
+    public record Material(String username, String password, String totpSeed, String cookieName, String cookieValue, String lowPrivilegeToken) {}
 
     private final JdbcClient db;
     private final SecretBox box;
@@ -45,6 +45,6 @@ public class CredentialService {
                 .query((rs, n) -> new SecretBox.Sealed(rs.getBytes(1), rs.getBytes(2))).single();
         Material m = json.readValue(box.open(sealed, owner(org, id)), Material.class);
         String code = m.totpSeed() == null ? null : Totp.code(Base64.getDecoder().decode(m.totpSeed()), Instant.now().getEpochSecond() / 30);
-        return new LoginSecret(m.username(), m.password(), code, m.cookieName(), m.cookieValue());
+        return new LoginSecret(m.username(), m.password(), code, m.cookieName(), m.cookieValue(), m.lowPrivilegeToken());
     }
 }

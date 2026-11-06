@@ -69,4 +69,18 @@ class FixtureServerTest {
             assertEquals(302, http.send(good, HttpResponse.BodyHandlers.discarding()).statusCode());
         }
     }
+
+    @Test
+    void apiCleanAndPlantedBehaviour() throws Exception {
+        try (var f = FixtureServer.start()) {
+            assertEquals(200, status(f, "/api/v1/items?limit=5"));
+            assertEquals(400, status(f, "/api/v1/items?limit=0"));
+            assertEquals(500, status(f, "/api/v1/search?q=" + "a".repeat(65)));
+            assertEquals(401, status(f, "/api/v1/me"));
+            assertEquals(200, status(f, "/api/v1/admin/users"));
+            assertEquals(202, status(f, "/api/v1/reports/3"));
+            assertEquals(200, status(f, "/openapi.json"));
+            assertEquals(10, Scorecard.of(Scorecard.Kind.API_DEFECT).size());
+        }
+    }
 }

@@ -30,8 +30,9 @@ public class TargetController {
     public record CreateTarget(@NotBlank String name) {}
     public record TargetView(UUID id, String name) {}
     public record CreateEnvironment(@NotBlank String name, @NotBlank String classification, @NotBlank String baseUrl,
-                                    List<String> includePaths, List<String> excludePaths, String authorizedBy) {}
-    public record EnvironmentView(UUID id, UUID targetId, String name, String classification, String baseUrl, String mode) {}
+                                    List<String> includePaths, List<String> excludePaths, String authorizedBy,
+                                    String channel, String apiSpecPath, Integer apiSlowMillis, List<String> apiSeedPaths) {}
+    public record EnvironmentView(UUID id, UUID targetId, String name, String classification, String baseUrl, String mode, String channel) {}
 
     private static final Set<String> CLASSES = Set.of("LOCAL", "DEV", "STAGING", "PRODUCTION");
 
@@ -67,13 +68,13 @@ public class TargetController {
     public List<EnvironmentView> environments(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId) {
         access.require(p, projectId, Access.Level.VIEWER);
         return db.sql("""
-                SELECT e.id, e.target_id, e.name, e.classification, e.base_url, ep.mode
+                SELECT e.id, e.target_id, e.name, e.classification, e.base_url, ep.mode, e.channel
                 FROM environment e
                 JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id
                 JOIN execution_policy ep ON ep.organization_id = e.organization_id AND ep.environment_id = e.id
                 WHERE e.organization_id = ? AND t.project_id = ? ORDER BY e.name
                 """).params(p.organizationId(), projectId).query((rs, n) -> new EnvironmentView(rs.getObject(1, UUID.class),
-                rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4), rs.getString(5), rs.getString(6))).list();
+                rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4), rs.getString(5), rs.getString(6), rs.getString(7))).list();
     }
 
     @PostMapping("/targets/{targetId}/environments")
@@ -91,17 +92,25 @@ public class TargetController {
         List<String> include = body.includePaths() == null ? List.of() : body.includePaths();
         if (body.classification().equals("PRODUCTION") && include.isEmpty()) throw new ConflictException("Production needs explicit include paths");
 
+        String channel = body.channel() == null ? "WEB" : body.channel();
+        if (!Set.of("WEB", "API").contains(channel)) throw new ConflictException("Unknown channel");
+        if (body.apiSpecPath() != null && !body.apiSpecPath().matches("/[A-Za-z0-9._~/-]*")) throw new ConflictException("Spec path must be a relative path");
+        List<String> seeds = body.apiSeedPaths() == null ? List.of() : body.apiSeedPaths();
+        if (seeds.stream().anyMatch(s -> !s.matches("/[A-Za-z0-9._~/-]*"))) throw new ConflictException("Seed paths must be relative");
+
         UUID id = UUID.randomUUID();
         db.sql("""
-                INSERT INTO environment (organization_id, id, target_id, name, classification, base_url, authorized_by, authorized_at)
-                VALUES (?,?,?,?,?,?,?, CASE WHEN ?::text IS NULL THEN NULL ELSE now() END)
-                """).params(p.organizationId(), id, targetId, body.name(), body.classification(), body.baseUrl(), body.authorizedBy(), body.authorizedBy()).update();
+                INSERT INTO environment (organization_id, id, target_id, name, classification, base_url, authorized_by, authorized_at,
+                                         channel, api_spec_path, api_slow_ms, api_seed_paths)
+                VALUES (?,?,?,?,?,?,?, CASE WHEN ?::text IS NULL THEN NULL ELSE now() END, ?,?,?,?)
+                """).params(p.organizationId(), id, targetId, body.name(), body.classification(), body.baseUrl(), body.authorizedBy(), body.authorizedBy(),
+                channel, body.apiSpecPath(), body.apiSlowMillis() == null ? 1000 : body.apiSlowMillis(), seeds.toArray(String[]::new)).update();
         String origin = uri.getScheme() + "://" + uri.getAuthority();
         db.sql("INSERT INTO allowed_host (organization_id, environment_id, origin) VALUES (?,?,?)").params(p.organizationId(), id, origin).update();
         db.sql("INSERT INTO execution_policy (organization_id, environment_id, include_paths, exclude_paths) VALUES (?,?,?,?)")
                 .params(p.organizationId(), id, include.toArray(String[]::new),
                         (body.excludePaths() == null ? List.<String>of() : body.excludePaths()).toArray(String[]::new)).update();
         audit.record(p.organizationId(), p.email(), "ENVIRONMENT_CREATED", id.toString(), body.classification() + " " + origin);
-        return new EnvironmentView(id, targetId, body.name(), body.classification(), body.baseUrl(), "READ_ONLY");
+        return new EnvironmentView(id, targetId, body.name(), body.classification(), body.baseUrl(), "READ_ONLY", channel);
     }
 }

@@ -15,11 +15,12 @@
 | 10 Target connectivity | Complete on the fixture | Real targets stay locked |
 | Pre-pilot gate | **Blocked** | Needs independent penetration test, independent review, written authorization. See `docs/PILOT-READINESS.md` |
 | Pilot, R1 | Blocked by the gate | |
-| 11 API testing, 12 AI, 13 Mobile | Not started | Follow R1 in the agreed dependency order |
+| 11 API testing | Complete on the fixture | Authorized ahead of R1; real targets stay locked |
+| 12 AI, 13 Mobile | Not started | Not authorized; follow R1 |
 | 14 Hardening | Partly done for R1 | Scans, restore drill and soak done; penetration test open |
 
 **Safety rule in force:** every executor is restricted to loopback until the pre-pilot gate passes.
 
 ## Current verified state
 
-233 automated tests; 29 of 29 attacks refused; 6 of 6 failure-injection checks; 0 HIGH or CRITICAL image findings; 7 of 7 planted defects, 0 false findings, 0 traps reached.
+319 automated tests. 44 of 44 attacks refused. Transport capture clean. 6 of 6 failure-injection checks. 21 of 21 browser checks. 20 of 20 restore checks. 0 HIGH or CRITICAL image findings. Web: 7 of 7 planted defects. API: all 10 planted defect classes. No false findings, no traps reached.

@@ -39,3 +39,11 @@ Decisions made during execution. Architecture-level decisions live in
 | 2026-11-06 | Transport | `NET_RAW` removed from `egress` and `caddy` | The proxy handles hostile traffic and must not be able to spoof the network |
 | 2026-11-06 | Transport | Credentials refused over plain HTTP except to loopback or the fixture | A password on `http://` is readable at the proxy |
 | 2026-11-06 | Transport | `ExecutionLock` moved to `qa-core` | All executors must share one lock |
+| 2026-11-06 | 11 | Own OpenAPI reader instead of `swagger-parser` | A general parser can fetch remote references outside the gate |
+| 2026-11-06 | 11 | Spec `servers` always ignored | Only the environment's base URL is trusted |
+| 2026-11-06 | 11 | Only safe methods in `READ_ONLY`; other operations recorded as `BLOCKED` | No mutation is authorized, and coverage gaps must stay visible |
+| 2026-11-06 | 11 | Reference and `$` keywords never reach the validator | A library upgrade must not be able to open an SSRF path |
+| 2026-11-06 | 11 | Failures must repeat; speed uses a median of three | Same false-positive controls as the web engine |
+| 2026-11-06 | 11 | Findings report keyword and location, not validator messages | Messages can repeat response data |
+| 2026-11-06 | 11 | All worker reports pass through `Sanitizer` | URLs and labels come from the target |
+| 2026-11-06 | 11 | Login method must fit the channel | A password must never be sent as a bearer token |

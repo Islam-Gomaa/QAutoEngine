@@ -66,6 +66,25 @@ public class ReportController {
         return new Summary(runs, open, severities, statuses, cases, verdicts, latest, pages, verdicts.getOrDefault("BLOCKED", 0L));
     }
 
+    public record ApiMetric(String operation, long calls, long passed, long failed, long blocked, long averageMs, long p95Ms, long maxMs) {}
+
+    /** Per-operation results and response times for one run, computed from stored steps. */
+    @GetMapping("/runs/{runId}/api-metrics")
+    public List<ApiMetric> apiMetrics(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID runId) {
+        access.require(p, projectId, Access.Level.VIEWER);
+        requireRun(p, projectId, runId);
+        return db.sql("""
+                SELECT regexp_replace(label, '^\\S+ ', '') AS operation, count(*),
+                       count(*) FILTER (WHERE verdict = 'PASS'), count(*) FILTER (WHERE verdict = 'FAIL'), count(*) FILTER (WHERE verdict = 'BLOCKED'),
+                       coalesce(avg(duration_ms) FILTER (WHERE status > 0), 0)::bigint,
+                       coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) FILTER (WHERE status > 0), 0)::bigint,
+                       coalesce(max(duration_ms) FILTER (WHERE status > 0), 0)
+                FROM run_step
+                WHERE organization_id = ? AND run_id = ? AND kind = 'API_CALL'
+                GROUP BY 1 ORDER BY 1
+                """).params(p.organizationId(), runId).query((rs, n) -> new ApiMetric(rs.getString(1), rs.getLong(2), rs.getLong(3), rs.getLong(4), rs.getLong(5), rs.getLong(6), rs.getLong(7), rs.getLong(8))).list();
+    }
+
     private void requireRun(Principal p, UUID projectId, UUID runId) {
         boolean exists = db.sql("SELECT count(*) FROM test_run WHERE organization_id = ? AND project_id = ? AND id = ?")
                 .params(p.organizationId(), projectId, runId).query(Long.class).single() == 1;

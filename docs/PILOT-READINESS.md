@@ -7,10 +7,11 @@ Status: **NOT PASSED**. Real targets remain locked in code by `ExecutionLock`.
 | Independent penetration test | **Not done** | Needs an external party |
 | Independent review of `ActionGate` and `ExecutionLock` | **Not done** | Only a self-review so far, which found four real holes |
 | Written target authorization | **Not provided** | Needs the Product Owner |
-| Restore drill | Passed | 19 of 19 checks, every evidence hash verified |
+| Restore drill | Passed | 20 of 20 checks, every evidence hash verified, credentials present |
 | Soak | Passed, short | 8 and 4 consecutive runs, stable memory. Not a multi-hour soak |
-| No open Critical or High issues | Passed for known issues | Trivy: 0 HIGH or CRITICAL on platform, worker and egress images. gitleaks clean |
-| Attack tests | Passed | 29 of 29 |
+| No open Critical or High issues | Passed for known issues | Trivy: 0 HIGH or CRITICAL on platform, worker, egress and gateway images. gitleaks clean |
+| Attack tests | Passed | 44 of 44, including mutual TLS and capabilities |
+| Transport capture | Passed | No secret visible at the gateway or edge hop |
 | Failure injection | Passed | 6 of 6 |
 | Credential leak search | Passed | Canary absent from API, logs, audit, database dump and evidence |
 
@@ -37,5 +38,6 @@ Lifting `ExecutionLock` is a reviewed code change, made only after the three ope
 ## Not built, still open
 
 - Dashboard screens for users, credentials and login profiles (API only).
+- Non-safe API operations cannot be tested, and `READ_OPERATION` exceptions cannot be created outside code.
 - Running saved test cases from the platform. `Replayer` exists but is not exposed.
 - An automated accessibility check.

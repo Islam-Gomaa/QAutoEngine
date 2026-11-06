@@ -22,7 +22,7 @@ The full comparison text lives in the planning record; this register tracks the 
 | 015 | React, TypeScript, Vite, served same-origin | Accepted | High | TypeScript cannot be maintained |
 | 016 | Spring Security sessions, Argon2id, TOTP; deny by default from first commit | Accepted | High | Enterprise SSO is required |
 | 017 | Envelope-encrypted secrets, `CredentialRef` | Accepted | Medium-High | Compliance requires KMS or HSM |
-| 018 | JDK HttpClient API executor | Accepted | High | GraphQL or gRPC is required |
+| 018 | JDK HttpClient API executor; own OpenAPI reader (no `swagger-parser`); networknt JSON Schema; see [API testing](../api-testing.md) | Accepted | High | GraphQL or gRPC is required |
 | 019 | Appium, Android first | Accepted | Medium | R4 requirements change |
 | 020 | AI gateway, advisory only, no tools | Accepted | Medium-High | Library instability or policy change |
 | 021 | REST, OpenAPI, Problem Details, SSE | Accepted | High | Third parties need another contract |
