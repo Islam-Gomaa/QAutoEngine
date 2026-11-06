@@ -1,0 +1,29 @@
+spring:
+  application:
+    name: qa-platform
+  datasource:
+    url: ${QA_DB_URL:jdbc:postgresql://localhost:5432/qaengine}
+    username: ${QA_DB_USER:qaengine}
+    password: ${QA_DB_PASSWORD:}
+  flyway:
+    enabled: true
+server:
+  port: 8080
+  error:
+    include-message: never
+    include-stacktrace: never
+  servlet:
+    session:
+      cookie:
+        http-only: true
+        same-site: strict
+        secure: ${QA_COOKIE_SECURE:true}
+      timeout: 8h
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+qa:
+  evidence:
+    root: ${QA_EVIDENCE_ROOT:/var/lib/qa-engine/evidence}

@@ -51,3 +51,16 @@
 - **Baseline comparison:** the legacy engine stopped after one action, found 0 of these defects through its engine path, and hit the trap endpoints.
 - **Failure recorded:** SPA content was missed because the snapshot ran before client rendering finished. Fixed with a MutationObserver quiet wait, not a sleep.
 - **Note:** the Phase 2 commit does not build alone because the `qa-exec-web/pom.xml` change landed in the Phase 3 commit. History was left as is.
+
+## Phases 6 and 7: Platform, Identity and Credentials (complete, with noted deferrals)
+
+- Spring Boot 4.1.2 modular monolith, PostgreSQL 18, Flyway, 12 domain areas, module boundaries verified by Spring Modulith.
+- Schema: `organization_id` everywhere with composite keys; production READ_ONLY trigger; append-only audit trigger; one active job per run enforced by a partial unique index.
+- Queue: `SKIP LOCKED` claim, leases, attempt fencing, reaper with startup grace, cancellation in every state, no automatic retry for mutation runs.
+- Identity: deny-by-default, server sessions, Argon2id, TOTP, login throttle, CSRF, CSP, project roles, 404 for anything out of scope.
+- Evidence: upload hash and type checks, server rescan, API-only retrieval, attachment-only for HTML, audit on every read, retention, tombstones, legal hold, integrity sampling.
+- **Tests:** 14 queue tests on real PostgreSQL including 40 concurrent claimers; 17 security tests; 11 worker and evidence tests; module structure.
+- **Failures recorded:** stale compiled classes hid the `-parameters` fix for one run; untyped SQL parameter in `CASE WHEN`.
+- **Resolved provisional:** Flyway 12.4 works with PostgreSQL 18.
+- **Deferred:** `AUTHORIZED_MUTATION` stays refused. R1 and the pilot are READ_ONLY, so this is the safe direction. Credential API lands in Phase 10.
+- **Second-organization suite:** cross-organization access tested for projects, targets, environments, runs, defects and evidence.

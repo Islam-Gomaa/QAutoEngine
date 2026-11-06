@@ -9,7 +9,7 @@ The full comparison text lives in the planning record; this register tracks the 
 | 002 | Maven multi-module monorepo; legacy kept as a module | Accepted | High | Builds exceed ~10 minutes |
 | 003 | Java 25 LTS (Temurin); legacy at release 17 | Accepted | High | A required library fails on 25 |
 | 004 | Spring Boot 4.1.x | Accepted | High | Upgrade only when Spring AI and Modulith support it |
-| 005 | PostgreSQL, Flyway, JPA, native SQL for reports | Accepted | High | Analytics outgrow PostgreSQL |
+| 005 | PostgreSQL 18, Flyway, `JdbcClient` with explicit SQL (JPA dropped so tenant predicates stay visible) | Accepted | High | Analytics outgrow PostgreSQL |
 | 006 | Shared schema, `organization_id`, server-side context; RLS before a second org | Accepted | High | A second organization is approved |
 | 007 | PostgreSQL queue, leases, fencing; workers use internal API only | Accepted | High | Sustained load exceeds polling |
 | 008 | Playwright for Java behind `BrowserPort`, chosen by [bake-off](bakeoff-results.md) | Accepted | Medium-High | Java binding support declines; bulk interception cost matters |

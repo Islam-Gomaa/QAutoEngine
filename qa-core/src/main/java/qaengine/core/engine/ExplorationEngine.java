@@ -50,6 +50,9 @@ public final class ExplorationEngine {
     private final Set<String> reportedBlocks = new HashSet<>();
     private int sequence;
     private int pages;
+    private java.util.function.BooleanSupplier stopRequested = () -> false;
+    private java.util.function.Consumer<StepRecord> stepListener = s -> { };
+    private java.util.function.Consumer<Observation> findingListener = o -> { };
 
     public ExplorationEngine(ActionGate gate, BrowserPort browser, VerdictEngine verdicts, EvidenceCollector evidence,
                              long seed, Clock clock, List<String> extraMasks) {
@@ -64,11 +67,25 @@ public final class ExplorationEngine {
         this.masks = List.copyOf(all);
     }
 
+    /** Checked before every action, which is what makes cancellation take effect between actions. */
+    public ExplorationEngine stopWhen(java.util.function.BooleanSupplier stop) {
+        this.stopRequested = stop;
+        return this;
+    }
+
+    /** Receives each step and confirmed finding as it happens, so progress is visible during a run. */
+    public ExplorationEngine onProgress(java.util.function.Consumer<StepRecord> steps, java.util.function.Consumer<Observation> findings) {
+        this.stepListener = steps;
+        this.findingListener = findings;
+        return this;
+    }
+
     public RunResult explore(String startUrl) {
         Instant deadline = clock.instant().plus(gate.policy().budget().maxDuration());
         frontier.add(new Candidate(startUrl, 0, null, 0));
         RunResult.StopReason stop = RunResult.StopReason.EXHAUSTED;
         while (!frontier.isEmpty()) {
+            if (stopRequested.getAsBoolean()) { stop = RunResult.StopReason.CANCELLED; break; }
             if (clock.instant().isAfter(deadline)) { stop = RunResult.StopReason.DEADLINE; break; }
             if (pages >= gate.policy().budget().maxPages()) { stop = RunResult.StopReason.BUDGET; break; }
             visit(frontier.next());
@@ -135,7 +152,11 @@ public final class ExplorationEngine {
         refs.add(evidence.text(EvidenceType.SIGNAL_LOG, seq, () -> signals.toString()));
         refs.add(evidence.text(EvidenceType.DOM_SNAPSHOT, seq, browser::domSnapshot));
         refs.add(evidence.binary(EvidenceType.SCREENSHOT, seq, browser.screenshot(masks)));
-        for (Finding f : fresh) observations.put(f.fingerprint(), new Observation(f, seq, refs));
+        for (Finding f : fresh) {
+            Observation o = new Observation(f, seq, refs);
+            observations.put(f.fingerprint(), o);
+            findingListener.accept(o);
+        }
     }
 
     private void expand(PageSnapshot snapshot, Candidate c, int seq) {
@@ -167,7 +188,7 @@ public final class ExplorationEngine {
         if (d.allowed()) return;
         String key = control.kind() + "|" + control.label() + "|" + control.locators();
         if (!reportedBlocks.add(key)) return;
-        steps.add(new StepRecord(++sequence, seq, control.kind(), control.url() == null ? "" : control.url(), control.label(),
+        add(new StepRecord(++sequence, seq, control.kind(), control.url() == null ? "" : control.url(), control.label(),
                 control.locators(), Verdict.BLOCKED, 0, "", d.reason() + ": " + d.detail()));
     }
 
@@ -184,14 +205,14 @@ public final class ExplorationEngine {
         try {
             browser.activate(control);
         } catch (RuntimeException e) {
-            steps.add(new StepRecord(++sequence, parent, control.kind(), from.url(), control.label(), control.locators(),
+            add(new StepRecord(++sequence, parent, control.kind(), from.url(), control.label(), control.locators(),
                     Verdict.INCONCLUSIVE, 0, from.fingerprint(), "control could not be used"));
             return;
         }
         PageSnapshot after = browser.snapshot();
         boolean changed = !after.fingerprint().equals(from.fingerprint());
         StepEvaluation eval = verdicts.evaluate(Navigation.loaded(200, after.url()), ExpectedOutcome.STATE_CHANGES, changed, browser.drainSignals());
-        steps.add(new StepRecord(++sequence, parent, control.kind(), after.url(), control.label(), control.locators(),
+        add(new StepRecord(++sequence, parent, control.kind(), after.url(), control.label(), control.locators(),
                 eval.verdict(), 200, after.fingerprint(), eval.note()));
         int seq = sequence;
         if (states.putIfAbsent(after.fingerprint(), after.url()) != null) return;
@@ -204,9 +225,14 @@ public final class ExplorationEngine {
     }
 
     private int record(Candidate c, Control via, Verdict verdict, int status, String state, String note) {
-        steps.add(new StepRecord(++sequence, c.parentStep(), via == null ? ActionRequest.Kind.NAVIGATE_LINK : via.kind(), c.url(),
+        add(new StepRecord(++sequence, c.parentStep(), via == null ? ActionRequest.Kind.NAVIGATE_LINK : via.kind(), c.url(),
                 via == null ? "" : via.label(), via == null ? List.of() : via.locators(), verdict, status, state, note));
         return sequence;
+    }
+
+    private void add(StepRecord step) {
+        steps.add(step);
+        stepListener.accept(step);
     }
 
     private static boolean isWeb(String url) {

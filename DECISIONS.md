@@ -20,3 +20,6 @@ Decisions made during execution. Architecture-level decisions live in
 | 2026-11-06 | 3 | Static assets skip only the one-time token check | Exempting them fully let `new Image()` reach destructive GETs |
 | 2026-11-06 | 5 | `ExecutionLock` has no configuration switch | Lifting the real-target lock must be a reviewed code change |
 | 2026-11-06 | 5 | A failure must repeat before it is reported | False-positive control from the roadmap |
+| 2026-11-06 | 6 | ADR-005 amended: `JdbcClient` with explicit SQL instead of JPA | Tenant predicates stay visible in every query and are easier to audit |
+| 2026-11-06 | 6 | Worker API on the same app, separate port | Keeps one deployable while workers stay out of the public surface |
+| 2026-11-06 | 7 | `AUTHORIZED_MUTATION` not built for R1 | The pilot is READ_ONLY, and refusal is the safe default |
