@@ -106,6 +106,18 @@ export function Failure({ error, retry }: { error: unknown; retry?: () => void }
   );
 }
 
+/**
+ * A box with its own scrollbar. It takes focus and has a name, so keyboard users can scroll it
+ * with the arrow keys even when nothing inside it is focusable (WCAG 2.1.1).
+ */
+export function ScrollRegion({ label, maxHeight, children }: { label: string; maxHeight: number; children: ReactNode }) {
+  return (
+    <Box role="region" aria-label={label} tabIndex={0} sx={{ maxHeight, overflow: 'auto', '&:focus-visible': { outline: 2, outlineColor: 'primary.main', outlineOffset: 2 } }}>
+      {children}
+    </Box>
+  );
+}
+
 export function Loading({ rows = 4 }: { rows?: number }) {
   return <Stack spacing={1} data-testid="loading-state" aria-label="Loading">{Array.from({ length: rows }, (_, i) => <Skeleton key={i} variant="rounded" height={30} />)}</Stack>;
 }

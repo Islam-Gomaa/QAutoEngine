@@ -22,6 +22,9 @@ public final class DashboardJourney {
     private static final String BASE = "https://localhost:8443";
     private static final Path SHOTS = Path.of("docs/screenshots");
     private static final List<String> failures = new ArrayList<>();
+    /** axe-core from the dashboard's own test dependencies, so both suites apply the same rules. */
+    private static final Path AXE = Path.of("qa-dashboard/node_modules/axe-core/axe.min.js");
+    private static final String WCAG = "['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']";
 
     private static void check(String name, boolean ok) {
         System.out.println((ok ? "PASS  " : "FAIL  ") + name);
@@ -47,6 +50,25 @@ public final class DashboardJourney {
     private static void shot(Page page, String name) {
         page.waitForTimeout(500);
         page.screenshot(new Page.ScreenshotOptions().setPath(SHOTS.resolve(name + ".png")).setFullPage(true));
+        accessible(page, name);
+    }
+
+    /**
+     * WCAG 2.2 A and AA on the page as rendered, which includes colour contrast that jsdom cannot judge.
+     * axe is loaded through the DevTools protocol, so the dashboard's Content-Security-Policy stays in force.
+     */
+    private static void accessible(Page page, String where) {
+        if ("undefined".equals(page.evaluate("() => typeof window.axe"))) {
+            try {
+                page.evaluate("() => {\n" + Files.readString(AXE) + "\n}");
+            } catch (java.io.IOException e) {
+                throw new java.io.UncheckedIOException("Install the dashboard's packages first (npm ci in qa-dashboard)", e);
+            }
+        }
+        Object found = page.evaluate("async () => (await axe.run(document, { runOnly: { type: 'tag', values: " + WCAG + " } })).violations"
+                + ".map(v => v.id + ' (' + v.impact + '): ' + v.nodes.slice(0, 3).map(n => n.target.join(' ')).join(', ') + (v.nodes.length > 3 ? ' and ' + (v.nodes.length - 3) + ' more' : ''))");
+        List<?> violations = (List<?>) found;
+        check("accessible: " + where + (violations.isEmpty() ? "" : " " + violations), violations.isEmpty());
     }
 
     private static void nav(Page page, String label) {
@@ -324,6 +346,9 @@ public final class DashboardJourney {
             nav(page, "Dashboard");
             page.getByTestId("recent-runs").waitFor();
             shot(page, "02-dashboard");
+            page.setViewportSize(1024, 768);
+            shot(page, "14-dashboard-tablet");
+            page.setViewportSize(1440, 900);
             nav(page, "Projects");
             shot(page, "03-projects");
 

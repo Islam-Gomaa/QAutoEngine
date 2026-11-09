@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { Autocomplete, Avatar, Badge, Box, Breadcrumbs, Divider, IconButton, Link, List, ListItemButton, ListItemIcon, ListItemText, Menu, MenuItem, Popover, Select, Stack, TextField, Tooltip, Typography, useMediaQuery } from '@mui/material';
+import { Autocomplete, Avatar, Badge, Box, Breadcrumbs, Divider, IconButton, Link, List, ListItem, ListItemButton, ListItemIcon, ListItemText, Menu, MenuItem, Popover, Select, Stack, TextField, Tooltip, Typography, useMediaQuery } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link as RouterLink, useLocation, useNavigate } from 'react-router-dom';
@@ -83,8 +83,9 @@ function Bell() {
   return (
     <>
       <Tooltip title="Notifications">
-        <IconButton aria-label={`Notifications, ${feed.data?.unread ?? 0} unread`} onClick={(e) => { setAnchor(e.currentTarget); if (feed.data?.unread) seen.mutate(); }}>
-          <Badge badgeContent={feed.data?.unread ?? 0} color="error" max={9}><Notifications fontSize="small" /></Badge>
+        {/* The name repeats what the badge shows, "9+" included, so voice control can match it (WCAG 2.5.3). */}
+        <IconButton aria-label={`Notifications, ${badge(feed.data?.unread ?? 0)} unread`} onClick={(e) => { setAnchor(e.currentTarget); if (feed.data?.unread) seen.mutate(); }}>
+          <Badge badgeContent={feed.data?.unread ?? 0} color="error" max={UNREAD_MAX}><Notifications fontSize="small" /></Badge>
         </IconButton>
       </Tooltip>
       <Popover open={!!anchor} anchorEl={anchor} onClose={() => setAnchor(null)} anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }} transformOrigin={{ vertical: 'top', horizontal: 'right' }}>
@@ -94,12 +95,14 @@ function Bell() {
           {feed.data?.items.length === 0 && <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>Finished runs and high-severity defects appear here.</Typography>}
           <List dense disablePadding>
             {feed.data?.items.map((n) => (
-              <ListItemButton key={n.kind + n.id} onClick={() => { selectProject(n.projectId); setAnchor(null); navigate(n.kind === 'RUN' ? `/execution/${n.id}` : `/defects/${n.id}`); }}>
-                <Stack spacing={0.25} sx={{ minWidth: 0, width: '100%' }}>
-                  <Stack direction="row" justifyContent="space-between"><StatusChip value={n.title} /><Typography variant="caption">{ago(n.at)}</Typography></Stack>
-                  <Typography variant="body2" noWrap>{n.detail}</Typography>
-                </Stack>
-              </ListItemButton>
+              <ListItem key={n.kind + n.id} disablePadding>
+                <ListItemButton onClick={() => { selectProject(n.projectId); setAnchor(null); navigate(n.kind === 'RUN' ? `/execution/${n.id}` : `/defects/${n.id}`); }}>
+                  <Stack spacing={0.25} sx={{ minWidth: 0, width: '100%' }}>
+                    <Stack direction="row" justifyContent="space-between"><StatusChip value={n.title} /><Typography variant="caption">{ago(n.at)}</Typography></Stack>
+                    <Typography variant="body2" noWrap>{n.detail}</Typography>
+                  </Stack>
+                </ListItemButton>
+              </ListItem>
             ))}
           </List>
         </Box>
@@ -107,6 +110,21 @@ function Bell() {
     </>
   );
 }
+
+const UNREAD_MAX = 9;
+/** What the unread badge shows. */
+export const badge = (unread: number) => (unread > UNREAD_MAX ? `${UNREAD_MAX}+` : String(unread));
+
+/** Who is signed in, at the top of the account menu. Not an action, so the menu must not give it focus. */
+function Identity({ email, organizationAdmin }: { email: string; organizationAdmin: boolean }) {
+  return (
+    <Box component="li" role="none" sx={{ px: 2, py: 0.75 }}>
+      <Typography variant="body2" component="span" sx={{ display: 'block', fontWeight: 600 }}>{email}</Typography>
+      <Typography variant="caption" component="span" sx={{ display: 'block' }}>{organizationAdmin ? 'Organization admin' : 'Member'}</Typography>
+    </Box>
+  );
+}
+Identity.muiSkipListHighlight = true;
 
 function Profile({ onSignOut }: { onSignOut: () => void }) {
   const { me } = useWorkspace();
@@ -120,10 +138,7 @@ function Profile({ onSignOut }: { onSignOut: () => void }) {
         </IconButton>
       </Tooltip>
       <Menu open={!!anchor} anchorEl={anchor} onClose={() => setAnchor(null)}>
-        <Box sx={{ px: 2, py: 0.75 }}>
-          <Typography variant="body2" sx={{ fontWeight: 600 }}>{me.email}</Typography>
-          <Typography variant="caption">{me.organizationAdmin ? 'Organization admin' : 'Member'}</Typography>
-        </Box>
+        <Identity email={me.email} organizationAdmin={me.organizationAdmin} />
         <Divider />
         <MenuItem onClick={() => { setAnchor(null); navigate('/settings'); }}>Settings</MenuItem>
         <MenuItem onClick={onSignOut}>Sign out</MenuItem>
@@ -135,7 +150,7 @@ function Profile({ onSignOut }: { onSignOut: () => void }) {
 export function AppShell({ children, onSignOut }: { children: ReactNode; onSignOut: () => void }) {
   const { tokens, breakpoints } = useTheme();
   const { me, projects, project, selectProject, allowed } = useWorkspace();
-  const narrow = useMediaQuery(breakpoints.down('md'));
+  const narrow = useMediaQuery(breakpoints.down('lg'));
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('qa.sidebar') === 'collapsed');
   const small = collapsed || narrow;
   const { pathname } = useLocation();
@@ -172,13 +187,15 @@ export function AppShell({ children, onSignOut }: { children: ReactNode; onSignO
               {!small && <Typography variant="overline" component="div" sx={{ px: 2, pt: 1, pb: 0.25, color: tokens.sidebarMuted }}>{g.title}</Typography>}
               <List dense disablePadding sx={{ px: 1 }}>
                 {items.map((i) => (
-                  <Tooltip key={i.to} title={small ? i.label : ''} placement="right">
+                  <ListItem key={i.to} disablePadding>
+                  <Tooltip title={small ? i.label : ''} placement="right">
                     <ListItemButton component={RouterLink} to={i.to} aria-label={i.label} aria-current={active(i.to) ? 'page' : undefined} selected={active(i.to)}
                       sx={{ borderRadius: 1.5, py: 0.6, px: 1.1, color: tokens.sidebarText, '&.Mui-selected, &.Mui-selected:hover': { bgcolor: tokens.sidebarActive }, '&:hover': { bgcolor: tokens.sidebarActive }, '&:focus-visible': { outline: '2px solid #fff' } }}>
                       <ListItemIcon sx={{ minWidth: small ? 0 : 30, color: active(i.to) ? '#fff' : tokens.sidebarMuted, '& svg': { fontSize: 19 } }}>{i.icon}</ListItemIcon>
                       {!small && <ListItemText primary={i.label} slotProps={{ primary: { noWrap: true, fontSize: 13, fontWeight: active(i.to) ? 600 : 450 } }} />}
                     </ListItemButton>
                   </Tooltip>
+                  </ListItem>
                 ))}
               </List>
             </Box>

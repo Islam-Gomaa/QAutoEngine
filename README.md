@@ -30,6 +30,9 @@ Wrapper:
 
 ## Run it
 
+`./scripts/start-local.sh` starts everything on this machine. See the [dashboard guide](docs/dashboard-guide.md) for the first web and API runs.
+
+
 See the [operations runbook](docs/runbooks/operations.md).
 
 ## Safety

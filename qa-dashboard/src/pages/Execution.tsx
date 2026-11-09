@@ -5,7 +5,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { Link as RouterLink, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api, query, type ApiMetric, type Environment, type EvidenceItem, type Page, type Progress, type Run, type RunFinding, type Step, type Suite } from '../api';
 import { SegmentBar } from '../design/charts';
-import { Async, Card, Confirm, DataTable, dateTime, duration, Empty, Failure, KeyValue, Mono, PageHeader, Stat, StatusChip, Tag, words } from '../design/ui';
+import { Async, Card, Confirm, DataTable, dateTime, duration, Empty, Failure, KeyValue, Mono, PageHeader, ScrollRegion, Stat, StatusChip, Tag, words } from '../design/ui';
 import { useWorkspace } from '../shell/context';
 import { EvidenceViewer } from './EvidenceViewer';
 import { Choice, NeedsProject } from './shared';
@@ -141,12 +141,12 @@ function Detail({ project, id }: { project: string; id: string }) {
               {tab === 'steps' && (
                 <Card pad={false} title="Step log" action={<Choice label="Result" width={140} value={verdict} onChange={setVerdict} options={[['', 'All'], ['PASS', 'Passed'], ['FAIL', 'Failed'], ['BLOCKED', 'Blocked'], ['INCONCLUSIVE', 'Inconclusive']]} />}>
                   <Async q={steps}>{() => (list.length === 0 ? <Empty title="No steps yet" /> : (
-                    <Box sx={{ maxHeight: 520, overflow: 'auto' }}><DataTable label="Steps" testId="step-row" rows={list} rowKey={(x) => `${x.attempt}-${x.sequence}`} columns={[
+                    <ScrollRegion label="Step log" maxHeight={520}><DataTable label="Steps" testId="step-row" rows={list} rowKey={(x) => `${x.attempt}-${x.sequence}`} columns={[
                       { key: 'n', label: '#', render: (x) => x.sequence }, { key: 'k', label: 'Action', render: (x) => words(x.kind) },
                       { key: 'u', label: 'Target', render: (x) => <Tooltip title={x.url}><Typography variant="body2" noWrap sx={{ maxWidth: 420 }}>{x.label || x.url}</Typography></Tooltip> },
-                      { key: 'v', label: 'Result', render: (x) => <StatusChip value={x.verdict} /> }, { key: 's', label: 'HTTP', align: 'right', render: (x) => x.status || '' }, { key: 'd', label: 'Time', align: 'right', render: (x) => `${x.durationMs} ms` },
+                      { key: 'v', label: 'Result', render: (x) => <StatusChip value={x.verdict} /> }, { key: 's', label: 'HTTP', align: 'right', render: (x) => x.status || '' }, { key: 'd', label: 'Time', align: 'right', render: (x) => (x.durationMs ? `${x.durationMs} ms` : '') },
                       { key: 'note', label: 'Note', render: (x) => <Typography variant="body2" noWrap sx={{ maxWidth: 260 }}>{x.note}</Typography> },
-                    ]} /></Box>))}</Async>
+                    ]} /></ScrollRegion>))}</Async>
                 </Card>
               )}
               {tab === 'defects' && <Card pad={false}><Findings rows={f} none="No defects in this run" /></Card>}

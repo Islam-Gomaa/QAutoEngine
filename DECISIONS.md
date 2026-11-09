@@ -47,3 +47,20 @@ Decisions made during execution. Architecture-level decisions live in
 | 2026-11-06 | 11 | Findings report keyword and location, not validator messages | Messages can repeat response data |
 | 2026-11-06 | 11 | All worker reports pass through `Sanitizer` | URLs and labels come from the target |
 | 2026-11-06 | 11 | Login method must fit the channel | A password must never be sent as a bearer token |
+| 2026-11-06 | Dashboard | Charts drawn as own SVG components, no chart library | A few forms are needed, and this keeps hover, table view and CSP under our control |
+| 2026-11-06 | Dashboard | Polling instead of the server-sent events in ADR-021 | Runs report in batches, so 2 to 3 seconds loses nothing. Revisit if load grows |
+| 2026-11-06 | Dashboard | No progress percentage | An exploration's size is unknown until it ends, so any number would be invented |
+| 2026-11-06 | Dashboard | Pass rate excludes blocked steps, and is empty rather than 0% with no results | Blocked means the gate refused it, which says nothing about quality |
+| 2026-11-06 | Dashboard | Connection status comes from the last run | A platform-side check would be an SSRF path and would bypass the worker's containment |
+| 2026-11-06 | Dashboard | Non-fixture environments refused when a run is created | The worker refused them already; nothing should be queued that cannot run |
+| 2026-11-06 | Dashboard | An environment's URL and class cannot be edited | They are what any authorization was given for |
+| 2026-11-06 | Dashboard | Archive instead of delete for projects, applications, suites and cases | History, evidence and defects must survive. An archived project is read-only |
+| 2026-11-06 | Dashboard | Each request re-reads the account | Disabling a user, a role change or a password reset must not wait for their next login |
+| 2026-11-06 | Dashboard | Non-members get 404 for a project | They should not learn that it exists |
+| 2026-11-06 | Dashboard | Suites run only automated cases, and are refused otherwise | The product must not claim to execute what it cannot |
+| 2026-11-06 | Dashboard | Evidence shown as text in a `<pre>`, DOM snapshots download-only | No captured content runs in the dashboard |
+| 2026-11-09 | Accessibility | axe-core, WCAG 2.2 A and AA tags only, no best-practice rules | Those are the conformance levels; best-practice rules would mix advice into a pass/fail gate |
+| 2026-11-09 | Accessibility | Checked twice: jsdom in the dashboard tests, and the real browser in the journey | jsdom cannot judge colour contrast and reports it as incomplete, so a browser pass is needed for it |
+| 2026-11-09 | Accessibility | axe injected through the DevTools protocol, not a script tag, and CSP not bypassed | The journey also checks that hostile content cannot run, which relies on the CSP staying in force |
+| 2026-11-09 | Accessibility | Boxes with their own scrollbar take focus and have a name (`ScrollRegion`) | A keyboard user cannot otherwise scroll a box that holds nothing focusable. Found only by the real-browser pass |
+| 2026-11-09 | Accessibility | The notifications button's name repeats the badge text, `9+` included | Voice control users say what they see. Found only by the real-browser pass, with more than nine unread |

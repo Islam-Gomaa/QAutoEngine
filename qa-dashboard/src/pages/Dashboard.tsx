@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import { api, query, type Dashboard } from '../api';
 import { ChartCard, SegmentBar, StackedDays } from '../design/charts';
-import { ago, Async, Card, DataTable, Empty, PageHeader, percent, Stat, StatusChip, Tag, words } from '../design/ui';
+import { ago, Async, Card, DataTable, Empty, PageHeader, percent, ScrollRegion, Stat, StatusChip, Tag, words } from '../design/ui';
 import { useWorkspace } from '../shell/context';
 
 export function DashboardPage() {
@@ -95,14 +95,14 @@ export function DashboardPage() {
             </Card>
             <Card title="Recent activity">
               {d.activity.length === 0 ? <Typography variant="body2" color="text.secondary">Nothing yet.</Typography> : (
-                <Stack spacing={1} sx={{ maxHeight: 300, overflow: 'auto' }}>
+                <ScrollRegion label="Recent activity" maxHeight={300}><Stack spacing={1}>
                   {d.activity.map((a, i) => (
                     <Box key={i}>
                       <Typography variant="body2">{words(a.action)}{a.projectName ? ` in ${a.projectName}` : ''}</Typography>
                       <Typography variant="caption">{a.actor}, {ago(a.at)}</Typography>
                     </Box>
                   ))}
-                </Stack>
+                </Stack></ScrollRegion>
               )}
             </Card>
           </Box>

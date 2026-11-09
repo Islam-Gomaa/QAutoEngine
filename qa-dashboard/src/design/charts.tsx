@@ -3,7 +3,7 @@ import { Box, IconButton, Stack, Table, TableBody, TableCell, TableHead, TableRo
 import { useTheme } from '@mui/material/styles';
 import TableChart from '@mui/icons-material/TableChartOutlined';
 import ShowChart from '@mui/icons-material/ShowChartOutlined';
-import { Card, Empty } from './ui';
+import { Card, Empty, ScrollRegion } from './ui';
 
 export interface Series { key: string; label: string; color: string }
 
@@ -29,12 +29,12 @@ export function ChartCard({ title, columns, rows, children, testId }: { title: s
         <IconButton aria-label={`${table ? 'Show chart' : 'Show table'}: ${title}`} onClick={() => setTable(!table)}>{table ? <ShowChart fontSize="small" /> : <TableChart fontSize="small" />}</IconButton>
       </Tooltip>}>
       {table ? (
-        <Box sx={{ maxHeight: 260, overflow: 'auto' }}>
+        <ScrollRegion label={`${title}, table`} maxHeight={260}>
           <Table size="small" aria-label={title}>
             <TableHead><TableRow>{columns.map((c) => <TableCell key={c}>{c}</TableCell>)}</TableRow></TableHead>
             <TableBody>{rows.map((r, i) => <TableRow key={i}>{r.map((v, j) => <TableCell key={j}>{v}</TableCell>)}</TableRow>)}</TableBody>
           </Table>
-        </Box>
+        </ScrollRegion>
       ) : children}
     </Card>
   );
@@ -193,11 +193,14 @@ export function LineDays({ rows, valueKey, label, unit, color }: { rows: ({ day:
 export function SegmentBar({ parts, height = 14, legend = true }: { parts: { label: string; value: number; color: string }[]; height?: number; legend?: boolean }) {
   const total = parts.reduce((s, p) => s + p.value, 0);
   const shown = parts.filter((p) => p.value > 0);
+  const share = (v: number) => `${((v / total) * 100).toFixed(1)}%`;
   return (
     <Box>
-      <Box sx={{ display: 'flex', gap: '2px', height, borderRadius: 1, overflow: 'hidden', bgcolor: total === 0 ? 'action.hover' : undefined }}>
+      {/* One summary for assistive technology; the per-segment tooltips are a pointer convenience on top of it. */}
+      <Box role="img" aria-label={total === 0 ? 'No results' : shown.map((p) => `${p.label} ${p.value} (${share(p.value)})`).join(', ')}
+        sx={{ display: 'flex', gap: '2px', height, borderRadius: 1, overflow: 'hidden', bgcolor: total === 0 ? 'action.hover' : undefined }}>
         {shown.map((p) => (
-          <Tooltip key={p.label} title={`${p.label}: ${p.value} (${((p.value / total) * 100).toFixed(1)}%)`}>
+          <Tooltip key={p.label} describeChild title={`${p.label}: ${p.value} (${share(p.value)})`}>
             <Box sx={{ flexGrow: p.value, flexBasis: 0, minWidth: 3, bgcolor: p.color }} />
           </Tooltip>
         ))}

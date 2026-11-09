@@ -37,7 +37,6 @@ Lifting `ExecutionLock` is a reviewed code change, made only after the three ope
 
 ## Not built, still open
 
-- Dashboard screens for users, credentials and login profiles (API only).
 - Non-safe API operations cannot be tested, and `READ_OPERATION` exceptions cannot be created outside code.
-- Running saved test cases from the platform. `Replayer` exists but is not exposed.
-- An automated accessibility check.
+- Saved automated test cases run only as part of a suite. `Replayer` in `qa-core` is not used.
+- Manual accessibility testing. Automated WCAG 2.2 A and AA checks pass in the dashboard tests and on all 14 browser journey screens, colour contrast included. They do not prove conformance. Still to do by hand: a screen-reader pass (VoiceOver and NVDA) over sign-in, starting a run, the run detail, a defect and the forms; a keyboard-only pass of the same journey; reflow at 400% zoom; and whether live run progress is announced.

@@ -16,6 +16,7 @@
 | Pre-pilot gate | **Blocked** | Needs independent penetration test, independent review, written authorization. See `docs/PILOT-READINESS.md` |
 | Pilot, R1 | Blocked by the gate | |
 | 11 API testing | Complete on the fixture | Authorized ahead of R1; real targets stay locked |
+| Product dashboard | Complete on the fixture | Full QA management and execution in the browser. See `docs/dashboard-guide.md` |
 | 12 AI, 13 Mobile | Not started | Not authorized; follow R1 |
 | 14 Hardening | Partly done for R1 | Scans, restore drill and soak done; penetration test open |
 
@@ -23,4 +24,19 @@
 
 ## Current verified state
 
-319 automated tests. 44 of 44 attacks refused. Transport capture clean. 6 of 6 failure-injection checks. 21 of 21 browser checks. 20 of 20 restore checks. 0 HIGH or CRITICAL image findings. Web: 7 of 7 planted defects. API: all 10 planted defect classes. No false findings, no traps reached.
+370 Java tests and 72 dashboard tests. 44 of 44 attacks refused. Transport capture clean. 6 of 6 failure-injection checks. 49 of 49 browser journey checks, including 14 of 14 screens passing automated accessibility checks. 18 of 18 API checks. 12 of 12 authentication checks. 20 of 20 restore checks. 4 of 4 soak runs. Gitleaks and `npm audit` clean. See `EXECUTION_LOG.md` for image scans.
+
+## Known limits of the dashboard
+
+| Item | State |
+|---|---|
+| Mobile | Not implemented, and refused by the API |
+| Dark theme | Tokens are ready; only the light set exists |
+| Playwright traces | Not captured |
+| Web step timing | Not recorded, so the column is blank for web steps |
+| Live updates | Polling every 2 to 3 seconds, not streaming |
+| Manual results | Kept on the test case; not part of the step-based pass rate |
+| Automated case steps | Recorded by runs, and cannot be written by hand |
+| Accessibility | Automated WCAG 2.2 A and AA checks (axe-core) pass on all 19 screens, sign-in, seven forms, the account menu and notifications in the dashboard tests, and on all 14 journey screens in a real browser, which adds colour contrast. Automated checks find only part of what WCAG covers, so this is not a conformance claim. No screen-reader or manual keyboard test yet |
+| Phone layouts | Not targeted; desktop and tablet are |
+| Web login through the dashboard | The forms are covered at API level, and sign-in runs by `scripts/e2e-auth.py`, not by the browser journey |
