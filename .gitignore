@@ -9,6 +9,9 @@ target/
 .idea/jarRepositories.xml
 .idea/compiler.xml
 .idea/libraries/
+.idea/encodings.xml
+.idea/checkstyle-idea.xml
+.idea/google-java-format.xml
 *.iws
 *.iml
 *.ipr
