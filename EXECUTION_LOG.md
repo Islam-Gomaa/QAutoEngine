@@ -191,3 +191,61 @@ No failures. Note: `credential` had 0 rows in that drill, so credential restore 
 **Failures recorded:** a broad test assertion looked like a POST had got through; the fixture log showed only `OPTIONS`, and the assertion was corrected. An expected-defect list missed a true finding. The resilience safe-method check was widened to include `OPTIONS` after confirming every method the fixture had received.
 
 **Deviation from ADR-018:** `swagger-parser` was not used, because it can fetch remote references outside the gate. A small reader was written instead, using the JSON Schema validator as planned.
+
+## Product Dashboard (complete on the fixture)
+
+**Commit:** `29e5475`. Full QA management and execution in the browser: design system, application shell, and every workspace, quality and administration screen, on new product APIs for projects, applications, suites, test cases, defects, credentials and users, with roles and audit. Suites can be run; only automated cases are repeated. Decisions are in `DECISIONS.md` (rows dated 2026-11-06, "Dashboard"); usage is in `docs/dashboard-guide.md`.
+
+**Results:** recorded at the time as 370 Java tests, 40 dashboard tests and 35 of 35 browser journey checks. The 35 functional journey checks passed again on 2026-11-09, inside the 49-check run below.
+
+## Docker Environment Recovery (2026-11-09)
+
+- **Symptom:** the QA Engine images, containers and volumes were missing, and Docker refused to create anything: `write .../meta.db: read-only file system`.
+- **Root cause, engine:** Docker Desktop's disk image had been moved to an external USB SSD that day. The VM then logged `input/output error` on its volumes and the engine went read-only. A full quit and restart of Docker Desktop restored it; a dashboard-only restart did not.
+- **Root cause, missing resources:** QA Engine images still existed on 2026-11-07 at 01:49 and the engine logs have no later mention of them. How they were removed is **not determined**. There was no backup of the previous database.
+- **Recovery:** no repository file was missing. The four images were rebuilt from the committed Dockerfiles, and the stack started on new volumes (`qa-engine_pgdata`, `qa-engine_evidence`, created 2026-11-09 20:48 UTC). Earlier runs, defects and evidence were lost. Other projects' Docker data was not touched.
+- **Slow pulls:** the pinned PostgreSQL image (113 MB layer) downloaded at 6 to 70 KB/s and took about 40 minutes; `docker compose up` appeared to hang meanwhile. The digest was verified against `docker-compose.yml` before use.
+- **Restart behaviour (2026-11-10):** after Docker Desktop restarted, every service came back by its restart policy except `fixture`, which has none and showed exit 255 from the engine shutdown. `docker compose --profile fixture start fixture` restored it. Flyway reported the schema up to date; no migration ran.
+
+## Accessibility, Automated (complete)
+
+**Commit:** `c5a54b2`. axe-core 4.14.0 (test dependency only) checks WCAG 2.2 A and AA in two places: the dashboard tests in jsdom (every screen, sign-in, seven forms, account menu, notifications) and `DashboardJourney` in a real browser on each of its 14 screenshots, which adds colour contrast. axe is loaded through the DevTools protocol, so the Content-Security-Policy stays in force.
+
+**Results (stack on the fixture):**
+
+| Check | Command | Result |
+|---|---|---|
+| Dashboard tests | `npx vitest run` | 72 of 72 |
+| Browser journey | `java ... DashboardJourney` | 49 of 49, including 14 of 14 screens accessible; no CSP violations, no server errors |
+| Typecheck and build | `tsc --noEmit`, `npm run build` | Passed |
+| Dashboard packages | `npm audit --omit=dev` | 0 |
+
+**Violations found and fixed:**
+
+| Found by | Violation | Fix |
+|---|---|---|
+| jsdom | Sidebar and notification lists without list items | `ListItem` around each entry |
+| jsdom | Account menu gave focus to its header, not its first action | Header skipped for focus; test checks focus lands on Settings |
+| jsdom | Segment bar values reachable only by mouse tooltip | Text summary on the bar |
+| Browser | Scroll boxes a keyboard could not reach (activity, step log, chart tables) | `ScrollRegion`: focusable and named |
+| Browser | Notifications button named "10 unread" while its badge showed "9+" | Name repeats the badge text |
+
+**Failures recorded:** the first browser run failed 5 of 14 screens on the two browser-only rules above; jsdom has no layout and the test data had fewer than ten notifications. Both now have regression tests in the dashboard suite.
+
+**Not done:** a screen-reader pass (VoiceOver, NVDA), a keyboard-only pass, 400% zoom and live-progress announcements. Automated checks do not establish WCAG conformance.
+
+**False finding recorded (2026-11-10, nothing committed):** a hand-written browser check opened `/projects` and got a 404, which was reported as a refresh and bookmark bug, and a server-side fix was written. The dashboard uses `HashRouter`, so its addresses are `/#/projects` and reloads and bookmarks only request `/`. Verified 6 of 6 in a browser, including a signed-out bookmark. The fix was removed before commit; it would also have opened 26 paths without sign-in.
+
+## Continuous Integration (first remote runs)
+
+| Commit | Change | Run | Result |
+|---|---|---|---|
+| `c5a54b2` | First push of `roadmap/implementation` | `42699451440` | Passed: 370 Java and 72 dashboard tests, secret scan clean. Warnings: Node 20 actions, `setup-java@v4`, `ubuntu-latest` migration |
+| `facc82b` | checkout v7.0.1, setup-java v6.1.0, setup-node v7.1.0, dependency-review v5.0.0, pinned by commit SHA; runner pinned to `ubuntu-26.04` | `42901077997` | Passed: same totals, no annotations |
+| `45f23f8` | Personal IntelliJ files ignored; `encodings.xml` untracked | `42901246706` | Passed |
+
+**Noted:** the saved HTTPS token lacks the `workflow` scope, so pushes that change workflow files go over SSH. The `dependencies` job runs only on pull requests and has not run yet. Nothing updates the pinned action SHAs automatically.
+
+## Current stop point (2026-11-11)
+
+Unchanged at the roadmap level: the pre-pilot security gate needs an independent penetration test, an independent review and written target authorization. `roadmap/implementation` is pushed and green and has not been merged into `main`, which is still at `4b26890`.

@@ -3,7 +3,7 @@
 | Phase | Status | Notes |
 |---|---|---|
 | 0 Repository protection | Complete | Tag `legacy-v6-baseline` |
-| 1 Build and containment | Complete | CI defined, not yet run remotely |
+| 1 Build and containment | Complete | CI runs on GitHub and passes; actions and runner pinned |
 | 2 Fixture and bake-off | Complete | Playwright selected |
 | 3 Safety kernel | Complete | Self-reviewed; independent review required before pilot |
 | 4 Verdicts and evidence | Complete | |
@@ -18,13 +18,15 @@
 | 11 API testing | Complete on the fixture | Authorized ahead of R1; real targets stay locked |
 | Product dashboard | Complete on the fixture | Full QA management and execution in the browser. See `docs/dashboard-guide.md` |
 | 12 AI, 13 Mobile | Not started | Not authorized; follow R1 |
-| 14 Hardening | Partly done for R1 | Scans, restore drill and soak done; penetration test open |
+| 14 Hardening | Partly done for R1 | Scans, restore drill, soak and automated accessibility checks done; penetration test and manual accessibility pass open |
 
 **Safety rule in force:** every executor is restricted to loopback until the pre-pilot gate passes.
 
 ## Current verified state
 
 370 Java tests and 72 dashboard tests. 44 of 44 attacks refused. Transport capture clean. 6 of 6 failure-injection checks. 49 of 49 browser journey checks, including 14 of 14 screens passing automated accessibility checks. 18 of 18 API checks. 12 of 12 authentication checks. 20 of 20 restore checks. 4 of 4 soak runs. Gitleaks and `npm audit` clean. See `EXECUTION_LOG.md` for image scans.
+
+CI on GitHub passes on `45f23f8` (2026-11-10): 370 Java and 72 dashboard tests, secret scan clean. `roadmap/implementation` is not yet merged into `main`.
 
 ## Known limits of the dashboard
 
