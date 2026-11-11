@@ -408,6 +408,36 @@ class WorkerApiTest extends IntegrationTestBase {
                 .contentType(MediaType.APPLICATION_JSON).content("{\"environmentId\":\"" + env + "\",\"kind\":\"DISCOVERY\",\"suiteId\":\"" + UUID.randomUUID() + "\"}")).andExpect(status().isConflict());
     }
 
+    @Test void oversizedOrUnmeasuredBodiesAreRefusedBeforeTheyAreRead() throws Exception {
+        String token = claim();
+        // Refused before authentication: a forged token gets the same answer, so nothing is parsed for anyone.
+        byte[] json = new byte[(2 << 20) + 1];
+        java.util.Arrays.fill(json, (byte) ' ');
+        for (String auth : List.of("Bearer " + token, "Bearer forged.token")) {
+            mvc.perform(post("/internal/v1/jobs/" + job + "/steps").header("Authorization", auth).contentType(MediaType.APPLICATION_JSON).content(json))
+                    .andExpect(status().isPayloadTooLarge());
+        }
+        mvc.perform(post("/internal/v1/jobs/" + job + "/discovery/edges").header("Authorization", "Bearer " + token).contentType(MediaType.APPLICATION_JSON)
+                .content(new byte[(2 << 20) + 1])).andExpect(status().isPayloadTooLarge());
+
+        byte[] big = new byte[(10 << 20) + 1];
+        mvc.perform(post("/internal/v1/jobs/" + job + "/evidence").header("Authorization", "Bearer " + token).param("step", "1").param("type", "SCREENSHOT")
+                .param("sha256", LocalEvidenceSink.sha256(big)).contentType(MediaType.APPLICATION_OCTET_STREAM).content(big)).andExpect(status().isPayloadTooLarge());
+        byte[] screenshot = new byte[3 << 20];
+        System.arraycopy(PNG, 0, screenshot, 0, PNG.length);
+        upload(token, 1, "SCREENSHOT", screenshot); // evidence keeps its own, larger limit
+
+        mvc.perform(post("/internal/v1/jobs/" + job + "/heartbeat").header("Authorization", "Bearer " + token).header("Transfer-Encoding", "chunked"))
+                .andExpect(status().isLengthRequired());
+        mvc.perform(post("/internal/v1/jobs/" + job + "/heartbeat").header("Authorization", "Bearer " + token)).andExpect(status().isOk());
+        assertEquals(0L, db.sql("SELECT count(*) FROM run_step WHERE run_id = ?").param(run).query(Long.class).single());
+    }
+
+    @Test void theDashboardApiIsNotLimitedByTheWorkerRule() throws Exception {
+        mvc.perform(post("/api/v1/projects").with(as(admin)).with(csrf()).header("Transfer-Encoding", "chunked")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"name\":\"chunked\"}")).andExpect(status().isCreated());
+    }
+
     @Test void tamperingIsDetected() throws Exception {
         UUID id = upload(claim(), 1, "SCREENSHOT", PNG);
         assertEquals(List.of(), evidence.verifySample(10));
