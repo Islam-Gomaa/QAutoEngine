@@ -181,7 +181,7 @@ function Detail({ project, id }: { project: string; id: string }) {
                     ]} /></ScrollRegion>))}</Async>
                 </Card>
               )}
-              {tab === 'discovery' && <DiscoveryPanel project={project} run={id} live={live} />}
+              {tab === 'discovery' && <DiscoveryPanel project={project} run={id} live={live} finished={finished} />}
               {tab === 'defects' && <Card pad={false}><Findings rows={f} none="No defects in this run" /></Card>}
               {tab === 'console' && <Card pad={false}><Findings rows={f.filter((x) => CONSOLE.includes(x.type))} none="No browser console errors" /></Card>}
               {tab === 'network' && <Card pad={false}><Findings rows={f.filter((x) => NETWORK.includes(x.type))} none="No network failures" /></Card>}

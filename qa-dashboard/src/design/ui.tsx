@@ -37,6 +37,8 @@ const STATES: Record<string, { tone: Tone; icon: ReactNode; label: string }> = {
   DRAFT: { tone: 'neutral', icon: <Schedule />, label: 'Draft' },
   READY: { tone: 'good', icon: <CheckCircle />, label: 'Ready' },
   DEPRECATED: { tone: 'neutral', icon: <Cancel />, label: 'Deprecated' },
+  PENDING_REVIEW: { tone: 'warning', icon: <Schedule />, label: 'Pending review' },
+  REJECTED: { tone: 'neutral', icon: <Cancel />, label: 'Rejected' },
   CRITICAL: { tone: 'critical', icon: <KeyboardDoubleArrowUp />, label: 'Critical' },
   HIGH: { tone: 'serious', icon: <KeyboardArrowUp />, label: 'High' },
   MEDIUM: { tone: 'warning', icon: <Remove />, label: 'Medium' },

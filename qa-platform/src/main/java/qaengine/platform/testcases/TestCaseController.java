@@ -28,13 +28,15 @@ import qaengine.platform.identity.Access;
 import qaengine.platform.shared.ConflictException;
 import qaengine.platform.shared.NotFoundException;
 import qaengine.platform.shared.Principal;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}/test-cases")
 public class TestCaseController {
 
-    public record ManualStep(@NotBlank String action, String expected) {}
+    /** @param basis for generated cases: OBSERVED, INFERRED, UNKNOWN, or CONFIRMED once a reviewer has stated it */
+    public record ManualStep(@NotBlank String action, String expected, String basis) {}
     public record CreateCase(@NotBlank @Size(max = 240) String title, String description, UUID suiteId, String priority, String status, List<String> tags, String module, List<ManualStep> steps) {}
     public record UpdateCase(@NotBlank @Size(max = 240) String title, String description, UUID suiteId, String priority, String status, List<String> tags, String module) {}
     public record CaseView(UUID id, String title, String description, UUID suiteId, String suiteName, String source, String priority, String status, List<String> tags, String module,
@@ -43,12 +45,18 @@ public class TestCaseController {
     public record VersionView(int version, String steps, String contentHash) {}
     public record HistoryRow(String kind, String verdict, OffsetDateTime at, UUID runId, String notes, String by) {}
     public record LinkedDefect(UUID id, long number, String title, String severity, String status) {}
-    public record CaseDetail(CaseView testCase, String steps, List<VersionView> versions, List<HistoryRow> history, List<LinkedDefect> defects) {}
+    /** How a generated case came about, and who reviewed it. Null for other cases. */
+    public record Review(JsonNode provenance, UUID generatedFromRun, String reviewedBy, OffsetDateTime reviewedAt, String note) {}
+    public record CaseDetail(CaseView testCase, String steps, List<VersionView> versions, List<HistoryRow> history, List<LinkedDefect> defects, Review review) {}
+    public record ReviewDecision(@Size(max = 1000) String note) {}
     public record RecordResult(String verdict, String notes) {}
     public record LinkDefect(UUID defectId) {}
 
     private static final Set<String> PRIORITIES = Set.of("LOW", "MEDIUM", "HIGH", "CRITICAL");
     private static final Set<String> STATUSES = Set.of("DRAFT", "READY", "DEPRECATED");
+    /** Only approving or rejecting moves a generated case out of these. */
+    private static final Set<String> UNDER_REVIEW = Set.of("PENDING_REVIEW", "REJECTED");
+    private static final Set<String> BASES = Set.of("OBSERVED", "INFERRED", "UNKNOWN", "CONFIRMED");
 
     private static final String SELECT = """
             SELECT c.id, c.title, c.description, c.suite_id, s.name, c.source, c.priority, c.status, c.tags, c.module,
@@ -130,7 +138,12 @@ public class TestCaseController {
                 JOIN defect_test_case l ON l.organization_id = d.organization_id AND l.defect_id = d.id
                 WHERE d.organization_id = ? AND l.test_case_id = ? ORDER BY d.number DESC
                 """).params(p.organizationId(), caseId).query((rs, n) -> new LinkedDefect(rs.getObject(1, UUID.class), rs.getLong(2), rs.getString(3), rs.getString(4), rs.getString(5))).list();
-        return new CaseDetail(c, versions.isEmpty() ? "[]" : versions.getFirst().steps(), versions, history, defects);
+        Review review = !c.source().equals("GENERATED") ? null : db.sql("""
+                SELECT c.provenance::text, c.generated_from_run, u.email, c.reviewed_at, c.review_note FROM test_case c LEFT JOIN app_user u ON u.id = c.reviewed_by
+                WHERE c.organization_id = ? AND c.id = ?
+                """).params(p.organizationId(), caseId).query((rs, n) -> new Review(json.readTree(rs.getString(1)), rs.getObject(2, UUID.class), rs.getString(3),
+                rs.getObject(4, OffsetDateTime.class), rs.getString(5))).single();
+        return new CaseDetail(c, versions.isEmpty() ? "[]" : versions.getFirst().steps(), versions, history, defects, review);
     }
 
     private void checkSuite(Principal p, UUID projectId, UUID suiteId) {
@@ -173,6 +186,9 @@ public class TestCaseController {
         CaseView current = view(p, projectId, caseId);
         checkSuite(p, projectId, body.suiteId());
         checkFields(body.priority(), body.status());
+        if (UNDER_REVIEW.contains(current.status()) && body.status() != null && !body.status().equals(current.status())) {
+            throw new ConflictException("Approve or reject a generated case to change its status");
+        }
         db.sql("UPDATE test_case SET title = ?, description = ?, suite_id = ?, priority = ?, status = ?, tags = ?, module = ? WHERE organization_id = ? AND id = ?")
                 .params(body.title().trim(), text(body.description()), body.suiteId(), body.priority() == null ? current.priority() : body.priority(), body.status() == null ? current.status() : body.status(),
                         (body.tags() == null ? List.<String>of() : body.tags()).toArray(String[]::new), text(body.module()), p.organizationId(), caseId).update();
@@ -186,11 +202,48 @@ public class TestCaseController {
     public CaseDetail saveSteps(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID caseId, @Valid @RequestBody List<ManualStep> steps) {
         access.require(p, projectId, Access.Level.TESTER);
         CaseView c = view(p, projectId, caseId);
-        if (!c.source().equals("MANUAL")) throw new ConflictException("Automated steps come from runs");
+        if (c.source().equals("AUTOMATED")) throw new ConflictException("Automated steps come from runs");
+        for (ManualStep s : steps) {
+            if (s.basis() != null && !BASES.contains(s.basis())) throw new ConflictException("Unknown basis");
+        }
         String key = db.sql("SELECT natural_key FROM test_case WHERE organization_id = ? AND id = ?").params(p.organizationId(), caseId).query(String.class).single();
         service.save(p.organizationId(), projectId, key, c.title(), json.writeValueAsString(steps));
         audit.record(p.organizationId(), projectId, p.email(), "TEST_CASE_STEPS_UPDATED", caseId.toString(), "");
         return get(p, projectId, caseId);
+    }
+
+    private CaseView pending(Principal p, UUID projectId, UUID caseId) {
+        CaseView c = view(p, projectId, caseId);
+        if (!c.source().equals("GENERATED") || !c.status().equals("PENDING_REVIEW")) throw new ConflictException("Only a generated case waiting for review can be approved or rejected");
+        return c;
+    }
+
+    /** Becomes READY, to be performed and recorded by a person. Every expected result must be stated first: none may be left UNKNOWN. */
+    @PostMapping("/{caseId}/approve")
+    @Transactional
+    public CaseView approve(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID caseId, @Valid @RequestBody(required = false) ReviewDecision body) {
+        access.require(p, projectId, Access.Level.TESTER);
+        pending(p, projectId, caseId);
+        String steps = db.sql("SELECT steps::text FROM test_case_version WHERE organization_id = ? AND test_case_id = ? ORDER BY version DESC LIMIT 1")
+                .params(p.organizationId(), caseId).query(String.class).optional().orElse("[]");
+        for (JsonNode step : json.readTree(steps)) {
+            if ("UNKNOWN".equals(step.path("basis").asString(""))) throw new ConflictException("State the expected result of every step marked unknown before approving");
+        }
+        db.sql("UPDATE test_case SET status = 'READY', reviewed_by = ?, reviewed_at = now(), review_note = ? WHERE organization_id = ? AND id = ?")
+                .params(p.userId(), body == null ? "" : text(body.note()), p.organizationId(), caseId).update();
+        audit.record(p.organizationId(), projectId, p.email(), "TEST_CASE_APPROVED", caseId.toString(), "");
+        return view(p, projectId, caseId);
+    }
+
+    @PostMapping("/{caseId}/reject")
+    @Transactional
+    public CaseView reject(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID caseId, @Valid @RequestBody(required = false) ReviewDecision body) {
+        access.require(p, projectId, Access.Level.TESTER);
+        pending(p, projectId, caseId);
+        db.sql("UPDATE test_case SET status = 'REJECTED', reviewed_by = ?, reviewed_at = now(), review_note = ? WHERE organization_id = ? AND id = ?")
+                .params(p.userId(), body == null ? "" : text(body.note()), p.organizationId(), caseId).update();
+        audit.record(p.organizationId(), projectId, p.email(), "TEST_CASE_REJECTED", caseId.toString(), "");
+        return view(p, projectId, caseId);
     }
 
     @PostMapping("/{caseId}/archive")
@@ -217,6 +270,7 @@ public class TestCaseController {
     public void recordResult(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID caseId, @RequestBody RecordResult body) {
         access.require(p, projectId, Access.Level.TESTER);
         CaseView c = view(p, projectId, caseId);
+        if (UNDER_REVIEW.contains(c.status())) throw new ConflictException("A generated case is approved before it is executed");
         if (!Set.of("PASS", "FAIL", "BLOCKED").contains(String.valueOf(body.verdict()))) throw new ConflictException("Unknown verdict");
         db.sql("INSERT INTO manual_result (organization_id, id, test_case_id, version, verdict, notes, recorded_by) VALUES (?,?,?,?,?,?,?)")
                 .params(p.organizationId(), UUID.randomUUID(), caseId, c.latestVersion(), body.verdict(), text(body.notes()), p.userId()).update();

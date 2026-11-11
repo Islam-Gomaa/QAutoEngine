@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { Alert, Box, Button, Link, Stack, Typography } from '@mui/material';
-import { useQuery } from '@tanstack/react-query';
-import { api, type DiscoveryPage, type DiscoveryPageRow, type DiscoverySummary, type Safety } from '../api';
-import { Async, Card, DataTable, Empty, KeyValue, Mono, Stat, Tag } from '../design/ui';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link as RouterLink } from 'react-router-dom';
+import { api, type DiscoveryPage, type DiscoveryPageRow, type DiscoverySummary, type GeneratedCases, type Safety } from '../api';
+import { Async, Card, DataTable, Empty, Failure, KeyValue, Mono, Stat, Tag } from '../design/ui';
+import { useWorkspace } from '../shell/context';
 
 /**
  * What a discovery run found: every page behind sign-in, what each holds, and what each action would do.
@@ -69,9 +71,40 @@ function PageDetail({ project, run, pageId, open }: { project: string; run: stri
   );
 }
 
-export function DiscoveryPanel({ project, run, live }: { project: string; run: string; live: number | false }) {
+/** Suggests test cases from what was found, by fixed rules. They wait for review in Test Cases and never run on their own. */
+function Suggest({ project, run, finished }: { project: string; run: string; finished: boolean }) {
+  const client = useQueryClient();
+  const generate = useMutation({
+    mutationFn: () => api<GeneratedCases>(`/projects/${project}/runs/${run}/discovery/test-cases`, 'POST'),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['cases', project] }),
+  });
+  const r = generate.data;
+  return (
+    <Card title="Test cases from this discovery">
+      <Stack spacing={1.5} alignItems="flex-start">
+        <Typography variant="body2">
+          Suggests positive, negative, boundary, accessibility and risk cases from the pages found. Each step says whether its expected result was observed, inferred from the page, or is unknown.
+          Suggested cases wait for review, and none is executed until a person approves it.
+        </Typography>
+        {generate.isError && <Failure error={generate.error} />}
+        {r && (
+          <Alert severity="success" sx={{ alignSelf: 'stretch' }} data-testid="generated">
+            {r.created === 0 ? 'No new test cases: ' : `${r.created} new test case${r.created === 1 ? '' : 's'} waiting for review. `}
+            {r.alreadyKnown > 0 && `${r.alreadyKnown} had been suggested before and were left as reviewed. `}
+            <Link component={RouterLink} to="/cases?source=GENERATED&status=PENDING_REVIEW">Open the review queue</Link>
+          </Alert>
+        )}
+        <Button variant="contained" disabled={!finished || generate.isPending} onClick={() => generate.mutate()}>Suggest test cases</Button>
+        {!finished && <Typography variant="caption">Available when the run has finished.</Typography>}
+      </Stack>
+    </Card>
+  );
+}
+
+export function DiscoveryPanel({ project, run, live, finished }: { project: string; run: string; live: number | false; finished: boolean }) {
   const q = useQuery({ queryKey: ['discovery', run], queryFn: () => api<DiscoverySummary>(`/projects/${project}/runs/${run}/discovery`), refetchInterval: live });
   const [selected, setSelected] = useState<string | null>(null);
+  const { allowed } = useWorkspace();
   return (
     <Async q={q}>{(d) => (d.pages === 0 ? <Card><Empty title="No pages recorded yet">Pages appear here as the run finds them.</Empty></Card> : (
       <Stack spacing={2} data-testid="discovery">
@@ -95,6 +128,7 @@ export function DiscoveryPanel({ project, run, live }: { project: string; run: s
           ]} />
         </Card>
         {selected && <PageDetail project={project} run={run} pageId={selected} open={setSelected} />}
+        {allowed('TESTER') && <Suggest project={project} run={run} finished={finished} />}
       </Stack>
     ))}</Async>
   );

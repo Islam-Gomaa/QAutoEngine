@@ -289,6 +289,20 @@ describe('accessibility, WCAG 2.2 A and AA', () => {
     expect(await violations()).toEqual([]);
   });
 
+  it('a generated case waiting for review has no violations', async () => {
+    const generated = { ...testCase, id: 'g1', title: 'Send Invite with valid values', source: 'GENERATED', status: 'PENDING_REVIEW', suiteId: null, suiteName: null, lastVerdict: null };
+    const steps = JSON.stringify([{ action: 'Go to /users', expected: 'The page "Users" opens', basis: 'OBSERVED' }, { action: 'Press "Invite user"', expected: 'Not observed: state it.', basis: 'UNKNOWN' }]);
+    server({ ...routes, 'GET /projects/p1/test-cases/g1': { testCase: generated, steps, versions: [{ version: 1, steps, contentHash: 'd'.repeat(64) }], history: [], defects: [],
+      review: { provenance: { generator: 'rules', rule: 'VALID_SUBMISSION', runId: 'r8', attempt: 1, observed: ['The form sends POST to /invitations'], inferred: [], unknown: ['What happens after sending'] },
+        generatedFromRun: 'r8', reviewedBy: null, reviewedAt: null, note: '' } } });
+    mount(<App />, '/cases/g1');
+    await screen.findByTestId('case-review');
+    expect(await violations()).toEqual([]);
+    await userEvent.click(screen.getByRole('button', { name: 'Reject' }));
+    await screen.findByRole('dialog');
+    expect(await violations()).toEqual([]);
+  });
+
   it('the credential edit form has no violations', async () => {
     server(routes);
     mount(<App />, '/credentials');

@@ -62,14 +62,22 @@ export interface Environment {
 }
 export interface Suite { id: string; name: string; description: string; module: string; channel: 'WEB' | 'API'; archivedAt: string | null; cases: number; automatedCases: number }
 export interface TestCase {
-  id: string; title: string; description: string; suiteId: string | null; suiteName: string | null; source: 'AUTOMATED' | 'MANUAL'; priority: string; status: string; tags: string[]; module: string;
+  id: string; title: string; description: string; suiteId: string | null; suiteName: string | null; source: 'AUTOMATED' | 'MANUAL' | 'GENERATED'; priority: string; status: string; tags: string[]; module: string;
   latestVersion: number; lastVerdict: string | null; archivedAt: string | null;
 }
 export interface CaseDetail {
   testCase: TestCase; steps: string; versions: { version: number; steps: string; contentHash: string }[];
   history: { kind: string; verdict: string; at: string; runId: string | null; notes: string; by: string }[];
   defects: { id: string; number: number; title: string; severity: string; status: string }[];
+  /** Only for generated cases: where the case came from, and who reviewed it. */
+  review: CaseReview | null;
 }
+export type Basis = 'OBSERVED' | 'INFERRED' | 'UNKNOWN' | 'CONFIRMED';
+export interface CaseReview {
+  provenance: { generator: string; rule: string; runId: string; attempt: number; observed: string[]; inferred: string[]; unknown: string[] };
+  generatedFromRun: string | null; reviewedBy: string | null; reviewedAt: string | null; note: string;
+}
+export interface GeneratedCases { generator: string; suggested: number; created: number; alreadyKnown: number }
 export interface Run {
   id: string; kind?: 'EXPLORATION' | 'AUTH_TEST' | 'DISCOVERY'; environmentId: string; environmentName: string; applicationName: string; channel: 'WEB' | 'API'; suiteId: string | null; suiteName: string | null; status: string;
   createdAt: string; finishedAt: string | null; stopReason: string | null; startedBy: string; passed: number; failed: number; inconclusive: number; blocked: number;

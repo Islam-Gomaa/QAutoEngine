@@ -920,3 +920,92 @@ describe('discovery', () => {
     expect(await screen.findByText('No pages recorded yet')).toBeInTheDocument();
   });
 });
+
+describe('generated test cases', () => {
+  const generated = { id: 'g1', title: 'Send Invite a teammate with valid values', description: 'Positive case. Sending this form was classified sensitive: run it only where sending is authorized.',
+    suiteId: null, suiteName: null, source: 'GENERATED', priority: 'HIGH', status: 'PENDING_REVIEW', tags: ['generated', 'positive', 'needs-expected-result'], module: 'users',
+    latestVersion: 1, lastVerdict: null, archivedAt: null };
+  const steps = [
+    { action: 'Sign in with the environment\'s testing account', expected: 'You are signed in', basis: 'OBSERVED' },
+    { action: 'Go to /app/console/users', expected: 'The page "Users" opens', basis: 'OBSERVED' },
+    { action: 'Press "Invite user"', expected: 'Not observed: discovery never sends forms. State what should happen, such as a message, the next page, or the saved record.', basis: 'UNKNOWN' },
+  ];
+  const review = { provenance: { generator: 'rules', rule: 'VALID_SUBMISSION', runId: 'r8', attempt: 1, observed: ['The form sends POST to /app/console/invitations'], inferred: [],
+    unknown: ['What the application does after the form is sent'] }, generatedFromRun: 'r8', reviewedBy: null, reviewedAt: null, note: '' };
+  const detail = (over: object = {}, stepList = steps) => ({ testCase: { ...generated, ...over }, steps: JSON.stringify(stepList), versions: [{ version: 1, steps: JSON.stringify(stepList), contentHash: 'a'.repeat(64) }],
+    history: [], defects: [], review });
+  const base = { ...signedIn(), 'GET /projects/p1/suites': [] };
+
+  it('are suggested from a finished discovery run and lead to the review queue', async () => {
+    const run = { id: 'r8', kind: 'DISCOVERY', environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', suiteId: null, suiteName: null, status: 'SUCCEEDED',
+      createdAt: '2026-11-01T00:00:00Z', finishedAt: '2026-11-01T00:02:00Z', stopReason: 'EXHAUSTED', startedBy: 'admin@qa.local', passed: 1, failed: 0, inconclusive: 0, blocked: 0 };
+    const counts = { READ_ONLY: 1, REVERSIBLE: 0, SENSITIVE: 0, DESTRUCTIVE: 0 };
+    const calls = server({ ...base, 'GET /projects/p1/runs/r8/progress': { run, attempt: 1, jobState: 'SUCCEEDED', currentOperation: '', steps: 1, defects: 0, durationSeconds: 5 },
+      'GET /projects/p1/runs/r8/steps': [], 'GET /projects/p1/runs/r8/findings': [], 'GET /projects/p1/runs/r8/auth': [],
+      'GET /projects/p1/runs/r8/discovery': { attempt: 1, pages: 1, forms: 0, fields: 0, requiredFields: 0, unlabelledFields: 0, tables: 0, dialogs: 0, actions: counts, links: 0,
+        pageRows: [{ id: 'p1', url: 'http://fixture.qa.internal:8090/app/console', title: 'Console', depth: 0, forms: 0, fields: 0, requiredFields: 0, unlabelledFields: 0, tables: 0, dialogs: 0, actions: counts }] },
+      'POST /projects/p1/runs/r8/discovery/test-cases': { generator: 'rules', suggested: 14, created: 12, alreadyKnown: 2 },
+      'GET /projects/p1/test-cases': { items: [generated], total: 1 } });
+    mount(<App />, '/execution/r8');
+    await userEvent.click(await screen.findByRole('button', { name: 'Suggest test cases' }));
+    const done = await screen.findByTestId('generated');
+    expect(done).toHaveTextContent('12 new test cases waiting for review. 2 had been suggested before');
+    await userEvent.click(within(done).getByRole('link', { name: 'Open the review queue' }));
+    expect(await screen.findByRole('heading', { name: 'Test Cases' })).toBeInTheDocument();
+    await waitFor(() => expect(calls.some((c) => c.path.startsWith('/projects/p1/test-cases?') && c.path.includes('source=GENERATED') && c.path.includes('status=PENDING_REVIEW'))).toBe(true));
+    expect(await screen.findByTestId('case-row')).toHaveTextContent('Generated');
+    expect(screen.getByTestId('case-row')).toHaveTextContent('Pending review');
+  });
+
+  it('show what each step rests on, and cannot be approved while an expected result is unknown', async () => {
+    const calls = server({ ...base, 'GET /projects/p1/test-cases/g1': detail(), 'PUT /projects/p1/test-cases/g1/steps': detail({ latestVersion: 2 }), 'POST /projects/p1/test-cases/g1/reject': generated });
+    mount(<App />, '/cases/g1');
+    const card = await screen.findByTestId('case-review');
+    expect(within(card).getByText('Fixed rules (no AI)')).toBeInTheDocument();
+    expect(within(card).getByText('What the application does after the form is sent')).toBeInTheDocument();
+    expect(within(card).getByRole('link', { name: 'Open the discovery run' })).toHaveAttribute('href', '/execution/r8');
+    expect(within(card).getByRole('button', { name: 'Approve' })).toBeDisabled();
+    expect(within(card).getByText(/1 step has no known expected result/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Record result' })).toBeNull();
+    expect(screen.getByRole('table', { name: 'Steps' })).toHaveTextContent('Unknown');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Edit steps' }));
+    const expected = screen.getByLabelText('Step 3 expected result');
+    await userEvent.clear(expected);
+    await userEvent.type(expected, 'A confirmation says the invitation was sent');
+    await userEvent.click(screen.getByRole('button', { name: 'Save as new version' }));
+    await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toEqual([steps[0], steps[1],
+      { action: 'Press "Invite user"', expected: 'A confirmation says the invitation was sent', basis: 'CONFIRMED' }]));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await userEvent.click(within(await screen.findByTestId('case-review')).getByRole('button', { name: 'Reject' }));
+    await userEvent.type(screen.getByLabelText('Reason (optional)'), 'Covered elsewhere');
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Reject' }));
+    await waitFor(() => expect(calls.find((c) => c.path.endsWith('/reject'))?.body).toEqual({ note: 'Covered elsewhere' }));
+  });
+
+  it('are approved once every expected result is stated, then recorded by a person', async () => {
+    const stated = steps.map((s) => (s.basis === 'UNKNOWN' ? { ...s, expected: 'A confirmation shows', basis: 'CONFIRMED' } : s));
+    let approved = false;
+    const calls = server({ ...base, 'GET /projects/p1/test-cases/g1': () => (approved ? { ...detail({ status: 'READY' }, stated), review: { ...review, reviewedBy: 'admin@qa.local', reviewedAt: '2026-11-02T00:00:00Z', note: 'Checked' } } : detail({}, stated)),
+      'POST /projects/p1/test-cases/g1/approve': () => { approved = true; return { ...generated, status: 'READY' }; } });
+    mount(<App />, '/cases/g1');
+    const card = await screen.findByTestId('case-review');
+    await userEvent.click(within(card).getByRole('button', { name: 'Approve' }));
+    await userEvent.type(screen.getByLabelText('Note (optional)'), 'Checked');
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(calls.find((c) => c.path.endsWith('/approve'))?.body).toEqual({ note: 'Checked' }));
+    expect(await screen.findByRole('button', { name: 'Record result' })).toBeInTheDocument();
+    expect(screen.getByTestId('case-review')).toHaveTextContent('admin@qa.local');
+    expect(screen.getByTestId('case-review')).not.toHaveTextContent('not executed until');
+  });
+
+  it('keep their review status when edited: only approving or rejecting changes it', async () => {
+    const calls = server({ ...base, 'GET /projects/p1/test-cases/g1': detail(), 'PATCH /projects/p1/test-cases/g1': generated });
+    mount(<App />, '/cases/g1');
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    expect(screen.getByLabelText('Status')).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect((calls.find((c) => c.method === 'PATCH')?.body as { status: string }).status).toBe('PENDING_REVIEW'));
+  });
+});
