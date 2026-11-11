@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { App } from '../App';
-import { admin, member, mount, project, server } from './harness';
+import { admin, member, mount, project, server, type Call } from './harness';
 
 const empty = { items: [], total: 0 };
 const dashboard = {
@@ -11,7 +11,7 @@ const dashboard = {
   recentRuns: [], recentDefects: [], projects: [], channels: [], activity: [],
 };
 const shell = { 'GET /notifications': { items: [], unread: 0 }, 'GET /dashboard': dashboard };
-const env = (over: object) => ({ id: 'e1', targetId: 't1', targetName: 'Shop', name: 'Fixture', classification: 'LOCAL', baseUrl: 'http://fixture.qa.internal:8090/', mode: 'READ_ONLY', channel: 'WEB', description: '', executable: true, includePaths: [], excludePaths: [], apiSpecPath: null, apiSlowMillis: 1000, loginMethod: null, credentialName: null, lastRunStatus: null, lastRunAt: null, ...over });
+const env = (over: object) => ({ id: 'e1', targetId: 't1', targetName: 'Shop', name: 'Fixture', classification: 'LOCAL', baseUrl: 'http://fixture.qa.internal:8090/', mode: 'READ_ONLY', channel: 'WEB', description: '', active: true, applicationActive: true, executable: true, includePaths: [], excludePaths: [], apiSpecPath: null, apiSlowMillis: 1000, loginMethod: null, credentialName: null, lastRunStatus: null, lastRunAt: null, ...over });
 const signedIn = (me = admin, role: string | null = 'PROJECT_ADMIN') => ({ ...shell, 'GET /auth/me': me, 'GET /projects': [project(role)] });
 
 describe('signing in', () => {
@@ -99,7 +99,7 @@ describe('projects', () => {
 
 describe('applications', () => {
   it('tells the fixture from a locked real target', async () => {
-    server({ ...signedIn(), 'GET /projects/p1/targets': [{ id: 't1', name: 'Shop', type: 'WEB', description: '' }], 'GET /projects/p1/environments': [env({}), env({ id: 'e2', name: 'Real', baseUrl: 'https://shop.example.com/', executable: false })] });
+    server({ ...signedIn(), 'GET /projects/p1/targets': [{ id: 't1', name: 'Shop', type: 'WEB', description: '', active: true }], 'GET /projects/p1/environments': [env({}), env({ id: 'e2', name: 'Real', baseUrl: 'https://shop.example.com/', executable: false })] });
     mount(<App />, '/applications');
     expect(await screen.findByText('Local fixture')).toBeInTheDocument();
     expect(screen.getByText('Real target, locked')).toBeInTheDocument();
@@ -111,6 +111,163 @@ describe('applications', () => {
     await userEvent.click(await screen.findByLabelText('Application type'));
     expect(await screen.findByRole('option', { name: 'API' })).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: /mobile/i })).toBeNull();
+  });
+});
+
+describe('application status', () => {
+  it('shows what is inactive and switches it back only after confirming', async () => {
+    const calls = server({ ...signedIn(), 'GET /projects/p1/targets': [{ id: 't1', name: 'Shop', type: 'WEB', description: '', active: false }],
+      'GET /projects/p1/environments': [env({ active: false })], 'POST /projects/p1/targets/t1/activate': { id: 't1', name: 'Shop', type: 'WEB', description: '', active: true } });
+    mount(<App />, '/applications');
+    const card = await screen.findByTestId('application-card');
+    expect(within(card).getAllByText('Inactive')).toHaveLength(2);
+    await userEvent.click(within(card).getAllByRole('button', { name: 'Activate' })[0]);
+    const dialog = await screen.findByRole('dialog', { name: 'Activate application' });
+    expect(calls.some((c) => c.method === 'POST')).toBe(false);
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Activate' }));
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.path === '/projects/p1/targets/t1/activate')).toBe(true));
+  });
+  it('cannot start a run on an inactive environment or application', async () => {
+    server({ ...signedIn(), 'GET /projects/p1/runs': empty, 'GET /projects/p1/suites': [],
+      'GET /projects/p1/environments': [env({}), env({ id: 'e3', name: 'Paused', active: false }), env({ id: 'e4', name: 'Parked', applicationActive: false })] });
+    mount(<App />, '/execution');
+    await userEvent.click(await screen.findByLabelText('Environment'));
+    expect(await screen.findByRole('option', { name: /Paused.*inactive/ })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('option', { name: /Parked.*inactive/ })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('option', { name: /Fixture/ })).not.toHaveAttribute('aria-disabled');
+  });
+});
+
+describe('application setup', () => {
+  /** Stands in for the server's rules: user information is refused, everything else comes back lower-cased with a slash. */
+  const check = (c: Call) => {
+    const url = (c.body as { baseUrl: string }).baseUrl;
+    if (url.includes('@')) return new Response(JSON.stringify({ detail: 'Base URL must not contain user information' }), { status: 409 });
+    return { baseUrl: url.toLowerCase().replace(/\/?$/, '/'), origin: '', executable: url.includes('fixture.qa.internal') };
+  };
+  const routes = { ...signedIn(), 'GET /projects/p1/targets': [], 'GET /projects/p1/environments': [], 'POST /projects/p1/base-url-check': check };
+  const next = () => userEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+  it('starts from Applications', async () => {
+    server(routes);
+    mount(<App />, '/applications');
+    await userEvent.click(await screen.findByRole('link', { name: 'Set up application' }));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Set up application' })).toBeInTheDocument();
+    expect(screen.getByText('Step 1 of 3')).toBeInTheDocument();
+  });
+
+  it('is only for project admins', async () => {
+    server({ ...routes, ...signedIn(member, 'TESTER') });
+    mount(<App />, '/applications/new');
+    expect(await screen.findByRole('heading', { level: 1, name: 'Dashboard' })).toBeInTheDocument();
+  });
+
+  it('checks each step before moving on, and keeps what was entered when going back', async () => {
+    const calls = server(routes);
+    mount(<App />, '/applications/new');
+    await userEvent.click(await screen.findByRole('button', { name: 'Next' }));
+    expect(await screen.findByText('Enter the application name.')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('Fix 1 field to continue.');
+    await userEvent.type(screen.getByLabelText(/Application name/), 'Shop');
+    await userEvent.type(screen.getByLabelText('Description'), 'Storefront');
+    await next();
+    const heading = await screen.findByRole('heading', { level: 2, name: 'Environments' });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+
+    await next();
+    expect(await screen.findByText('Enter the environment name.')).toBeInTheDocument();
+    expect(screen.getByText('Enter the base URL.')).toBeInTheDocument();
+    expect(calls.some((c) => c.path.endsWith('/base-url-check'))).toBe(false);
+    await userEvent.type(screen.getByLabelText(/Environment name/), 'Staging');
+    await userEvent.type(screen.getByLabelText(/Base URL/), 'staging.shop.example');
+    await next();
+    expect(await screen.findByText('Use a full http:// or https:// address.')).toBeInTheDocument();
+    await userEvent.clear(screen.getByLabelText(/Base URL/));
+    await userEvent.type(screen.getByLabelText(/Base URL/), 'https://user:pw@staging.shop.example');
+    await next();
+    expect(await screen.findByText('Base URL must not contain user information')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: 'Environments' })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(await screen.findByLabelText(/Application name/)).toHaveValue('Shop');
+    expect(screen.getByLabelText('Description')).toHaveValue('Storefront');
+    await next();
+    expect(await screen.findByLabelText(/Environment name/)).toHaveValue('Staging');
+    expect(screen.getByLabelText(/Base URL/)).toHaveValue('https://user:pw@staging.shop.example');
+  });
+
+  it('refuses two environments with the same name', async () => {
+    server(routes);
+    mount(<App />, '/applications/new');
+    await userEvent.type(await screen.findByLabelText(/Application name/), 'Shop');
+    await next();
+    await userEvent.click(await screen.findByRole('button', { name: 'Add another environment' }));
+    for (const field of screen.getAllByLabelText(/Environment name/)) await userEvent.type(field, 'QA');
+    for (const button of screen.getAllByRole('button', { name: 'Use local fixture' })) await userEvent.click(button);
+    await next();
+    expect(await screen.findByText('Each environment needs a different name.')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Remove environment 2' }));
+    await next();
+    expect(await screen.findByRole('heading', { level: 2, name: 'Review and save' })).toBeInTheDocument();
+  });
+
+  it('offers UAT, and not production', async () => {
+    server(routes);
+    mount(<App />, '/applications/new');
+    await userEvent.type(await screen.findByLabelText(/Application name/), 'Shop');
+    await next();
+    await userEvent.click(await screen.findByLabelText('Environment type'));
+    expect(await screen.findByRole('option', { name: 'UAT' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /production/i })).toBeNull();
+  });
+
+  it('reviews the URLs as they will be saved, then creates everything in one request', async () => {
+    const calls = server({ ...routes, 'POST /projects/p1/targets': { id: 't9', name: 'Shop', type: 'WEB', description: '', active: true } });
+    mount(<App />, '/applications/new');
+    await userEvent.type(await screen.findByLabelText(/Application name/), 'Shop');
+    await next();
+    await userEvent.type(await screen.findByLabelText(/Environment name/), 'Fixture');
+    await userEvent.click(screen.getByRole('button', { name: 'Use local fixture' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Add another environment' }));
+    await userEvent.type(screen.getAllByLabelText(/Environment name/)[1], 'Acceptance');
+    await userEvent.click(screen.getAllByLabelText('Environment type')[1]);
+    await userEvent.click(await screen.findByRole('option', { name: 'UAT' }));
+    await userEvent.type(screen.getAllByLabelText(/Base URL/)[1], 'HTTPS://UAT.Shop.Example');
+    await userEvent.click(screen.getAllByLabelText('Active')[1]);
+    await next();
+
+    await screen.findByRole('heading', { level: 2, name: 'Review and save' });
+    const rows = screen.getAllByTestId('review-environment');
+    expect(rows[0]).toHaveTextContent('http://fixture.qa.internal:8090/');
+    expect(rows[0]).toHaveTextContent('Local fixture');
+    expect(rows[1]).toHaveTextContent('https://uat.shop.example/');
+    expect(rows[1]).toHaveTextContent('Real target, locked');
+    expect(rows[1]).toHaveTextContent('Inactive');
+    expect(calls.some((c) => c.method === 'POST' && c.path === '/projects/p1/targets')).toBe(false);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Save application' }));
+    await screen.findByRole('heading', { level: 1, name: 'Applications & Environments' });
+    const saves = calls.filter((c) => c.method === 'POST' && c.path === '/projects/p1/targets');
+    expect(saves).toHaveLength(1);
+    expect(saves[0].body).toEqual({
+      name: 'Shop', type: 'WEB', description: '', active: true, environments: [
+        { name: 'Fixture', classification: 'QA', baseUrl: 'http://fixture.qa.internal:8090/', description: '', active: true, channel: 'WEB', apiSpecPath: null },
+        { name: 'Acceptance', classification: 'UAT', baseUrl: 'https://uat.shop.example/', description: '', active: false, channel: 'WEB', apiSpecPath: null },
+      ],
+    });
+  });
+
+  it('shows a refused save and keeps the review open', async () => {
+    server({ ...routes, 'POST /projects/p1/targets': () => new Response(JSON.stringify({ detail: 'Request conflicts with existing data' }), { status: 409 }) });
+    mount(<App />, '/applications/new');
+    await userEvent.type(await screen.findByLabelText(/Application name/), 'Shop');
+    await next();
+    await userEvent.type(await screen.findByLabelText(/Environment name/), 'Fixture');
+    await userEvent.click(screen.getByRole('button', { name: 'Use local fixture' }));
+    await next();
+    await userEvent.click(await screen.findByRole('button', { name: 'Save application' }));
+    expect(await screen.findByText(/Request conflicts with existing data/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: 'Review and save' })).toBeInTheDocument();
   });
 });
 

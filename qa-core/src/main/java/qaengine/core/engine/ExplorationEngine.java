@@ -63,7 +63,7 @@ public final class ExplorationEngine {
         this.browser = browser;
         this.verdicts = verdicts;
         this.evidence = evidence;
-        this.frontier = new Frontier(seed);
+        this.frontier = new Frontier(seed, gate.policy().budget().maxDepth());
         this.clock = clock;
         List<String> all = new ArrayList<>(DEFAULT_MASKS);
         all.addAll(extraMasks);
@@ -119,6 +119,8 @@ public final class ExplorationEngine {
         }
         // The queue can empty on the very step that lost the session. That must not read as a finished crawl.
         if (sessionLost) stop = RunResult.StopReason.SESSION_EXPIRED;
+        // Running out of pages because the rest were too deep is not the same as exploring everything.
+        if (stop == RunResult.StopReason.EXHAUSTED && frontier.beyondDepth() > 0) stop = RunResult.StopReason.DEPTH_LIMIT;
         return new RunResult(steps, new ArrayList<>(observations.values()), states, new ArrayList<>(transitions), stop);
     }
 

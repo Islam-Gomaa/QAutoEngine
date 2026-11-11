@@ -11,7 +11,8 @@ import qaengine.core.verdict.Verdict;
 public record RunResult(List<StepRecord> steps, List<Observation> observations, Map<String, String> states,
                         List<Transition> transitions, StopReason stop) {
 
-    public enum StopReason { EXHAUSTED, BUDGET, DEADLINE, CANCELLED, SESSION_EXPIRED, AUTH_BLOCKED }
+    /** DEPTH_LIMIT: everything within the depth budget was explored, and deeper pages were found but not visited. */
+    public enum StopReason { EXHAUSTED, BUDGET, DEADLINE, CANCELLED, SESSION_EXPIRED, AUTH_BLOCKED, DEPTH_LIMIT }
 
     /** An edge in the application model. */
     public record Transition(String from, String to, String via) {}

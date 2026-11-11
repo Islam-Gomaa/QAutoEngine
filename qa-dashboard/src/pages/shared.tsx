@@ -34,3 +34,8 @@ export function useForm<T>(run: (values: T) => Promise<unknown>, refresh: string
 
 export const levelOptions: [string, string][] = [['LOW', 'Low'], ['MEDIUM', 'Medium'], ['HIGH', 'High'], ['CRITICAL', 'Critical']];
 export const ROLES: [string, string][] = [['VIEWER', 'Viewer'], ['TESTER', 'Tester'], ['QA_LEAD', 'QA Lead'], ['PROJECT_ADMIN', 'Project Admin']];
+
+/** The local fixture, the only place a run can go until the pre-pilot security gate passes. */
+export const FIXTURE_URL = 'http://fixture.qa.internal:8090/';
+/** Production is not offered in the product: it is READ_ONLY, needs explicit include paths, and stays locked. */
+export const ENVIRONMENT_CLASSES: [string, string][] = [['LOCAL', 'Local'], ['DEV', 'Development'], ['QA', 'QA'], ['UAT', 'UAT'], ['STAGING', 'Staging']];

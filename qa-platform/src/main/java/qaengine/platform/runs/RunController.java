@@ -78,17 +78,19 @@ public class RunController {
         var existing = db.sql("SELECT id FROM test_run WHERE organization_id = ? AND idempotency_key = ?").params(p.organizationId(), key).query(UUID.class).optional();
         if (existing.isPresent()) return ResponseEntity.ok(view(p, projectId, existing.get()));
 
-        record Target(String mode, int minutes, int maxPages, String baseUrl, String channel, boolean archived) {}
+        record Target(String mode, int minutes, int maxPages, String baseUrl, String channel, boolean archived, boolean environmentActive, boolean applicationActive) {}
         var policy = db.sql("""
-                SELECT ep.mode, ep.max_minutes, ep.max_pages, e.base_url, e.channel, e.archived_at IS NOT NULL FROM environment e
+                SELECT ep.mode, ep.max_minutes, ep.max_pages, e.base_url, e.channel, e.archived_at IS NOT NULL, e.active, t.active FROM environment e
                 JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id
                 JOIN execution_policy ep ON ep.organization_id = e.organization_id AND ep.environment_id = e.id
                 WHERE e.organization_id = ? AND e.id = ? AND t.project_id = ?
                 """).params(p.organizationId(), body.environmentId(), projectId)
-                .query((rs, n) -> new Target(rs.getString(1), rs.getInt(2), rs.getInt(3), rs.getString(4), rs.getString(5), rs.getBoolean(6))).optional()
+                .query((rs, n) -> new Target(rs.getString(1), rs.getInt(2), rs.getInt(3), rs.getString(4), rs.getString(5), rs.getBoolean(6), rs.getBoolean(7), rs.getBoolean(8))).optional()
                 .orElseThrow(() -> new NotFoundException("Environment"));
         if ("AUTHORIZED_MUTATION".equals(policy.mode())) throw new ConflictException("Mutation runs are not available");
         if (policy.archived()) throw new ConflictException("This environment is archived");
+        if (!policy.applicationActive()) throw new ConflictException("This application is inactive");
+        if (!policy.environmentActive()) throw new ConflictException("This environment is inactive");
         // The worker would refuse too. Saying so here keeps a real target from ever being queued.
         if (!qaengine.core.policy.ExecutionLock.isLocal(policy.baseUrl())) throw new ConflictException("Real targets are locked until the pre-pilot security gate passes");
         if (body.maxPages() != null && (body.maxPages() < 1 || body.maxPages() > policy.maxPages())) throw new ConflictException("Page limit is outside the policy");

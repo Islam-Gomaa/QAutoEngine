@@ -14,8 +14,8 @@ import { admin, mount, project, server } from './harness';
 const at = '2026-11-01T10:00:00Z';
 const page = <T,>(items: T[]) => ({ items, total: items.length });
 
-const env = { id: 'e1', targetId: 't1', targetName: 'Shop', name: 'Fixture', classification: 'LOCAL', baseUrl: 'http://fixture.qa.internal:8090/', mode: 'READ_ONLY', channel: 'WEB', description: 'Local fixture', executable: true, includePaths: [], excludePaths: [], apiSpecPath: null, apiSlowMillis: 1000, loginMethod: 'PASSWORD', credentialName: 'login', lastRunStatus: 'SUCCEEDED', lastRunAt: at };
-const locked = { ...env, id: 'e2', name: 'Real', classification: 'EXTERNAL', baseUrl: 'https://shop.example.com/', executable: false, loginMethod: null, credentialName: null, lastRunStatus: null, lastRunAt: null };
+const env = { id: 'e1', targetId: 't1', targetName: 'Shop', name: 'Fixture', classification: 'LOCAL', baseUrl: 'http://fixture.qa.internal:8090/', mode: 'READ_ONLY', channel: 'WEB', description: 'Local fixture', active: true, applicationActive: true, executable: true, includePaths: [], excludePaths: [], apiSpecPath: null, apiSlowMillis: 1000, loginMethod: 'PASSWORD', credentialName: 'login', lastRunStatus: 'SUCCEEDED', lastRunAt: at };
+const locked = { ...env, id: 'e2', name: 'Real', active: false, classification: 'EXTERNAL', baseUrl: 'https://shop.example.com/', executable: false, loginMethod: null, credentialName: null, lastRunStatus: null, lastRunAt: null };
 const suite = { id: 's1', name: 'Checkout', description: 'Checkout paths', module: 'Cart', channel: 'WEB', archivedAt: null, cases: 2, automatedCases: 1 };
 const testCase = { id: 'c1', title: 'Cart loads', description: 'The cart page loads', suiteId: 's1', suiteName: 'Checkout', source: 'AUTOMATED', priority: 'HIGH', status: 'READY', tags: ['smoke'], module: 'Cart', latestVersion: 2, lastVerdict: 'PASSED', archivedAt: null };
 const manualCase = { ...testCase, id: 'c2', title: 'Coupon applies', source: 'MANUAL', priority: 'MEDIUM', status: 'DRAFT', tags: [], latestVersion: 1, lastVerdict: null };
@@ -54,7 +54,7 @@ const routes = {
   'GET /reports/overview': overview,
   'GET /activity': [activity],
   'GET /analytics': { days: 30, trend, hotspots: [{ name: '/cart', project: 'Shop', failures: 2, total: 5 }], slowest: [{ operation: 'GET /items', project: 'Shop', calls: 4, averageMs: 120, maxMs: 300 }], defectTypes: counts },
-  'GET /projects/p1/targets': [{ id: 't1', name: 'Shop', type: 'WEB', description: 'Storefront' }],
+  'GET /projects/p1/targets': [{ id: 't1', name: 'Shop', type: 'WEB', description: 'Storefront', active: true }],
   'GET /projects/p1/environments': [env, locked],
   'GET /projects/p1/suites': [suite],
   'GET /projects/p1/suites/s1': suite,
@@ -112,6 +112,7 @@ const screens: [string, string, string][] = [
   ['Projects', '/projects', 'Projects'],
   ['Project detail', '/projects/p1', 'Shop'],
   ['Applications and environments', '/applications', 'Applications & Environments'],
+  ['Application setup', '/applications/new', 'Set up application'],
   ['Test suites', '/suites', 'Test Suites'],
   ['Suite detail', '/suites/s1', 'Checkout'],
   ['Test cases', '/cases', 'Test Cases'],
@@ -167,6 +168,29 @@ describe('accessibility, WCAG 2.2 A and AA', () => {
     await loaded();
     await userEvent.click((await screen.findAllByRole('button', { name: button }))[0]);
     await screen.findByRole('dialog');
+    expect(await violations()).toEqual([]);
+  });
+
+  it('every step of application setup has no violations, with errors showing too', async () => {
+    server({ ...routes, 'POST /projects/p1/base-url-check': { baseUrl: 'http://fixture.qa.internal:8090/', origin: 'http://fixture.qa.internal:8090', executable: true } });
+    mount(<App />, '/applications/new');
+    await screen.findByRole('heading', { level: 1, name: 'Set up application' });
+    await loaded();
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await screen.findByText('Fix 1 field to continue.');
+    expect(await violations()).toEqual([]);
+    await userEvent.type(screen.getByLabelText(/Application name/), 'Shop');
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await screen.findByRole('heading', { level: 2, name: 'Environments' });
+    await userEvent.click(screen.getByRole('button', { name: 'Add another environment' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await screen.findByText('Fix 4 fields to continue.');
+    expect(await violations()).toEqual([]);
+    await userEvent.click(screen.getByRole('button', { name: 'Remove environment 2' }));
+    await userEvent.type(screen.getByLabelText(/Environment name/), 'Fixture');
+    await userEvent.click(screen.getByRole('button', { name: 'Use local fixture' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await screen.findByRole('heading', { level: 2, name: 'Review and save' });
     expect(await violations()).toEqual([]);
   });
 

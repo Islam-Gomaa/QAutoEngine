@@ -28,7 +28,7 @@ interface Item { to: string; label: string; icon: ReactNode; show?: boolean }
 
 const LABELS: Record<string, string> = {
   projects: 'Projects', applications: 'Applications & Environments', suites: 'Test Suites', cases: 'Test Cases', execution: 'Test Execution', defects: 'Defects',
-  evidence: 'Evidence', reports: 'Reports', analytics: 'Analytics', users: 'Users & Roles', credentials: 'Credentials', 'login-profiles': 'Login Profiles', settings: 'Settings',
+  evidence: 'Evidence', reports: 'Reports', analytics: 'Analytics', users: 'Users & Roles', credentials: 'Credentials', 'login-profiles': 'Login Profiles', settings: 'Settings', new: 'Set up',
 };
 
 function Crumbs() {

@@ -3,6 +3,7 @@ package qaengine.platform;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
@@ -214,6 +215,129 @@ class ProductApiTest extends IntegrationTestBase {
     @Test
     void mobileApplicationsAreNotAcceptedYet() throws Exception {
         assertEquals(409, status(admin, post(base() + "/targets"), java.util.Map.of("name", "m", "type", "MOBILE")));
+    }
+
+    // Application onboarding (Milestone 1): UAT, active status, base URL rules, and creating an application with its environments.
+
+    String application() throws Exception {
+        return ok(admin, post(base() + "/targets"), java.util.Map.of("name", "App " + UUID.randomUUID(), "type", "WEB")).get("id").asString();
+    }
+
+    int startRun(UUID environment) throws Exception {
+        return status(tester, post(base() + "/runs").header("Idempotency-Key", UUID.randomUUID().toString()), java.util.Map.of("environmentId", environment.toString()));
+    }
+
+    JsonNode environmentView(UUID id) throws Exception {
+        for (JsonNode e : ok(viewer, get(base() + "/environments"), null)) if (e.get("id").asString().equals(id.toString())) return e;
+        throw new AssertionError("environment not listed");
+    }
+
+    @Test
+    void uatIsAnEnvironmentClassAndExistingRowsDefaultToActive() throws Exception {
+        String target = application();
+        String url = base() + "/targets/" + target + "/environments";
+        JsonNode uat = ok(admin, post(url), java.util.Map.of("name", "uat", "classification", "UAT", "baseUrl", "https://uat.shop.example/"));
+        assertEquals("UAT", uat.get("classification").asString());
+        assertTrue(uat.get("active").asBoolean());
+        assertEquals(409, status(admin, post(url), java.util.Map.of("name", "x", "classification", "SANDBOX", "baseUrl", "https://x.shop.example/")));
+        // A row written without the new columns, as every row before the migration was, is active.
+        UUID legacy = UUID.randomUUID();
+        db.sql("INSERT INTO environment (organization_id, id, target_id, name, classification, base_url) VALUES (?,?,?, 'old', 'QA', 'https://old.shop.example/')")
+                .params(org, legacy, UUID.fromString(target)).update();
+        assertTrue(db.sql("SELECT e.active AND t.active FROM environment e JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id WHERE e.id = ?")
+                .param(legacy).query(Boolean.class).single());
+        assertThrows(org.springframework.dao.DataIntegrityViolationException.class, () -> db.sql(
+                "INSERT INTO environment (organization_id, id, target_id, name, classification, base_url) VALUES (?,?,?, 'bad', 'SANDBOX', 'https://bad.shop.example/')")
+                .params(org, UUID.randomUUID(), UUID.fromString(target)).update());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"https://user:canary-pw@shop.example/", "https://shop.example/#top", "https://shop.example/?token=1", "http://10.1.2.3/", "http://127.0.0.1:8090/",
+            "http://[::1]/", "http://2130706433/", "http://169.254.169.254/latest/", "http://metadata.google.internal/", "ftp://shop.example/", "javascript:alert(1)",
+            "not a url", "https://shop.example/a/../admin", "https://shop.example\\@evil.example/"})
+    void unsafeBaseUrlsAreRefusedAndNothingIsSaved(String url) throws Exception {
+        String target = application();
+        var refused = call(admin, post(base() + "/targets/" + target + "/environments"), java.util.Map.of("name", "e", "classification", "QA", "baseUrl", url));
+        assertEquals(409, refused.getStatus(), contentOf(refused));
+        assertFalse(contentOf(refused).contains("canary-pw"), "the refusal must not echo the URL");
+        assertEquals(0L, db.sql("SELECT count(*) FROM environment WHERE organization_id = ? AND target_id = ?").params(org, UUID.fromString(target)).query(Long.class).single());
+        assertEquals(409, status(admin, post(base() + "/base-url-check"), java.util.Map.of("baseUrl", url)));
+    }
+
+    @Test
+    void baseUrlsAreStoredNormalizedAndCheckedWithoutContactingAnything() throws Exception {
+        UUID env = environment("HTTPS://Shop.Example.COM:443//app");
+        assertEquals("https://shop.example.com/app", environmentView(env).get("baseUrl").asString());
+        assertEquals("https://shop.example.com", db.sql("SELECT origin FROM allowed_host WHERE organization_id = ? AND environment_id = ?").params(org, env).query(String.class).single());
+        JsonNode fixture = ok(admin, post(base() + "/base-url-check"), java.util.Map.of("baseUrl", "http://fixture.qa.internal:8090"));
+        assertEquals("http://fixture.qa.internal:8090/", fixture.get("baseUrl").asString());
+        assertEquals("http://fixture.qa.internal:8090", fixture.get("origin").asString());
+        assertTrue(fixture.get("executable").asBoolean());
+        assertFalse(ok(admin, post(base() + "/base-url-check"), java.util.Map.of("baseUrl", "https://shop.example.com")).get("executable").asBoolean(), "real targets stay locked");
+        assertEquals(403, status(viewer, post(base() + "/base-url-check"), java.util.Map.of("baseUrl", "https://shop.example.com")));
+        assertEquals(404, status(outsiderAdmin, post(base() + "/base-url-check"), java.util.Map.of("baseUrl", "https://shop.example.com")));
+    }
+
+    @Test
+    void inactiveApplicationsAndEnvironmentsDoNotRunUntilReactivated() throws Exception {
+        UUID fixture = environment("http://fixture.qa.internal:8090/");
+        String target = environmentView(fixture).get("targetId").asString();
+        assertEquals(201, startRun(fixture));
+
+        assertFalse(ok(admin, post(base() + "/environments/" + fixture + "/deactivate"), null).get("active").asBoolean());
+        assertEquals(409, startRun(fixture));
+        assertTrue(ok(admin, post(base() + "/environments/" + fixture + "/activate"), null).get("active").asBoolean());
+        assertEquals(201, startRun(fixture));
+
+        assertFalse(ok(admin, post(base() + "/targets/" + target + "/deactivate"), null).get("active").asBoolean());
+        JsonNode view = environmentView(fixture);
+        assertTrue(view.get("active").asBoolean());
+        assertFalse(view.get("applicationActive").asBoolean());
+        assertEquals(409, startRun(fixture), "an inactive application stops its environments");
+        ok(admin, post(base() + "/targets/" + target + "/activate"), null);
+        assertEquals(201, startRun(fixture));
+
+        List<String> actions = db.sql("SELECT action FROM audit_event WHERE organization_id = ? AND action LIKE '%ACTIVATED' ORDER BY id").param(org).query(String.class).list();
+        assertEquals(List.of("ENVIRONMENT_DEACTIVATED", "ENVIRONMENT_ACTIVATED", "APPLICATION_DEACTIVATED", "APPLICATION_ACTIVATED"), actions);
+    }
+
+    @Test
+    void onlyProjectAdminsSwitchActiveAndArchivedItemsCannotBeSwitched() throws Exception {
+        UUID fixture = environment("http://fixture.qa.internal:8090/");
+        String target = environmentView(fixture).get("targetId").asString();
+        assertEquals(403, status(tester, post(base() + "/environments/" + fixture + "/deactivate"), null));
+        assertEquals(403, status(lead, post(base() + "/targets/" + target + "/deactivate"), null));
+        assertEquals(404, status(outsiderAdmin, post(base() + "/environments/" + fixture + "/deactivate"), null));
+        assertTrue(environmentView(fixture).get("active").asBoolean());
+        ok(admin, post(base() + "/environments/" + fixture + "/archive"), null);
+        assertEquals(409, status(admin, post(base() + "/environments/" + fixture + "/activate"), null));
+        ok(admin, post(base() + "/targets/" + target + "/archive"), null);
+        assertEquals(409, status(admin, post(base() + "/targets/" + target + "/deactivate"), null));
+    }
+
+    @Test
+    void anApplicationAndItsEnvironmentsAreCreatedTogetherOrNotAtAll() throws Exception {
+        String name = "Onboarded " + UUID.randomUUID();
+        var staging = java.util.Map.of("name", "Staging", "classification", "STAGING", "baseUrl", "https://staging.shop.example/");
+        var unsafe = java.util.Map.of("name", "UAT", "classification", "UAT", "baseUrl", "https://u:p@uat.shop.example/");
+        assertEquals(409, status(admin, post(base() + "/targets"), java.util.Map.of("name", name, "type", "WEB", "environments", List.of(staging, unsafe))));
+        assertEquals(400, status(admin, post(base() + "/targets"), java.util.Map.of("name", name, "type", "WEB", "environments", List.of(java.util.Map.of("name", "", "classification", "QA", "baseUrl", "https://q.shop.example/")))));
+        assertEquals(0L, db.sql("SELECT count(*) FROM target WHERE organization_id = ? AND name = ?").params(org, name).query(Long.class).single(), "a refused environment leaves no application behind");
+        assertEquals(0L, db.sql("SELECT count(*) FROM environment WHERE organization_id = ? AND base_url = 'https://staging.shop.example/'").param(org).query(Long.class).single());
+
+        var uat = java.util.Map.of("name", "UAT", "classification", "UAT", "baseUrl", "HTTPS://UAT.Shop.Example", "active", false);
+        JsonNode created = ok(admin, post(base() + "/targets"), java.util.Map.of("name", name, "type", "WEB", "description", "d", "active", false, "environments", List.of(staging, uat)));
+        assertFalse(created.get("active").asBoolean());
+        List<JsonNode> environments = new java.util.ArrayList<>();
+        for (JsonNode e : ok(viewer, get(base() + "/environments"), null)) if (e.get("targetId").asString().equals(created.get("id").asString())) environments.add(e);
+        assertEquals(2, environments.size());
+        for (JsonNode e : environments) {
+            assertFalse(e.get("applicationActive").asBoolean());
+            assertEquals("READ_ONLY", e.get("mode").asString());
+            boolean isUat = e.get("classification").asString().equals("UAT");
+            assertEquals(!isUat, e.get("active").asBoolean());
+            if (isUat) assertEquals("https://uat.shop.example/", e.get("baseUrl").asString());
+        }
     }
 
     @Test

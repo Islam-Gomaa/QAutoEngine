@@ -2,7 +2,6 @@ package qaengine.platform.targets;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
-import java.net.URI;
 import java.time.OffsetDateTime;
 import java.util.Arrays;
 import java.util.List;
@@ -20,32 +19,44 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import qaengine.core.policy.BaseUrl;
 import qaengine.core.policy.ExecutionLock;
+import qaengine.core.policy.PolicyException;
 import qaengine.platform.audit.AuditLog;
 import qaengine.platform.identity.Access;
 import qaengine.platform.shared.ConflictException;
 import qaengine.platform.shared.NotFoundException;
 import qaengine.platform.shared.Principal;
 
-/** Applications and their environments. An environment always gets a READ_ONLY policy on creation. */
+/**
+ * Applications and their environments. An environment always gets a READ_ONLY policy on creation.
+ * Inactive is a reversible switch that stops new runs; archive is permanent and keeps history.
+ */
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}")
 public class TargetController {
 
-    public record CreateTarget(@NotBlank String name, String type, String description) {}
+    /** @param environments created in the same transaction, so a refused environment leaves no half-made application */
+    public record CreateTarget(@NotBlank String name, String type, String description, Boolean active, List<@Valid CreateEnvironment> environments) {}
     public record UpdateTarget(@NotBlank String name, String description) {}
-    public record TargetView(UUID id, String name, String type, String description, OffsetDateTime archivedAt) {}
+    public record TargetView(UUID id, String name, String type, String description, boolean active, OffsetDateTime archivedAt) {}
     public record CreateEnvironment(@NotBlank String name, @NotBlank String classification, @NotBlank String baseUrl,
                                     List<String> includePaths, List<String> excludePaths, String authorizedBy,
-                                    String channel, String apiSpecPath, Integer apiSlowMillis, List<String> apiSeedPaths, String description) {}
+                                    String channel, String apiSpecPath, Integer apiSlowMillis, List<String> apiSeedPaths, String description, Boolean active) {}
     public record UpdateEnvironment(@NotBlank String name, String description, List<String> includePaths, List<String> excludePaths,
                                     String apiSpecPath, Integer apiSlowMillis) {}
-    /** @param executable false for anything but the fixture until the security gate passes */
+    /**
+     * @param executable false for anything but the fixture until the security gate passes
+     * @param applicationActive an inactive application stops its environments from running, whatever their own switch says
+     */
     public record EnvironmentView(UUID id, UUID targetId, String targetName, String name, String classification, String baseUrl, String mode, String channel,
-                                  String description, boolean executable, List<String> includePaths, List<String> excludePaths, String apiSpecPath, int apiSlowMillis,
-                                  String loginMethod, String credentialName, String lastRunStatus, OffsetDateTime lastRunAt) {}
+                                  String description, boolean active, boolean applicationActive, boolean executable, List<String> includePaths, List<String> excludePaths,
+                                  String apiSpecPath, int apiSlowMillis, String loginMethod, String credentialName, String lastRunStatus, OffsetDateTime lastRunAt) {}
+    public record BaseUrlCheck(String baseUrl) {}
+    /** What would be stored. Nothing is contacted: the platform never reaches a target itself. */
+    public record BaseUrlResult(String baseUrl, String origin, boolean executable) {}
 
-    private static final Set<String> CLASSES = Set.of("LOCAL", "DEV", "QA", "STAGING", "PRODUCTION");
+    private static final Set<String> CLASSES = Set.of("LOCAL", "DEV", "QA", "UAT", "STAGING", "PRODUCTION");
     private static final Set<String> TYPES = Set.of("WEB", "API");
     private static final String RELATIVE = "/[A-Za-z0-9._~/-]*";
 
@@ -59,11 +70,17 @@ public class TargetController {
         this.audit = audit;
     }
 
+    private static final String TARGET = "SELECT id, name, type, description, active, archived_at FROM target ";
+
+    private static TargetView target(java.sql.ResultSet rs) throws java.sql.SQLException {
+        return new TargetView(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3), rs.getString(4), rs.getBoolean(5), rs.getObject(6, OffsetDateTime.class));
+    }
+
     @GetMapping("/targets")
     public List<TargetView> targets(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId) {
         access.require(p, projectId, Access.Level.VIEWER);
-        return db.sql("SELECT id, name, type, description, archived_at FROM target WHERE organization_id = ? AND project_id = ? AND archived_at IS NULL ORDER BY name")
-                .params(p.organizationId(), projectId).query((rs, n) -> new TargetView(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3), rs.getString(4), rs.getObject(5, OffsetDateTime.class))).list();
+        return db.sql(TARGET + "WHERE organization_id = ? AND project_id = ? AND archived_at IS NULL ORDER BY name")
+                .params(p.organizationId(), projectId).query((rs, n) -> target(rs)).list();
     }
 
     @PostMapping("/targets")
@@ -75,10 +92,43 @@ public class TargetController {
         if (!TYPES.contains(type)) throw new ConflictException("Unsupported application type");
         UUID id = UUID.randomUUID();
         String description = body.description() == null ? "" : body.description();
-        db.sql("INSERT INTO target (organization_id, id, project_id, name, type, description) VALUES (?,?,?,?,?,?)")
-                .params(p.organizationId(), id, projectId, body.name(), type, description).update();
+        boolean active = body.active() == null || body.active();
+        db.sql("INSERT INTO target (organization_id, id, project_id, name, type, description, active) VALUES (?,?,?,?,?,?,?)")
+                .params(p.organizationId(), id, projectId, body.name(), type, description, active).update();
         audit.record(p.organizationId(), projectId, p.email(), "APPLICATION_CREATED", id.toString(), body.name());
-        return new TargetView(id, body.name(), type, description, null);
+        for (CreateEnvironment environment : body.environments() == null ? List.<CreateEnvironment>of() : body.environments()) {
+            insertEnvironment(p, projectId, id, type, environment);
+        }
+        return new TargetView(id, body.name(), type, description, active, null);
+    }
+
+    /** Validates and normalizes a base URL the way saving would, so a form can show the result before saving. */
+    @PostMapping("/base-url-check")
+    public BaseUrlResult checkBaseUrl(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @RequestBody BaseUrlCheck body) {
+        access.require(p, projectId, Access.Level.PROJECT_ADMIN);
+        String url = normalized(body.baseUrl());
+        return new BaseUrlResult(url, BaseUrl.origin(url), ExecutionLock.isLocal(url));
+    }
+
+    private static String normalized(String raw) {
+        try {
+            return BaseUrl.normalize(raw);
+        } catch (PolicyException e) {
+            // BaseUrl's messages are fixed text and never repeat the input.
+            throw new ConflictException(e.getMessage());
+        }
+    }
+
+    @PostMapping("/targets/{targetId}/{change:activate|deactivate}")
+    @Transactional
+    public TargetView setTargetActive(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID targetId, @PathVariable String change) {
+        access.require(p, projectId, Access.Level.PROJECT_ADMIN);
+        requireTarget(p, projectId, targetId);
+        boolean active = change.equals("activate");
+        int updated = db.sql("UPDATE target SET active = ? WHERE organization_id = ? AND id = ? AND archived_at IS NULL").params(active, p.organizationId(), targetId).update();
+        if (updated == 0) throw new ConflictException("This application is archived");
+        audit.record(p.organizationId(), projectId, p.email(), active ? "APPLICATION_ACTIVATED" : "APPLICATION_DEACTIVATED", targetId.toString(), "");
+        return db.sql(TARGET + "WHERE organization_id = ? AND id = ?").params(p.organizationId(), targetId).query((rs, n) -> target(rs)).single();
     }
 
     private void requireTarget(Principal p, UUID projectId, UUID targetId) {
@@ -115,7 +165,7 @@ public class TargetController {
             SELECT e.id, e.target_id, t.name, e.name, e.classification, e.base_url, ep.mode, e.channel, e.description, ep.include_paths, ep.exclude_paths,
                    e.api_spec_path, e.api_slow_ms, e.login_method,
                    (SELECT c.name FROM credential c WHERE c.organization_id = e.organization_id AND c.id = e.login_credential_id),
-                   lr.status, lr.created_at
+                   lr.status, lr.created_at, e.active, t.active
             FROM environment e
             JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id
             JOIN execution_policy ep ON ep.organization_id = e.organization_id AND ep.environment_id = e.id
@@ -125,7 +175,8 @@ public class TargetController {
     private static EnvironmentView env(java.sql.ResultSet rs) throws java.sql.SQLException {
         String url = rs.getString(6);
         return new EnvironmentView(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4), rs.getString(5), url, rs.getString(7), rs.getString(8),
-                rs.getString(9), ExecutionLock.isLocal(url), array(rs, 10), array(rs, 11), rs.getString(12), rs.getInt(13), rs.getString(14), rs.getString(15), rs.getString(16), rs.getObject(17, OffsetDateTime.class));
+                rs.getString(9), rs.getBoolean(18), rs.getBoolean(19), ExecutionLock.isLocal(url), array(rs, 10), array(rs, 11), rs.getString(12), rs.getInt(13), rs.getString(14),
+                rs.getString(15), rs.getString(16), rs.getObject(17, OffsetDateTime.class));
     }
 
     @GetMapping("/environments")
@@ -147,12 +198,15 @@ public class TargetController {
                                              @Valid @RequestBody CreateEnvironment body) {
         access.require(p, projectId, Access.Level.PROJECT_ADMIN);
         requireTarget(p, projectId, targetId);
+        String type = db.sql("SELECT type FROM target WHERE organization_id = ? AND id = ?").params(p.organizationId(), targetId).query(String.class).single();
+        return one(p, projectId, insertEnvironment(p, projectId, targetId, type, body));
+    }
+
+    private UUID insertEnvironment(Principal p, UUID projectId, UUID targetId, String type, CreateEnvironment body) {
         if (!CLASSES.contains(body.classification())) throw new ConflictException("Unknown environment class");
-        URI uri = URI.create(body.baseUrl());
-        if (uri.getHost() == null || !List.of("http", "https").contains(String.valueOf(uri.getScheme()))) throw new ConflictException("Base URL must be http or https");
+        String baseUrl = normalized(body.baseUrl());
         List<String> include = body.includePaths() == null ? List.of() : body.includePaths();
         if (body.classification().equals("PRODUCTION") && include.isEmpty()) throw new ConflictException("Production needs explicit include paths");
-        String type = db.sql("SELECT type FROM target WHERE organization_id = ? AND id = ?").params(p.organizationId(), targetId).query(String.class).single();
         String channel = body.channel() == null ? type : body.channel();
         if (!Set.of("WEB", "API").contains(channel)) throw new ConflictException("Unknown channel");
         if (body.apiSpecPath() != null && !body.apiSpecPath().matches(RELATIVE)) throw new ConflictException("Spec path must be a relative path");
@@ -162,17 +216,30 @@ public class TargetController {
         UUID id = UUID.randomUUID();
         db.sql("""
                 INSERT INTO environment (organization_id, id, target_id, name, classification, base_url, authorized_by, authorized_at,
-                                         channel, api_spec_path, api_slow_ms, api_seed_paths, description)
-                VALUES (?,?,?,?,?,?,?, CASE WHEN ?::text IS NULL THEN NULL ELSE now() END, ?,?,?,?,?)
-                """).params(p.organizationId(), id, targetId, body.name(), body.classification(), body.baseUrl(), body.authorizedBy(), body.authorizedBy(),
-                channel, body.apiSpecPath(), body.apiSlowMillis() == null ? 1000 : body.apiSlowMillis(), seeds.toArray(String[]::new), body.description() == null ? "" : body.description()).update();
-        String origin = uri.getScheme() + "://" + uri.getAuthority();
+                                         channel, api_spec_path, api_slow_ms, api_seed_paths, description, active)
+                VALUES (?,?,?,?,?,?,?, CASE WHEN ?::text IS NULL THEN NULL ELSE now() END, ?,?,?,?,?,?)
+                """).params(p.organizationId(), id, targetId, body.name(), body.classification(), baseUrl, body.authorizedBy(), body.authorizedBy(),
+                channel, body.apiSpecPath(), body.apiSlowMillis() == null ? 1000 : body.apiSlowMillis(), seeds.toArray(String[]::new), body.description() == null ? "" : body.description(),
+                body.active() == null || body.active()).update();
+        String origin = BaseUrl.origin(baseUrl);
         db.sql("INSERT INTO allowed_host (organization_id, environment_id, origin) VALUES (?,?,?)").params(p.organizationId(), id, origin).update();
         db.sql("INSERT INTO execution_policy (organization_id, environment_id, include_paths, exclude_paths) VALUES (?,?,?,?)")
                 .params(p.organizationId(), id, include.toArray(String[]::new),
                         (body.excludePaths() == null ? List.<String>of() : body.excludePaths()).toArray(String[]::new)).update();
         audit.record(p.organizationId(), projectId, p.email(), "ENVIRONMENT_CREATED", id.toString(), body.classification() + " " + origin);
-        return one(p, projectId, id);
+        return id;
+    }
+
+    @PostMapping("/environments/{environmentId}/{change:activate|deactivate}")
+    @Transactional
+    public EnvironmentView setEnvironmentActive(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID environmentId, @PathVariable String change) {
+        access.require(p, projectId, Access.Level.PROJECT_ADMIN);
+        one(p, projectId, environmentId);
+        boolean active = change.equals("activate");
+        int updated = db.sql("UPDATE environment SET active = ? WHERE organization_id = ? AND id = ? AND archived_at IS NULL").params(active, p.organizationId(), environmentId).update();
+        if (updated == 0) throw new ConflictException("This environment is archived");
+        audit.record(p.organizationId(), projectId, p.email(), active ? "ENVIRONMENT_ACTIVATED" : "ENVIRONMENT_DEACTIVATED", environmentId.toString(), "");
+        return one(p, projectId, environmentId);
     }
 
     /** The base URL and class cannot change: they are what any authorization was given for. */

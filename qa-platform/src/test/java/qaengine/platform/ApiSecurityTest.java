@@ -223,7 +223,7 @@ class ApiSecurityTest extends IntegrationTestBase {
         String url = "/api/v1/projects/" + projectA + "/targets/" + t + "/environments";
         for (String bad : List.of("\"channel\":\"FTP\"", "\"channel\":\"API\",\"apiSpecPath\":\"http://evil.test/x\"", "\"channel\":\"API\",\"apiSeedPaths\":[\"http://evil.test\"]")) {
             mvc.perform(post(url).with(as(adminA)).with(csrf()).contentType(MediaType.APPLICATION_JSON)
-                    .content("{\"name\":\"e\",\"classification\":\"LOCAL\",\"baseUrl\":\"http://127.0.0.1:1\"," + bad + "}")).andExpect(status().isConflict());
+                    .content("{\"name\":\"e\",\"classification\":\"LOCAL\",\"baseUrl\":\"http://localhost:1\"," + bad + "}")).andExpect(status().isConflict());
         }
     }
 

@@ -9,6 +9,7 @@ import { WorkspaceProvider, useWorkspace } from './shell/context';
 import { DashboardPage } from './pages/Dashboard';
 import { ProjectDetailPage, ProjectsPage } from './pages/Projects';
 import { ApplicationsPage } from './pages/Applications';
+import { ApplicationWizardPage } from './pages/ApplicationWizard';
 import { SuiteDetailPage, SuitesPage } from './pages/Suites';
 import { CaseDetailPage, CasesPage } from './pages/Cases';
 import { ExecutionPage, RunDetailPage } from './pages/Execution';
@@ -65,6 +66,7 @@ function Pages() {
       <Route path="/projects" element={<ProjectsPage />} />
       <Route path="/projects/:id" element={<ProjectDetailPage />} />
       <Route path="/applications" element={<ApplicationsPage />} />
+      <Route path="/applications/new" element={<Guarded when={projectAdmin}><ApplicationWizardPage /></Guarded>} />
       <Route path="/suites" element={<SuitesPage />} />
       <Route path="/suites/:id" element={<SuiteDetailPage />} />
       <Route path="/cases" element={<CasesPage />} />

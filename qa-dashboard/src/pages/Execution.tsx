@@ -31,7 +31,7 @@ function Starter({ project }: { project: string }) {
       {start.isError && <Failure error={start.error} />}
       <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} alignItems={{ md: 'center' }}>
         <TextField select label="Environment" value={environmentId} onChange={(e) => { setEnvironment(e.target.value); setSuite(''); }} sx={{ minWidth: 300 }}>
-          {envs.data?.map((e) => <MenuItem key={e.id} value={e.id} disabled={!e.executable}>{e.targetName} / {e.name} ({e.channel === 'WEB' ? 'Web' : 'API'}){e.executable ? '' : ', locked'}</MenuItem>)}
+          {envs.data?.map((e) => { const inactive = !e.active || !e.applicationActive; return <MenuItem key={e.id} value={e.id} disabled={!e.executable || inactive}>{e.targetName} / {e.name} ({e.channel === 'WEB' ? 'Web' : 'API'}){e.executable ? '' : ', locked'}{inactive ? ', inactive' : ''}</MenuItem>; })}
         </TextField>
         <TextField select label="Scope" value={suiteId} onChange={(e) => setSuite(e.target.value)} sx={{ minWidth: 240 }}>
           <MenuItem value="">{env?.channel === 'API' ? 'Full API contract' : 'Full exploration'}</MenuItem>

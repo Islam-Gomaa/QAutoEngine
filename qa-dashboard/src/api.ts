@@ -52,10 +52,12 @@ export interface Page<T> { items: T[]; total: number }
 export interface Me { userId: string; organizationId: string; email: string; organizationAdmin: boolean }
 export interface Project { id: string; name: string; description: string; archivedAt: string | null; myRole: Role | null; testCases: number; runs: number; openDefects: number }
 export interface Member { userId: string; email: string; role: Role }
-export interface Target { id: string; name: string; type: 'WEB' | 'API' | 'MOBILE'; description: string }
+export interface Target { id: string; name: string; type: 'WEB' | 'API' | 'MOBILE'; description: string; active: boolean }
+/** What the server would store for a base URL. Nothing is contacted to work this out. */
+export interface BaseUrlCheck { baseUrl: string; origin: string; executable: boolean }
 export interface Environment {
   id: string; targetId: string; targetName: string; name: string; classification: string; baseUrl: string; mode: string; channel: 'WEB' | 'API'; description: string;
-  executable: boolean; includePaths: string[]; excludePaths: string[]; apiSpecPath: string | null; apiSlowMillis: number; loginMethod: string | null; credentialName: string | null;
+  active: boolean; applicationActive: boolean; executable: boolean; includePaths: string[]; excludePaths: string[]; apiSpecPath: string | null; apiSlowMillis: number; loginMethod: string | null; credentialName: string | null;
   lastRunStatus: string | null; lastRunAt: string | null;
 }
 export interface Suite { id: string; name: string; description: string; module: string; channel: 'WEB' | 'API'; archivedAt: string | null; cases: number; automatedCases: number }
