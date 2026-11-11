@@ -68,6 +68,14 @@ public interface BrowserPort extends AutoCloseable {
         return Map.of();
     }
 
+    /**
+     * Reads the current page's structure without touching it: headings, navigation, forms and their fields,
+     * tables, dialogs and actions. Null when the adapter cannot.
+     */
+    default qaengine.core.discovery.PageInventory describePage() {
+        return null;
+    }
+
     /** A screenshot with these elements masked as well as the selectors. */
     default byte[] screenshot(List<String> maskSelectors, List<LocatorSpec> maskElements) {
         return screenshot(maskSelectors);

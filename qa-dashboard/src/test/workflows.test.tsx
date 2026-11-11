@@ -847,3 +847,76 @@ describe('session lifecycle', () => {
     expect(screen.getByText(/Stopped because: Session expired/)).toBeInTheDocument();
   });
 });
+
+describe('discovery', () => {
+  const run = { id: 'r8', kind: 'DISCOVERY', environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', suiteId: null, suiteName: null, status: 'SUCCEEDED',
+    createdAt: '2026-11-01T00:00:00Z', finishedAt: '2026-11-01T00:02:00Z', stopReason: 'EXHAUSTED', startedBy: 'admin@qa.local', passed: 6, failed: 0, inconclusive: 0, blocked: 4 };
+  const counts = (r: number, v: number, s: number, d: number) => ({ READ_ONLY: r, REVERSIBLE: v, SENSITIVE: s, DESTRUCTIVE: d });
+  const summary = { attempt: 1, pages: 2, forms: 1, fields: 2, requiredFields: 1, unlabelledFields: 1, tables: 1, dialogs: 1, actions: counts(5, 0, 1, 2), links: 1, pageRows: [
+    { id: 'p1', url: 'http://fixture.qa.internal:8090/app/console/users', title: 'Users', depth: 1, forms: 1, fields: 2, requiredFields: 1, unlabelledFields: 1, tables: 1, dialogs: 1, actions: counts(4, 0, 1, 2) },
+    { id: 'p2', url: 'http://fixture.qa.internal:8090/app/console/billing', title: 'Billing', depth: 1, forms: 0, fields: 0, requiredFields: 0, unlabelledFields: 0, tables: 0, dialogs: 0, actions: counts(1, 0, 0, 0) }] };
+  const users = { id: 'p1', url: 'http://fixture.qa.internal:8090/app/console/users', title: 'Users', depth: 1, headings: ['Users'], at: '2026-11-01T00:00:00Z', screenshot: 'ev1',
+    structure: { navigation: [{ name: 'Console', links: ['Users', 'Billing'] }],
+      forms: [{ name: 'Invite a teammate', method: 'post', action: '/app/console/invitations', submitLabel: 'Invite user', fields: [
+        { label: 'Email', name: 'email', type: 'email', required: true, labelled: true }, { label: '', name: 'nickname', type: 'text', required: false, labelled: false }] }],
+      tables: [{ caption: 'Team members', headers: ['Name', 'Email'], rows: 3 }], dialogs: [{ name: 'Remove user', open: false }] },
+    actions: [
+      { kind: 'LINK', role: 'link', name: 'Billing', href: 'http://fixture.qa.internal:8090/app/console/billing', locator: { strategy: 'ROLE', value: 'link', name: 'Billing' }, safety: 'READ_ONLY', reason: 'navigates to another page' },
+      { kind: 'SUBMIT', role: 'button', name: 'Invite user', href: null, locator: { strategy: 'ROLE', value: 'button', name: 'Invite user' }, safety: 'SENSITIVE', reason: 'named "invite"' },
+      { kind: 'BUTTON', role: 'button', name: 'Delete user', href: null, locator: { strategy: 'TEST_ID', value: 'delete-user' }, safety: 'DESTRUCTIVE', reason: 'named "delete"' }],
+    linksTo: [{ pageId: 'p2', url: 'http://fixture.qa.internal:8090/app/console/billing', via: 'Billing' }] };
+  const billing = { ...users, id: 'p2', url: 'http://fixture.qa.internal:8090/app/console/billing', title: 'Billing', screenshot: null, structure: { navigation: [], forms: [], tables: [], dialogs: [] }, actions: [], linksTo: [] };
+  const routes = { ...signedIn(), 'GET /projects/p1/runs/r8/progress': { run, attempt: 1, jobState: 'SUCCEEDED', currentOperation: '', steps: 10, defects: 0, durationSeconds: 120 },
+    'GET /projects/p1/runs/r8/steps': [], 'GET /projects/p1/runs/r8/findings': [], 'GET /projects/p1/runs/r8/auth': [], 'GET /projects/p1/runs/r8/discovery': summary,
+    'GET /projects/p1/runs/r8/discovery/pages/p1': users, 'GET /projects/p1/runs/r8/discovery/pages/p2': billing };
+
+  it('is started from the scope list, for web environments only', async () => {
+    const calls = server({ ...signedIn(), 'GET /projects/p1/runs': empty, 'GET /projects/p1/suites': [], 'GET /projects/p1/environments': [env({}), env({ id: 'e2', name: 'API', channel: 'API' })],
+      'POST /projects/p1/runs': { id: 'r8' }, 'GET /projects/p1/runs/r8/progress': () => new Response('{}', { status: 404 }) });
+    mount(<App />, '/execution');
+    await userEvent.click(await screen.findByLabelText('Environment'));
+    await userEvent.click(await screen.findByRole('option', { name: /^Shop \/ API/ }));
+    await userEvent.click(screen.getByLabelText('Scope'));
+    expect(screen.queryByRole('option', { name: /Discovery/ })).toBeNull();
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(screen.getByLabelText('Environment'));
+    await userEvent.click(await screen.findByRole('option', { name: /^Shop \/ Fixture/ }));
+    await userEvent.click(screen.getByLabelText('Scope'));
+    await userEvent.click(await screen.findByRole('option', { name: 'Discovery: record every page and action' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Start fixture run' }));
+    await waitFor(() => expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ environmentId: 'e1', suiteId: null, maxPages: null, kind: 'DISCOVERY' }));
+  });
+
+  it('opens on what it found, and shows each page with its forms, fields and what every action would do', async () => {
+    server(routes);
+    mount(<App />, '/execution/r8');
+    const panel = await screen.findByTestId('discovery');
+    expect(within(panel).getByText(/Discovery only reads/)).toBeInTheDocument();
+    expect(within(panel).getByText('Fields with no name').parentElement).toHaveTextContent('1');
+    const rows = within(panel).getAllByTestId('discovered-page');
+    expect(rows[0]).toHaveTextContent('/app/console/users');
+    expect(rows[0]).toHaveTextContent('4 read-only, 1 sensitive, 2 destructive');
+    await userEvent.click(within(rows[0]).getByRole('button', { name: 'Details' }));
+
+    const page = await screen.findByTestId('discovery-page');
+    expect(within(page).getByText(/POST \/app\/console\/invitations, sent by "Invite user". Never submitted./)).toBeInTheDocument();
+    const fields = within(page).getAllByTestId('discovered-field');
+    expect(fields[0]).toHaveTextContent('Required');
+    expect(fields[1]).toHaveTextContent('No accessible name');
+    const actions = within(page).getAllByTestId('discovered-action');
+    expect(actions[1]).toHaveTextContent('Sensitive');
+    expect(actions[2]).toHaveTextContent('Destructive');
+    expect(actions[2]).toHaveTextContent('test_id delete-user');
+    expect(within(page).getByRole('link', { name: 'Open the masked screenshot' })).toHaveAttribute('href', '/api/v1/projects/p1/evidence/ev1/content');
+
+    await userEvent.click(within(page).getByRole('button', { name: 'Billing' }));
+    await waitFor(() => expect(screen.getByTestId('discovery-page')).not.toHaveTextContent('Invite a teammate'));
+    expect(screen.getByTestId('discovery-page')).toHaveTextContent('/app/console/billing');
+  });
+
+  it('says so while nothing has been recorded yet', async () => {
+    server({ ...routes, 'GET /projects/p1/runs/r8/discovery': { ...summary, attempt: 0, pages: 0, pageRows: [] } });
+    mount(<App />, '/execution/r8');
+    expect(await screen.findByText('No pages recorded yet')).toBeInTheDocument();
+  });
+});

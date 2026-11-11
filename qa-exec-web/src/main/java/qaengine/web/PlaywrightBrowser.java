@@ -397,6 +397,11 @@ public final class PlaywrightBrowser implements BrowserPort {
     }
 
     @Override
+    public qaengine.core.discovery.PageInventory describePage() {
+        return DiscoveryReader.read(page);
+    }
+
+    @Override
     public byte[] screenshot(List<String> maskSelectors, List<LocatorSpec> maskElements) {
         List<com.microsoft.playwright.Locator> mask = new ArrayList<>(maskSelectors.stream().map(page::locator).toList());
         for (LocatorSpec element : maskElements) mask.add(resolve(element));

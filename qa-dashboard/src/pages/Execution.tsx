@@ -9,7 +9,11 @@ import { Async, Card, Confirm, DataTable, dateTime, duration, Empty, Failure, Ke
 import { useWorkspace } from '../shell/context';
 import { EvidenceViewer } from './EvidenceViewer';
 import { Choice, NeedsProject } from './shared';
+import { DiscoveryPanel } from './Discovery';
 import { FAILURE_LABELS, TestResult, testOutcome } from './signin';
+
+/** Chosen in the scope list; discovery is a kind of run rather than a suite. */
+const DISCOVERY = '__discovery';
 
 function Starter({ project }: { project: string }) {
   const navigate = useNavigate();
@@ -23,7 +27,8 @@ function Starter({ project }: { project: string }) {
   const env = envs.data?.find((e) => e.id === environmentId);
   const runnable = useMemo(() => (suites.data ?? []).filter((s) => s.automatedCases > 0 && (!env || s.channel === env.channel)), [suites.data, env]);
   const start = useMutation({
-    mutationFn: () => api<Run>(`/projects/${project}/runs`, 'POST', { environmentId, suiteId: suiteId || null, maxPages: maxPages ? Number(maxPages) : null }, { 'Idempotency-Key': crypto.randomUUID() }),
+    mutationFn: () => api<Run>(`/projects/${project}/runs`, 'POST', { environmentId, suiteId: suiteId && suiteId !== DISCOVERY ? suiteId : null, maxPages: maxPages ? Number(maxPages) : null,
+      ...(suiteId === DISCOVERY ? { kind: 'DISCOVERY' } : {}) }, { 'Idempotency-Key': crypto.randomUUID() }),
     onSuccess: (r) => { void client.invalidateQueries({ queryKey: ['runs', project] }); navigate(`/execution/${r.id}`); },
   });
   if (envs.data?.length === 0) return <Empty title="No environments to run" action={<Button component={RouterLink} to="/applications" variant="contained">Add an application</Button>}>Add an application and a fixture environment first.</Empty>;
@@ -36,6 +41,7 @@ function Starter({ project }: { project: string }) {
         </TextField>
         <TextField select label="Scope" value={suiteId} onChange={(e) => setSuite(e.target.value)} sx={{ minWidth: 240 }}>
           <MenuItem value="">{env?.channel === 'API' ? 'Full API contract' : 'Full exploration'}</MenuItem>
+          {env?.channel !== 'API' && <MenuItem value={DISCOVERY}>Discovery: record every page and action</MenuItem>}
           {runnable.map((s) => <MenuItem key={s.id} value={s.id}>{s.name} ({s.automatedCases} automated)</MenuItem>)}
         </TextField>
         {env?.channel !== 'API' && <TextField label="Page limit (optional)" type="number" value={maxPages} onChange={(e) => setMaxPages(e.target.value)} sx={{ width: 170 }} slotProps={{ htmlInput: { min: 1 } }} />}
@@ -95,10 +101,11 @@ function Detail({ project, id }: { project: string; id: string }) {
   const { tokens } = useTheme();
   const { allowed } = useWorkspace();
   const client = useQueryClient();
-  const [tab, setTab] = useState('steps');
+  const [chosen, setTab] = useState<string | null>(null);
   const [verdict, setVerdict] = useState('');
   const progress = useQuery({ queryKey: ['progress', id], queryFn: () => api<Progress>(`/projects/${project}/runs/${id}/progress`), refetchInterval: (s) => (s.state.data?.run.finishedAt ? false : 2000) });
   const finished = !!progress.data?.run.finishedAt;
+  const tab = chosen ?? (progress.data?.run.kind === 'DISCOVERY' ? 'discovery' : 'steps');
   const live = finished ? false as const : 3000;
   const steps = useQuery({ queryKey: ['steps', id], queryFn: () => api<Step[]>(`/projects/${project}/runs/${id}/steps`), refetchInterval: live });
   const findings = useQuery({ queryKey: ['findings', id], queryFn: () => api<RunFinding[]>(`/projects/${project}/runs/${id}/findings`), refetchInterval: live });
@@ -117,7 +124,7 @@ function Detail({ project, id }: { project: string; id: string }) {
       const f = findings.data ?? [];
       return (
         <>
-          <PageHeader title={`${r.applicationName} / ${r.environmentName}`} description={r.kind === 'AUTH_TEST' ? 'Connection test: opens the environment and signs in if a sign-in is set up' : r.suiteName ? `Suite: ${r.suiteName}` : r.channel === 'API' ? 'Full API contract run' : 'Full exploration run'} actions={<>
+          <PageHeader title={`${r.applicationName} / ${r.environmentName}`} description={r.kind === 'AUTH_TEST' ? 'Connection test: opens the environment and signs in if a sign-in is set up' : r.kind === 'DISCOVERY' ? 'Discovery: records every page, form and action it can reach, and uses none that change anything' : r.suiteName ? `Suite: ${r.suiteName}` : r.channel === 'API' ? 'Full API contract run' : 'Full exploration run'} actions={<>
             <StatusChip value={r.status} testId="run-status" />
             {finished && <Button variant="outlined" component="a" href={`/api/v1/projects/${project}/runs/${id}/report.html`} target="_blank" rel="noopener noreferrer">HTML report</Button>}
             {finished && <Button variant="outlined" component="a" href={`/api/v1/projects/${project}/runs/${id}/report.xlsx`} download>Excel report</Button>}
@@ -158,6 +165,7 @@ function Detail({ project, id }: { project: string; id: string }) {
             })()}
             <Box>
               <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2 }} variant="scrollable">
+                {r.kind === 'DISCOVERY' && <Tab value="discovery" label="Discovery" />}
                 <Tab value="steps" label={`Steps (${steps.data?.length ?? 0})`} /><Tab value="defects" label={`Defects (${f.length})`} />
                 {r.channel === 'WEB' && <Tab value="console" label="Console errors" />}{r.channel === 'WEB' && <Tab value="network" label="Network failures" />}
                 <Tab value="evidence" label="Evidence" />{r.channel === 'API' && <Tab value="api" label="API metrics" />}<Tab value="meta" label="Metadata" />
@@ -173,6 +181,7 @@ function Detail({ project, id }: { project: string; id: string }) {
                     ]} /></ScrollRegion>))}</Async>
                 </Card>
               )}
+              {tab === 'discovery' && <DiscoveryPanel project={project} run={id} live={live} />}
               {tab === 'defects' && <Card pad={false}><Findings rows={f} none="No defects in this run" /></Card>}
               {tab === 'console' && <Card pad={false}><Findings rows={f.filter((x) => CONSOLE.includes(x.type))} none="No browser console errors" /></Card>}
               {tab === 'network' && <Card pad={false}><Findings rows={f.filter((x) => NETWORK.includes(x.type))} none="No network failures" /></Card>}

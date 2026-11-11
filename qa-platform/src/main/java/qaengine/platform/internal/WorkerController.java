@@ -55,6 +55,7 @@ public class WorkerController {
     private final CredentialService credentials;
     private final tools.jackson.databind.ObjectMapper json;
     private final qaengine.platform.otp.OtpService otps;
+    private final qaengine.platform.discovery.DiscoveryStore discoveries;
 
     private static final java.util.Set<String> AUTH_STATUSES = java.util.Set.of("NOT_STARTED", "IN_PROGRESS", "WAITING_FOR_OTP", "AUTHENTICATED", "FAILED", "EXPIRED",
             "REQUIRES_USER_ACTION", "CONNECTED");
@@ -64,7 +65,7 @@ public class WorkerController {
 
     public WorkerController(JdbcClient db, JobTokens tokens, JobQueue queue, EvidenceService evidence, DefectService defects,
                             TestCaseService testCases, AuditLog audit, CredentialService credentials, tools.jackson.databind.ObjectMapper json,
-                            qaengine.platform.otp.OtpService otps) {
+                            qaengine.platform.otp.OtpService otps, qaengine.platform.discovery.DiscoveryStore discoveries) {
         this.db = db;
         this.tokens = tokens;
         this.queue = queue;
@@ -75,6 +76,7 @@ public class WorkerController {
         this.credentials = credentials;
         this.json = json;
         this.otps = otps;
+        this.discoveries = discoveries;
     }
 
     private JobTokens.Scope scope(String authorization, UUID jobId) {
@@ -252,6 +254,41 @@ public class WorkerController {
         return ResponseEntity.ok(new OtpReply(r.code(), r.failure(), r.detail(), r.retryAfterSeconds(), r.waitingForPerson()));
     }
 
+    /** One page a discovery run found. Only from a discovery run's current attempt. */
+    @PostMapping("/{jobId}/discovery/pages")
+    @Transactional
+    public ResponseEntity<Void> discoveredPage(@RequestHeader(value = "Authorization", required = false) String auth, @PathVariable UUID jobId,
+                                               @RequestBody qaengine.contracts.WorkerContracts.DiscoveredPage page) {
+        JobTokens.Scope s = scope(auth, jobId);
+        UUID run = runOf(s);
+        if (!isDiscovery(s.organizationId(), run)) return ResponseEntity.status(HttpStatus.CONFLICT).build();
+        try {
+            discoveries.page(s.organizationId(), run, s.attempt(), page);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().build();
+        }
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/{jobId}/discovery/edges")
+    @Transactional
+    public ResponseEntity<Void> discoveredEdges(@RequestHeader(value = "Authorization", required = false) String auth, @PathVariable UUID jobId,
+                                                @RequestBody List<qaengine.contracts.WorkerContracts.DiscoveredEdge> edges) {
+        JobTokens.Scope s = scope(auth, jobId);
+        UUID run = runOf(s);
+        if (!isDiscovery(s.organizationId(), run)) return ResponseEntity.status(HttpStatus.CONFLICT).build();
+        try {
+            discoveries.edges(s.organizationId(), run, s.attempt(), edges);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().build();
+        }
+        return ResponseEntity.noContent().build();
+    }
+
+    private boolean isDiscovery(UUID org, UUID run) {
+        return "DISCOVERY".equals(db.sql("SELECT kind FROM test_run WHERE organization_id = ? AND id = ?").params(org, run).query(String.class).single());
+    }
+
     @PostMapping("/{jobId}/start")
     public ResponseEntity<Void> start(@RequestHeader(value = "Authorization", required = false) String auth, @PathVariable UUID jobId) {
         JobTokens.Scope s = scope(auth, jobId);
@@ -374,6 +411,12 @@ public class WorkerController {
         UUID suite = db.sql("SELECT suite_id FROM test_run WHERE organization_id = ? AND id = ?").params(org, run).query((rs, n) -> java.util.Optional.ofNullable(rs.getObject(1, UUID.class))).single().orElse(null);
         if (suite != null) {
             recordSuiteResults(org, run, s.attempt(), suite);
+            JobQueue.Terminal done = JobQueue.Terminal.valueOf(body.outcome());
+            if (!queue.complete(org, jobId, s.attempt(), done, null, body.stopReason())) throw new Fenced();
+            audit.record(org, project, "worker", "RUN_FINISHED", run.toString(), done + " " + body.stopReason());
+            return ResponseEntity.noContent().build();
+        }
+        if (isDiscovery(org, run)) {
             JobQueue.Terminal done = JobQueue.Terminal.valueOf(body.outcome());
             if (!queue.complete(org, jobId, s.attempt(), done, null, body.stopReason())) throw new Fenced();
             audit.record(org, project, "worker", "RUN_FINISHED", run.toString(), done + " " + body.stopReason());

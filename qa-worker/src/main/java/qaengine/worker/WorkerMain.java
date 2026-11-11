@@ -63,6 +63,7 @@ public final class WorkerMain {
     /** Exploration numbers its steps from 1 and roots them at 0, so sign-in sits apart and never joins a reproduction path. */
     private static final int SIGN_IN_STEP = -1;
     private static final int SIGN_IN_AGAIN_STEP = -2;
+    private static final int DISCOVERY_SCREENSHOTS = 50;
     private static final long PAUSE_MILLIS = 20;
 
     private WorkerMain() {}
@@ -150,7 +151,29 @@ public final class WorkerMain {
                 platform.complete(new RunCompletion(connected.failure() == null ? "SUCCEEDED" : "FAILED", connected.failure() == null ? "CONNECTED" : connected.failure().name(), 1, java.util.Map.of()));
                 return;
             }
+            boolean discovery = WorkerContracts.DISCOVERY.equals(job.kind());
+            if (discovery) {
+                // Each new page state is read while it is on screen, before anything on it is used, and reported at once.
+                // Screenshots for the first pages only: they are the largest evidence, and the inventory is the point.
+                int[] screenshots = {0};
+                List<String> masks = new java.util.ArrayList<>(List.of("input[type=password]", "input[autocomplete=one-time-code]"));
+                masks.addAll(job.maskSelectors());
+                engine.onNewState((step, depth, snapshot) -> {
+                    var inventory = browser.describePage();
+                    if (inventory == null) return;
+                    call(() -> platform.discoveredPage(sanitizer.page(snapshot.fingerprint(), step, depth, inventory)));
+                    if (screenshots[0]++ < DISCOVERY_SCREENSHOTS) evidence.binary(qaengine.core.evidence.EvidenceType.SCREENSHOT, step, browser.screenshot(masks));
+                });
+            }
             RunResult result = job.scope() == null ? engine.explore(job.startUrl()) : engine.visitOnly(job.scope().urls());
+            if (discovery && !lost.get()) {
+                var edges = result.transitions().stream().filter(t -> !t.from().isEmpty())
+                        .map(t -> new WorkerContracts.DiscoveredEdge(t.from(), t.to(), redactor.redact(t.via()))).toList();
+                for (int i = 0; i < edges.size(); i += 500) {
+                    var batch = edges.subList(i, Math.min(edges.size(), i + 500));
+                    call(() -> platform.discoveredEdges(batch));
+                }
+            }
             if (lost.get()) return;
             String outcome = result.stop() == RunResult.StopReason.CANCELLED ? "CANCELLED" : "SUCCEEDED";
             platform.complete(new RunCompletion(outcome, result.stop().name(), result.steps().size(), result.states()));

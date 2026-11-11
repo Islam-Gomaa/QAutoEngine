@@ -124,6 +124,14 @@ final class PlatformClient {
         postJson("/auth", report);
     }
 
+    void discoveredPage(qaengine.contracts.WorkerContracts.DiscoveredPage page) throws IOException, InterruptedException {
+        postJson("/discovery/pages", page);
+    }
+
+    void discoveredEdges(List<qaengine.contracts.WorkerContracts.DiscoveredEdge> edges) throws IOException, InterruptedException {
+        postJson("/discovery/edges", edges);
+    }
+
     void complete(RunCompletion completion) throws IOException, InterruptedException {
         postJson("/complete", completion);
     }

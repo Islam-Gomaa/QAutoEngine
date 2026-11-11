@@ -267,6 +267,28 @@ describe('accessibility, WCAG 2.2 A and AA', () => {
     expect(await violations()).toEqual([]);
   });
 
+  it('the discovery results have no violations, with a page open', async () => {
+    const counts = { READ_ONLY: 1, REVERSIBLE: 0, SENSITIVE: 1, DESTRUCTIVE: 1 };
+    const run = { id: 'r8', kind: 'DISCOVERY', environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', suiteId: null, suiteName: null, status: 'SUCCEEDED',
+      createdAt: at, finishedAt: at, stopReason: 'EXHAUSTED', startedBy: 'admin@qa.local', passed: 2, failed: 0, inconclusive: 0, blocked: 1 };
+    server({ ...routes, 'GET /projects/p1/runs/r8/progress': { run, attempt: 1, jobState: 'SUCCEEDED', currentOperation: '', steps: 3, defects: 0, durationSeconds: 60 },
+      'GET /projects/p1/runs/r8/steps': [], 'GET /projects/p1/runs/r8/findings': [], 'GET /projects/p1/runs/r8/auth': [],
+      'GET /projects/p1/runs/r8/discovery': { attempt: 1, pages: 1, forms: 1, fields: 2, requiredFields: 1, unlabelledFields: 1, tables: 1, dialogs: 1, actions: counts, links: 0,
+        pageRows: [{ id: 'p1', url: 'http://fixture.qa.internal:8090/app/console/users', title: 'Users', depth: 1, forms: 1, fields: 2, requiredFields: 1, unlabelledFields: 1, tables: 1, dialogs: 1, actions: counts }] },
+      'GET /projects/p1/runs/r8/discovery/pages/p1': { id: 'p1', url: 'http://fixture.qa.internal:8090/app/console/users', title: 'Users', depth: 1, headings: ['Users'], at, screenshot: 'ev1',
+        structure: { navigation: [{ name: 'Console', links: ['Users'] }], forms: [{ name: 'Invite', method: 'post', action: '/invitations', submitLabel: 'Invite user', fields: [
+          { label: 'Email', name: 'email', type: 'email', required: true, labelled: true }, { label: '', name: 'nick', type: 'text', required: false, labelled: false }] }],
+          tables: [{ caption: 'Team', headers: ['Name'], rows: 3 }], dialogs: [{ name: 'Remove user', open: false }] },
+        actions: [{ kind: 'BUTTON', role: 'button', name: 'Delete user', href: null, locator: { strategy: 'TEST_ID', value: 'delete-user' }, safety: 'DESTRUCTIVE', reason: 'named "delete"' }],
+        linksTo: [] } });
+    mount(<App />, '/execution/r8');
+    await screen.findByTestId('discovery');
+    expect(await violations()).toEqual([]);
+    await userEvent.click(screen.getByRole('button', { name: 'Details' }));
+    await screen.findByTestId('discovery-page');
+    expect(await violations()).toEqual([]);
+  });
+
   it('the credential edit form has no violations', async () => {
     server(routes);
     mount(<App />, '/credentials');

@@ -71,7 +71,7 @@ export interface CaseDetail {
   defects: { id: string; number: number; title: string; severity: string; status: string }[];
 }
 export interface Run {
-  id: string; kind?: 'EXPLORATION' | 'AUTH_TEST'; environmentId: string; environmentName: string; applicationName: string; channel: 'WEB' | 'API'; suiteId: string | null; suiteName: string | null; status: string;
+  id: string; kind?: 'EXPLORATION' | 'AUTH_TEST' | 'DISCOVERY'; environmentId: string; environmentName: string; applicationName: string; channel: 'WEB' | 'API'; suiteId: string | null; suiteName: string | null; status: string;
   createdAt: string; finishedAt: string | null; stopReason: string | null; startedBy: string; passed: number; failed: number; inconclusive: number; blocked: number;
 }
 export interface Progress { run: Run; attempt: number; jobState: string; currentOperation: string; steps: number; defects: number; durationSeconds: number }
@@ -99,6 +99,17 @@ export interface LocatorView { strategy: 'ROLE' | 'LABEL' | 'PLACEHOLDER' | 'TES
 export interface Locators { username?: LocatorView | null; password?: LocatorView | null; submit?: LocatorView | null; success?: LocatorView | null; failure?: LocatorView | null }
 /** The latest connection test. status and failure stay null until the worker reports. */
 export interface LastTest { runId: string; runStatus: string; status: string | null; failure: string | null; stage: string | null; detail: string | null; at: string; suggestions: Record<string, LocatorView> }
+export type Safety = 'READ_ONLY' | 'REVERSIBLE' | 'SENSITIVE' | 'DESTRUCTIVE';
+export interface DiscoveryPageRow { id: string; url: string; title: string; depth: number; forms: number; fields: number; requiredFields: number; unlabelledFields: number; tables: number; dialogs: number; actions: Record<Safety, number> }
+export interface DiscoverySummary { attempt: number; pages: number; forms: number; fields: number; requiredFields: number; unlabelledFields: number; tables: number; dialogs: number; actions: Record<Safety, number>; links: number; pageRows: DiscoveryPageRow[] }
+export interface DiscoveredField { label: string; name: string; type: string; required: boolean; labelled: boolean }
+export interface DiscoveredForm { name: string; method: string; action: string; fields: DiscoveredField[]; submitLabel: string }
+export interface DiscoveryPage {
+  id: string; url: string; title: string; depth: number; headings: string[]; at: string; screenshot: string | null;
+  structure: { navigation: { name: string; links: string[] }[]; forms: DiscoveredForm[]; tables: { caption: string; headers: string[]; rows: number }[]; dialogs: { name: string; open: boolean }[] };
+  actions: { kind: string; role: string; name: string; href: string | null; locator: { strategy: string; value: string; name?: string } | null; safety: Safety; reason: string }[];
+  linksTo: { pageId: string; url: string; via: string }[];
+}
 export interface AuthAttempt { attempt: number; signIn?: number; authProfileId: string | null; status: string; failure: string | null; stage: string; detail: string; durationMs: number; at: string }
 export interface AuthProfile {
   id: string; environmentId: string; environmentName: string; applicationName: string; channel: 'WEB' | 'API'; name: string; method: string;

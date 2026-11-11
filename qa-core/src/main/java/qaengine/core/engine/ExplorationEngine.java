@@ -76,6 +76,14 @@ public final class ExplorationEngine {
     private boolean listedOnly;
     private java.util.function.Consumer<StepRecord> stepListener = s -> { };
     private java.util.function.Consumer<Observation> findingListener = o -> { };
+    private StateListener stateListener;
+
+    /** Told about each new page state while the browser is still showing it, before anything on it is used. */
+    @FunctionalInterface
+    public interface StateListener {
+        /** @param step the step that reached it; depth its link distance from the start */
+        void newState(int step, int depth, PageSnapshot snapshot);
+    }
 
     public ExplorationEngine(ActionGate gate, BrowserPort browser, VerdictEngine verdicts, EvidenceCollector evidence,
                              long seed, Clock clock, List<String> extraMasks) {
@@ -141,6 +149,12 @@ public final class ExplorationEngine {
     /** Extra starting points, such as pages only reachable after login. */
     public ExplorationEngine seed(String url) {
         frontier.add(new Candidate(url, 0, null, 0));
+        return this;
+    }
+
+    /** Lets a discovery run read each new page state while it is on screen. */
+    public ExplorationEngine onNewState(StateListener listener) {
+        this.stateListener = listener;
         return this;
     }
 
@@ -239,6 +253,7 @@ public final class ExplorationEngine {
         if (!loaded || snapshot == null) return;
         boolean newState = states.putIfAbsent(state, snapshot.url()) == null;
         if (via != null) transitions.add(new RunResult.Transition(parentState(c.parentStep()), state, via.label()));
+        if (newState && stateListener != null) stateListener.newState(seq, c.depth(), snapshot);
         if (!newState || listedOnly) return;
         expand(snapshot, c, seq);
     }
@@ -330,6 +345,7 @@ public final class ExplorationEngine {
                 eval.verdict(), 200, after.fingerprint(), eval.note()));
         int seq = sequence;
         if (states.putIfAbsent(after.fingerprint(), after.url()) != null) return;
+        if (stateListener != null) stateListener.newState(seq, c.depth(), after);
         transitions.add(new RunResult.Transition(from.fingerprint(), after.fingerprint(), control.label()));
         for (Control next : after.controls()) {
             if (next.kind() == ActionRequest.Kind.NAVIGATE_LINK && next.url() != null && isWeb(next.url()) && !samePage(next.url(), after.url())) {

@@ -67,7 +67,8 @@ public final class RiskRules {
         return Optional.empty();
     }
 
-    private static List<String> words(String text) {
+    /** Splits text into lower-case words, camelCase and punctuation included. Shared with the discovery classifier. */
+    public static List<String> words(String text) {
         String spaced = CAMEL.matcher(text).replaceAll(" ");
         List<String> out = new ArrayList<>();
         for (String w : SPLIT.split(spaced)) {

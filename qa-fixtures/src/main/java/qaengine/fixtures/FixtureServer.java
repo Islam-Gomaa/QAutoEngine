@@ -303,7 +303,58 @@ public final class FixtureServer implements AutoCloseable {
         }
     }
 
+    // A signed-in admin console, for discovery: forms with required and unlabelled fields, tables, a closed dialog,
+    // tabs, pagination, and actions of every safety class. Nothing under it may ever be submitted or followed
+    // when it changes state; the tests check what reached the server.
+
+    private static final String CONSOLE_NAV = "<nav aria-label=\"Console\"><a href=\"/app/console\">Console</a> <a href=\"/app/console/users\">Users</a> "
+            + "<a href=\"/app/console/billing\">Billing</a> <a href=\"/app/console/settings\">Settings</a></nav>";
+
+    private static String console(String title, String content) {
+        return "<!doctype html><title>" + title + "</title><header><button type=\"button\" data-testid=\"account-menu\" aria-label=\"Account menu\">Fixture User</button>"
+                + CONSOLE_NAV + "</header><main><h1>" + title + "</h1>" + content + "</main>";
+    }
+
+    private static final java.util.Map<String, String> CONSOLE = java.util.Map.of(
+            "/app/console", console("Console", "<h2>Overview</h2><p>Two people are waiting for an invitation.</p><a href=\"/app/console/users\">Manage users</a>"),
+            "/app/console/users", console("Users",
+                    "<div role=\"tablist\" aria-label=\"Status\"><button role=\"tab\" aria-selected=\"true\">Active</button><button role=\"tab\" aria-selected=\"false\">Invited</button></div>"
+                    + "<table><caption>Team members</caption><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Actions</th></tr></thead><tbody>"
+                    + "<tr><td>Amal</td><td>amal@shop.example</td><td>Admin</td><td><a href=\"/app/console/users/1/edit\">Edit</a></td></tr>"
+                    + "<tr><td>Badr</td><td>badr@shop.example</td><td>Viewer</td><td><a href=\"/app/console/users/2/delete\">Remove</a></td></tr>"
+                    + "<tr><td>Carmen</td><td>carmen@shop.example</td><td>Editor</td><td><button type=\"button\" data-testid=\"delete-user\" data-confirm=\"Delete this user?\">Delete user</button></td></tr>"
+                    + "</tbody></table><a href=\"/app/console/users?page=2\">Next page</a>"
+                    + "<h2>Invite a teammate</h2><form method=\"post\" action=\"/app/console/invitations\" aria-label=\"Invite a teammate\">"
+                    + "<label for=\"invite-email\">Email</label> <input id=\"invite-email\" name=\"email\" type=\"email\" required>"
+                    + "<label for=\"invite-role\">Role</label> <select id=\"invite-role\" name=\"role\"><option>Viewer</option><option>Editor</option></select>"
+                    + "<button type=\"submit\">Invite user</button></form>"
+                    + "<dialog aria-label=\"Remove user\"><h2>Remove user</h2><p>This cannot be undone.</p><button>Remove</button> <button>Close</button></dialog>"),
+            "/app/console/users/1/edit", console("Edit user",
+                    "<form method=\"post\" action=\"/app/console/users/1\" aria-label=\"Edit user\"><label for=\"name\">Name</label> <input id=\"name\" name=\"name\" required value=\"Amal\">"
+                    + "<button type=\"submit\">Save changes</button></form><a href=\"/app/console/users\">Back to users</a>"),
+            "/app/console/billing", console("Billing",
+                    "<table aria-label=\"Invoices\"><tr><th>Invoice</th><th>Amount</th></tr><tr><td>INV-7</td><td>40.00</td></tr></table>"
+                    + "<a href=\"/app/console/invoices/7.pdf\" download>Download invoice</a>"
+                    + "<form method=\"post\" action=\"/app/console/payments\"><button type=\"submit\">Pay invoice</button></form>"
+                    + "<button type=\"button\">Update card</button>"),
+            "/app/console/settings", console("Settings",
+                    "<form method=\"post\" action=\"/app/console/settings\" aria-label=\"Profile\">"
+                    + "<label for=\"display\">Display name</label> <input id=\"display\" name=\"display\" required>"
+                    + "<label for=\"mail\">Email</label> <input id=\"mail\" name=\"mail\" type=\"email\" required>"
+                    + "<label><input type=\"checkbox\" name=\"news\"> Product news</label>"
+                    + "<label for=\"tz\">Timezone</label> <select id=\"tz\" name=\"tz\"><option>UTC</option></select>"
+                    + "<input name=\"nickname\" placeholder=\"Nickname\">"
+                    + "<button type=\"submit\">Save changes</button></form>"));
+
+    private void consolePage(HttpExchange x, String path) throws IOException {
+        if (!appSession(x)) { redirect(x, "/app/login"); return; }
+        String page = CONSOLE.get(path);
+        if (page == null) { send(x, 404, "text/html", "<h1>Not found</h1>"); return; }
+        send(x, 200, "text/html; charset=utf-8", page);
+    }
+
     private void app(HttpExchange x, String path, String body) throws IOException {
+        if (path.startsWith("/app/console")) { consolePage(x, path); return; }
         if (path.startsWith("/app/login-otp") || path.equals("/app/session-otp") || path.startsWith("/app/otp")) { otp(x, path, body); return; }
         switch (path) {
             case "/app/login" -> send(x, 200, "text/html; charset=utf-8", loginPage("/app/session", null));

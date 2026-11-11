@@ -17,6 +17,21 @@ public final class WorkerContracts {
 
     /** EXPLORATION signs in when a profile is set, then explores. AUTH_TEST signs in, or only connects, and stops. */
     public static final String AUTH_TEST = "AUTH_TEST";
+    /** Explores like EXPLORATION, and also reports what each page holds and how the pages link. */
+    public static final String DISCOVERY = "DISCOVERY";
+
+    /** One page state found by discovery, read without touching it. Everything in it came from the target and was redacted. */
+    public record DiscoveredPage(String fingerprint, int step, int depth, String url, String title, List<String> headings, List<NavigationReport> navigation,
+                                 List<FormReport> forms, List<TableReport> tables, List<DialogReport> dialogs, List<ActionReport> actions) {}
+    public record NavigationReport(String name, List<String> links) {}
+    public record FieldReport(String label, String name, String type, boolean required, boolean labelled) {}
+    public record FormReport(String name, String method, String action, List<FieldReport> fields, String submitLabel) {}
+    public record TableReport(String caption, List<String> headers, int rows) {}
+    public record DialogReport(String name, boolean open) {}
+    /** @param safety READ_ONLY, REVERSIBLE, SENSITIVE or DESTRUCTIVE; reason says what decided it */
+    public record ActionReport(String kind, String role, String name, String href, Locator locator, String safety, String reason) {}
+    /** One way from one page state to another, by the control used. */
+    public record DiscoveredEdge(String from, String to, String via) {}
 
     /** Null for a full exploration. Otherwise only these saved cases run. */
     public record RunScope(List<String> urls, List<String> labels) {}

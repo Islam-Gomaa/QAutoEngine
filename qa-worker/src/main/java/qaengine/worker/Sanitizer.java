@@ -1,7 +1,16 @@
 package qaengine.worker;
 
 import java.util.List;
+import qaengine.contracts.WorkerContracts.ActionReport;
 import qaengine.contracts.WorkerContracts.AuthReport;
+import qaengine.contracts.WorkerContracts.DialogReport;
+import qaengine.contracts.WorkerContracts.DiscoveredPage;
+import qaengine.contracts.WorkerContracts.FieldReport;
+import qaengine.contracts.WorkerContracts.FormReport;
+import qaengine.contracts.WorkerContracts.NavigationReport;
+import qaengine.contracts.WorkerContracts.TableReport;
+import qaengine.core.discovery.PageInventory;
+import qaengine.core.discovery.SafetyClassifier;
 import qaengine.contracts.WorkerContracts.FindingReport;
 import qaengine.contracts.WorkerContracts.Locator;
 import qaengine.core.auth.AuthenticationResult;
@@ -34,6 +43,22 @@ final class Sanitizer {
         java.util.Map<String, Locator> suggestions = new java.util.LinkedHashMap<>();
         r.suggestions().forEach((k, v) -> suggestions.put(k, new Locator(v.strategy().name(), redactor.redact(v.value()), v.name() == null ? null : redactor.redact(v.name()))));
         return new AuthReport(status, r.failure() == null ? null : r.failure().name(), r.stage().name(), redactor.redact(r.detail()), r.duration().toMillis(), suggestions, signIn);
+    }
+
+    /** Names, labels, headings and addresses all come from the target's page. */
+    DiscoveredPage page(String fingerprint, int step, int depth, PageInventory p) {
+        java.util.function.Function<String, String> r = redactor::redact;
+        var actions = SafetyClassifier.classify(p.actions()).stream().map(c -> {
+            var a = c.action();
+            Locator locator = a.locator().isEmpty() ? null : new Locator(a.locator().get("strategy"), r.apply(a.locator().get("value")), a.locator().get("name") == null ? null : r.apply(a.locator().get("name")));
+            return new ActionReport(a.kind(), a.role(), r.apply(a.name()), a.href() == null ? null : r.apply(a.href()), locator, c.safety().name(), c.reason());
+        }).toList();
+        return new DiscoveredPage(fingerprint, step, depth, r.apply(p.url()), r.apply(p.title()), p.headings().stream().map(r).toList(),
+                p.navigation().stream().map(n -> new NavigationReport(r.apply(n.name()), n.links().stream().map(r).toList())).toList(),
+                p.forms().stream().map(f -> new FormReport(r.apply(f.name()), f.method(), r.apply(f.action()),
+                        f.fields().stream().map(x -> new FieldReport(r.apply(x.label()), r.apply(x.name()), x.type(), x.required(), x.labelled())).toList(), r.apply(f.submitLabel()))).toList(),
+                p.tables().stream().map(t -> new TableReport(r.apply(t.caption()), t.headers().stream().map(r).toList(), t.rows())).toList(),
+                p.dialogs().stream().map(d -> new DialogReport(r.apply(d.name()), d.open())).toList(), actions);
     }
 
     FindingReport finding(Observation o) {

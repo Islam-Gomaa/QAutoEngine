@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -333,6 +334,78 @@ class WorkerApiTest extends IntegrationTestBase {
         String view = mvc.perform(get("/api/v1/projects/" + project + "/runs/" + run + "/auth").with(as(admin))).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         assertTrue(view.indexOf("\"signIn\":1") < view.indexOf("\"signIn\":2"), view);
         assertEquals(1L, db.sql("SELECT count(*) FROM audit_event WHERE action = 'AUTH_ATTEMPT_RECORDED' AND detail LIKE 'signed in again:%'").query(Long.class).single());
+    }
+
+    static String page(String fingerprint, int depth, String url, String actionsJson) {
+        return "{\"fingerprint\":\"" + fingerprint + "\",\"step\":" + (depth + 1) + ",\"depth\":" + depth + ",\"url\":\"" + url + "\",\"title\":\"Users\",\"headings\":[\"Users\"],"
+                + "\"navigation\":[{\"name\":\"Console\",\"links\":[\"Users\",\"Billing\"]}],"
+                + "\"forms\":[{\"name\":\"Invite\",\"method\":\"post\",\"action\":\"/invitations\",\"submitLabel\":\"Invite user\",\"fields\":["
+                + "{\"label\":\"Email\",\"name\":\"email\",\"type\":\"email\",\"required\":true,\"labelled\":true},{\"label\":\"\",\"name\":\"nick\",\"type\":\"text\",\"required\":false,\"labelled\":false}]}],"
+                + "\"tables\":[{\"caption\":\"Team\",\"headers\":[\"Name\"],\"rows\":3}],\"dialogs\":[{\"name\":\"Remove user\",\"open\":false}],\"actions\":" + actionsJson + "}";
+    }
+
+    static final String ACTIONS = "[{\"kind\":\"LINK\",\"role\":\"link\",\"name\":\"Billing\",\"href\":\"http://127.0.0.1:1/billing\",\"locator\":{\"strategy\":\"ROLE\",\"value\":\"link\",\"name\":\"Billing\"},\"safety\":\"READ_ONLY\",\"reason\":\"navigates\"},"
+            + "{\"kind\":\"SUBMIT\",\"role\":\"button\",\"name\":\"Invite user\",\"safety\":\"SENSITIVE\",\"reason\":\"named invite\"},"
+            + "{\"kind\":\"BUTTON\",\"role\":\"button\",\"name\":\"Delete user\",\"locator\":{\"strategy\":\"TEST_ID\",\"value\":\"delete-user\"},\"safety\":\"DESTRUCTIVE\",\"reason\":\"named delete\"}]";
+
+    org.springframework.test.web.servlet.ResultActions report(String token, String path, String body) throws Exception {
+        return mvc.perform(post("/internal/v1/jobs/" + job + path).header("Authorization", "Bearer " + token).contentType(MediaType.APPLICATION_JSON).content(body));
+    }
+
+    @Test void discoveryKeepsEachPageOnceRefusesWhatACorrectWorkerNeverSendsAndMintsNoRegressionCases() throws Exception {
+        db.sql("UPDATE test_run SET kind = 'DISCOVERY' WHERE id = ?").param(run).update();
+        String token = claim();
+        report(token, "/discovery/pages", page("aa11", 0, "http://127.0.0.1:1/users", ACTIONS)).andExpect(status().isNoContent());
+        report(token, "/discovery/pages", page("aa11", 0, "http://127.0.0.1:1/users", ACTIONS)).andExpect(status().isNoContent());
+        report(token, "/discovery/pages", page("bb22", 1, "http://127.0.0.1:1/billing", "[]")).andExpect(status().isNoContent());
+        assertEquals(2L, db.sql("SELECT count(*) FROM discovered_page WHERE run_id = ?").param(run).query(Long.class).single(), "a state is kept once");
+        assertEquals(3L, db.sql("SELECT count(*) FROM discovered_action").query(Long.class).single());
+
+        report(token, "/discovery/pages", page("cc33", 0, "x", ACTIONS.replace("DESTRUCTIVE", "HARMLESS"))).andExpect(status().isBadRequest());
+        report(token, "/discovery/pages", page("cc33", 0, "x", ACTIONS.replace("\"SUBMIT\"", "\"SCRIPT\""))).andExpect(status().isBadRequest());
+        report(token, "/discovery/pages", page("cc33", 0, "x", ACTIONS.replace("\"TEST_ID\"", "\"XPATH\""))).andExpect(status().isBadRequest());
+        report(token, "/discovery/pages", page("not-hex'--", 0, "x", "[]")).andExpect(status().isBadRequest());
+        String many = "[" + String.join(",", java.util.Collections.nCopies(201, "{\"kind\":\"LINK\",\"name\":\"x\",\"safety\":\"READ_ONLY\",\"reason\":\"r\"}")) + "]";
+        report(token, "/discovery/pages", page("dd44", 0, "x", many)).andExpect(status().isBadRequest());
+        report(token, "/discovery/edges", "[{\"from\":\"aa11\",\"to\":\"bb22\",\"via\":\"Billing\"},{\"from\":\"aa11\",\"to\":\"bb22\",\"via\":\"Billing\"}]").andExpect(status().isNoContent());
+        report(token, "/discovery/edges", "[{\"from\":\"aa11\",\"to\":\"<script>\",\"via\":\"x\"}]").andExpect(status().isBadRequest());
+
+        mvc.perform(post("/internal/v1/jobs/" + job + "/start").header("Authorization", "Bearer " + token)).andExpect(status().isNoContent());
+        db.sql("INSERT INTO run_step (organization_id, run_id, attempt, sequence, parent, kind, url, verdict) VALUES (?,?,1,1,0,'NAVIGATE_LINK','http://127.0.0.1:1/users','PASS')").params(org, run).update();
+        report(token, "/complete", "{\"outcome\":\"SUCCEEDED\",\"stopReason\":\"EXHAUSTED\",\"steps\":1,\"states\":{}}").andExpect(status().isNoContent());
+        assertEquals(0L, db.sql("SELECT count(*) FROM test_case WHERE organization_id = ?").param(org).query(Long.class).single(), "discovery mints no regression cases");
+
+        String summary = mvc.perform(get("/api/v1/projects/" + project + "/runs/" + run + "/discovery").with(as(admin))).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        var sj = new tools.jackson.databind.ObjectMapper().readTree(summary);
+        assertEquals(2, sj.get("pages").asInt());
+        assertEquals(2, sj.get("forms").asInt());
+        assertEquals(4, sj.get("fields").asInt());
+        assertEquals(2, sj.get("requiredFields").asInt());
+        assertEquals(2, sj.get("unlabelledFields").asInt());
+        assertEquals(1, sj.get("links").asInt());
+        assertEquals(1, sj.get("actions").get("DESTRUCTIVE").asInt());
+        assertEquals(1, sj.get("actions").get("SENSITIVE").asInt());
+        assertEquals("http://127.0.0.1:1/users", sj.get("pageRows").get(0).get("url").asString(), "shallowest first");
+
+        String pageId = sj.get("pageRows").get(0).get("id").asString();
+        String detail = mvc.perform(get("/api/v1/projects/" + project + "/runs/" + run + "/discovery/pages/" + pageId).with(as(admin))).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        var dj = new tools.jackson.databind.ObjectMapper().readTree(detail);
+        assertEquals("Invite", dj.get("structure").get("forms").get(0).get("name").asString());
+        assertEquals("DESTRUCTIVE", dj.get("actions").get(2).get("safety").asString());
+        assertEquals("delete-user", dj.get("actions").get(2).get("locator").get("value").asString());
+        assertEquals("http://127.0.0.1:1/billing", dj.get("linksTo").get(0).get("url").asString());
+        mvc.perform(get("/api/v1/projects/" + project + "/runs/" + run + "/discovery").with(as(outsider))).andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/projects/" + project + "/runs/" + run + "/discovery/pages/" + UUID.randomUUID()).with(as(admin))).andExpect(status().isNotFound());
+    }
+
+    @Test void onlyADiscoveryRunReportsPagesAndDiscoveryIsForWebWithoutASuite() throws Exception {
+        String token = claim();
+        report(token, "/discovery/pages", page("aa11", 0, "x", "[]")).andExpect(status().isConflict());
+        String created = mvc.perform(post("/api/v1/projects/" + project + "/runs").with(as(admin)).with(csrf()).header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"environmentId\":\"" + env + "\",\"kind\":\"DISCOVERY\"}")).andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        assertTrue(created.contains("\"kind\":\"DISCOVERY\""), created);
+        mvc.perform(post("/api/v1/projects/" + project + "/runs").with(as(admin)).with(csrf()).header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"environmentId\":\"" + env + "\",\"kind\":\"DISCOVERY\",\"suiteId\":\"" + UUID.randomUUID() + "\"}")).andExpect(status().isConflict());
     }
 
     @Test void tamperingIsDetected() throws Exception {

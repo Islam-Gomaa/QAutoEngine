@@ -106,7 +106,8 @@ public class RunController {
         // The worker would refuse too. Saying so here keeps a real target from ever being queued.
         if (!qaengine.core.policy.ExecutionLock.isLocal(policy.baseUrl())) throw new ConflictException("Real targets are locked until the pre-pilot security gate passes");
         String kind = body.kind() == null ? "EXPLORATION" : body.kind();
-        if (!kind.equals("EXPLORATION") && !kind.equals("AUTH_TEST")) throw new ConflictException("Unknown run kind");
+        if (!kind.equals("EXPLORATION") && !kind.equals("AUTH_TEST") && !kind.equals("DISCOVERY")) throw new ConflictException("Unknown run kind");
+        if (kind.equals("DISCOVERY") && (body.suiteId() != null || !"WEB".equals(policy.channel()))) throw new ConflictException("Discovery explores a web application, without a suite");
         boolean test = kind.equals("AUTH_TEST");
         if (test && body.suiteId() != null) throw new ConflictException("A connection test does not run a suite");
         if (!test && body.authProfileId() != null) throw new ConflictException("Only a connection test can choose a sign-in profile");
