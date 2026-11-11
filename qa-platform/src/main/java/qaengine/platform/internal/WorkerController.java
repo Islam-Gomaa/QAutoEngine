@@ -93,12 +93,13 @@ public class WorkerController {
         return ResponseEntity.ok(db.sql("""
                 SELECT e.base_url, r.seed, ep.mode, e.classification, ep.include_paths, ep.exclude_paths, ep.mask_selectors,
                        ep.max_actions, ep.max_pages, ep.max_depth, ep.max_minutes,
-                       e.login_method, e.login_path, e.login_submit_path, e.login_success_path,
+                       ap.method, ap.login_path, ap.submit_path, ap.success_path,
                        (SELECT array_agg(origin) FROM allowed_host h WHERE h.organization_id = e.organization_id AND h.environment_id = e.id),
                        e.channel, e.api_spec_path, e.api_slow_ms, e.api_seed_paths, r.suite_id, r.max_pages
                 FROM test_run r
                 JOIN environment e ON e.organization_id = r.organization_id AND e.id = r.environment_id
                 JOIN execution_policy ep ON ep.organization_id = e.organization_id AND ep.environment_id = e.id
+                LEFT JOIN auth_profile ap ON ap.organization_id = r.organization_id AND ap.id = r.auth_profile_id
                 WHERE r.organization_id = ? AND r.id = ?
                 """).params(c.organizationId(), c.runId()).query((rs, n) -> new JobAssignment(c.jobId(), c.runId(), c.attempt(), token,
                 rs.getString(1), rs.getLong(2), rs.getString(3), rs.getString(4), array(rs, 16), array(rs, 5), array(rs, 6),
@@ -137,12 +138,20 @@ public class WorkerController {
                 """).params(s.organizationId(), jobId, s.attempt()).update();
         if (claimed != 1) return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         UUID run = runOf(s);
-        UUID credential = db.sql("""
-                SELECT e.login_credential_id FROM test_run r
-                JOIN environment e ON e.organization_id = r.organization_id AND e.id = r.environment_id
+        // The run's own profile, fixed when it was created. A profile or credential disabled since then is not released.
+        record Login(UUID credential, boolean usable) {}
+        Login login = db.sql("""
+                SELECT ap.credential_id, ap.enabled AND c.enabled FROM test_run r
+                JOIN auth_profile ap ON ap.organization_id = r.organization_id AND ap.id = r.auth_profile_id
+                JOIN credential c ON c.organization_id = ap.organization_id AND c.id = ap.credential_id
                 WHERE r.organization_id = ? AND r.id = ?
-                """).params(s.organizationId(), run).query(UUID.class).optional().orElse(null);
-        if (credential == null) return ResponseEntity.notFound().build();
+                """).params(s.organizationId(), run).query((rs, n) -> new Login(rs.getObject(1, UUID.class), rs.getBoolean(2))).optional().orElse(null);
+        if (login == null) return ResponseEntity.notFound().build();
+        if (!login.usable()) {
+            audit.record(s.organizationId(), "worker", "CREDENTIAL_REFUSED", login.credential().toString(), "run " + run + " attempt " + s.attempt() + ": disabled");
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+        UUID credential = login.credential();
         audit.record(s.organizationId(), "worker", "CREDENTIAL_RELEASED", credential.toString(), "run " + run + " attempt " + s.attempt());
         return ResponseEntity.ok(credentials.release(s.organizationId(), credential));
     }

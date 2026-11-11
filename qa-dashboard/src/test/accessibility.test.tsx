@@ -79,7 +79,13 @@ const routes = {
     findings: [{ runId: 'r1aaaaaa', attempt: 1, step: 2, evidence: [{ id: 'v1', type: 'SCREENSHOT', sha256: 'a'.repeat(64), size: 2048 }], reproduction: [{ sequence: 1, kind: 'OPEN_PAGE', url: '/', label: 'Home' }, { sequence: 2, kind: 'NAVIGATE_LINK', url: '/cart', label: 'Cart' }] }],
   },
   'GET /projects/p1/evidence': page([evidence, { ...evidence, id: 'v2', type: 'SIGNAL_LOG', legalHold: true }]),
-  'GET /projects/p1/credentials': [{ id: 'k1', name: 'login', createdAt: at, usedBy: ['Fixture'] }],
+  'GET /projects/p1/credentials': [
+    { id: 'k1', name: 'login', environmentId: 'e1', environmentName: 'Fixture', shared: false, enabled: true, usernameHint: 'f•••r', storedFields: ['username', 'password'], createdAt: at, updatedAt: at, usedBy: ['Fixture / Default'] },
+    { id: 'k2', name: 'legacy', environmentId: null, environmentName: null, shared: true, enabled: false, usernameHint: '', storedFields: [], createdAt: at, updatedAt: at, usedBy: [] },
+  ],
+  'GET /projects/p1/auth-profiles': [{ id: 'ap1', environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', name: 'Default', method: 'PASSWORD', credentialId: 'k1',
+    credentialName: 'login', credentialEnabled: true, credentialShared: false, usernameHint: 'f•••r', enabled: true, isDefault: true, loginPath: '/login', submitPath: '/login', successPath: null,
+    loginFlowComplete: false, mailbox: null, updatedAt: at }],
   'GET /projects/p1/login-profiles': [
     { environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', method: 'PASSWORD', credentialId: 'k1', credentialName: 'login', loginPath: '/login', submitPath: '/login', successPath: '/' },
     { environmentId: 'e3', environmentName: 'API', applicationName: 'Shop API', channel: 'API', method: null, credentialId: null, credentialName: null, loginPath: null, submitPath: null, successPath: null },
@@ -190,7 +196,44 @@ describe('accessibility, WCAG 2.2 A and AA', () => {
     await userEvent.type(screen.getByLabelText(/Environment name/), 'Fixture');
     await userEvent.click(screen.getByRole('button', { name: 'Use local fixture' }));
     await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await screen.findByRole('heading', { level: 2, name: 'Sign-in' });
+    await userEvent.click(screen.getByLabelText('Sign-in for Fixture'));
+    await userEvent.click(await screen.findByRole('option', { name: 'Username, password and email OTP' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await screen.findByText('Confirm the mailbox is dedicated to testing.');
+    expect(await violations()).toEqual([]);
+    await userEvent.type(screen.getByRole('textbox', { name: /^Username/ }), 'qa-bot');
+    await userEvent.type(screen.getByLabelText(/^Password/), 'pw');
+    await userEvent.type(screen.getByLabelText(/^Mailbox address/), 'otp@mail.example');
+    await userEvent.type(screen.getByLabelText(/^IMAP server/), 'imap.mail.example');
+    await userEvent.type(screen.getByLabelText(/^Mailbox password/), 'mb');
+    await userEvent.click(screen.getByLabelText('This is a dedicated test mailbox I am authorized to use'));
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
     await screen.findByRole('heading', { level: 2, name: 'Review and save' });
+    expect(await violations()).toEqual([]);
+  });
+
+  it('the login profile form has no violations, with the email OTP mailbox and its errors showing', async () => {
+    server(routes);
+    mount(<App />, '/login-profiles');
+    await loaded();
+    await userEvent.click((await screen.findAllByRole('button', { name: 'Configure' }))[0]);
+    await userEvent.click(await screen.findByLabelText('Method'));
+    await userEvent.click(await screen.findByRole('option', { name: 'Password and email OTP' }));
+    await userEvent.type(screen.getByLabelText(/^Mailbox address/), 'otp@mail.example');
+    await userEvent.type(screen.getByLabelText(/^IMAP server/), 'imap.mail.example');
+    await userEvent.type(screen.getByLabelText(/^Mailbox password/), 'mb');
+    await userEvent.click(screen.getByRole('button', { name: 'Save profile' }));
+    await screen.findByText('Check the highlighted mailbox fields.');
+    expect(await violations()).toEqual([]);
+  });
+
+  it('the credential edit form has no violations', async () => {
+    server(routes);
+    mount(<App />, '/credentials');
+    await loaded();
+    await userEvent.click((await screen.findAllByRole('button', { name: 'Edit' }))[0]);
+    await screen.findByRole('dialog', { name: 'Edit login' });
     expect(await violations()).toEqual([]);
   });
 

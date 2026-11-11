@@ -12,15 +12,15 @@ final class TotpSeal {
         return "totp/" + user;
     }
 
-    static String seal(SecretBox box, UUID user, String seedBase64) {
+    static String seal(SecretStore box, UUID user, String seedBase64) {
         var sealed = box.seal(seedBase64, owner(user));
         var b64 = Base64.getEncoder();
         return b64.encodeToString(sealed.wrappedKey()) + "." + b64.encodeToString(sealed.ciphertext());
     }
 
-    static byte[] open(SecretBox box, UUID user, String stored) {
+    static byte[] open(SecretStore box, UUID user, String stored) {
         String[] parts = stored.split("\\.");
         var b64 = Base64.getDecoder();
-        return b64.decode(box.open(new SecretBox.Sealed(b64.decode(parts[0]), b64.decode(parts[1])), owner(user)));
+        return b64.decode(box.open(new SecretStore.Sealed(b64.decode(parts[0]), b64.decode(parts[1])), owner(user)));
     }
 }

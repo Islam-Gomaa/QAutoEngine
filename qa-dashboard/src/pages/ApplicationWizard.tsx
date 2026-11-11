@@ -5,17 +5,25 @@ import { useNavigate } from 'react-router-dom';
 import { api, ApiError, type BaseUrlCheck, type Target } from '../api';
 import { Card, DataTable, Failure, KeyValue, Mono, PageHeader, Tag } from '../design/ui';
 import { Choice, ENVIRONMENT_CLASSES, FIXTURE_URL, NeedsProject } from './shared';
+import { blankMailbox, MailboxFields, mailboxBody, mailboxProblems, METHOD_LABELS, type MailboxDraft } from './signin';
 
 /**
  * Guided setup for an application and its environments. Everything entered lives in this component's
- * state only, so moving between steps loses nothing and leaving the page keeps nothing. No secret is
- * asked for here; later steps (authentication, login flow, connection test) belong to later milestones.
+ * state only, so moving between steps loses nothing and leaving the page keeps nothing. Passwords typed
+ * on the sign-in step are sent once, with the save, and are never shown again. The login flow and the
+ * connection test are later steps that belong to later milestones.
  */
 
-const STEPS = ['Application details', 'Environments', 'Review and save'] as const;
+const STEPS = ['Application details', 'Environments', 'Sign-in', 'Review and save'] as const;
+const REVIEW = STEPS.length - 1;
+
+type SignIn = 'NONE' | 'PASSWORD' | 'PASSWORD_EMAIL_OTP';
 
 interface Details { name: string; type: 'WEB' | 'API'; description: string; active: boolean }
-interface EnvironmentDraft { key: number; name: string; classification: string; baseUrl: string; description: string; active: boolean; apiSpecPath: string }
+interface EnvironmentDraft {
+  key: number; name: string; classification: string; baseUrl: string; description: string; active: boolean; apiSpecPath: string;
+  signIn: SignIn; profileName: string; username: string; password: string; signInEnabled: boolean; mailbox: MailboxDraft;
+}
 type Errors = Record<string, string>;
 
 const label = (classification: string) => ENVIRONMENT_CLASSES.find(([v]) => v === classification)?.[1] ?? classification;
@@ -29,7 +37,15 @@ function localUrlProblem(url: string): string | null {
 }
 
 function blankEnvironment(key: number, type: Details['type']): EnvironmentDraft {
-  return { key, name: '', classification: 'QA', baseUrl: '', description: '', active: true, apiSpecPath: type === 'API' ? '/openapi.json' : '' };
+  return { key, name: '', classification: 'QA', baseUrl: '', description: '', active: true, apiSpecPath: type === 'API' ? '/openapi.json' : '',
+    signIn: 'NONE', profileName: 'Default', username: '', password: '', signInEnabled: true, mailbox: blankMailbox() };
+}
+
+/** Masks a username the way the server does, so the review shows what the credential list will show. */
+function hint(username: string) {
+  const chars = [...username.trim()];
+  if (chars.length === 0) return '';
+  return chars.length <= 3 ? '•••' : `${chars[0]}•••${chars[chars.length - 1]}`;
 }
 
 function StepHeading({ index, focus }: { index: number; focus: boolean }) {
@@ -94,6 +110,43 @@ function EnvironmentsStep({ type, environments, set, errors, add }: { type: Deta
   );
 }
 
+function SignInStep({ type, environments, set, errors }: { type: Details['type']; environments: EnvironmentDraft[]; set: (key: number, e: Partial<EnvironmentDraft>) => void; errors: Errors }) {
+  if (type === 'API') return <Alert severity="info">API applications sign in with a token. Add it after saving, under Credentials and Login Profiles.</Alert>;
+  return (
+    <Stack spacing={2}>
+      <Alert severity="info">Each environment gets its own credential, used for that environment only. Passwords are sealed when you save and cannot be shown again.</Alert>
+      {environments.map((e) => (
+        <Box key={e.key} component="section" aria-labelledby={`signin-${e.key}`} sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5, p: 2 }}>
+          <Typography id={`signin-${e.key}`} variant="h3" component="h3" sx={{ fontSize: 15, fontWeight: 600, mb: 1.5 }}>{e.name.trim()}</Typography>
+          <Stack spacing={2} sx={{ maxWidth: 640 }}>
+            <Choice label={`Sign-in for ${e.name.trim()}`} value={e.signIn} onChange={(x) => set(e.key, { signIn: x as SignIn })}
+              options={[['NONE', 'None: test public pages only'], ['PASSWORD', METHOD_LABELS.PASSWORD], ['PASSWORD_EMAIL_OTP', METHOD_LABELS.PASSWORD_EMAIL_OTP]]} />
+            {e.signIn !== 'NONE' && <>
+              <TextField label="Profile name" value={e.profileName} onChange={(x) => set(e.key, { profileName: x.target.value })} />
+              <TextField label="Username" required autoComplete="off" value={e.username} onChange={(x) => set(e.key, { username: x.target.value })}
+                error={!!errors[`${e.key}.username`]} helperText={errors[`${e.key}.username`] ?? 'A dedicated test account, not a person\'s own account.'} />
+              <TextField label="Password" type="password" required autoComplete="new-password" value={e.password} onChange={(x) => set(e.key, { password: x.target.value })}
+                error={!!errors[`${e.key}.password`]} helperText={errors[`${e.key}.password`]} />
+              <FormControlLabel control={<Switch checked={e.signInEnabled} onChange={(x) => set(e.key, { signInEnabled: x.target.checked })} />} label="Sign-in enabled" />
+              {e.signIn === 'PASSWORD_EMAIL_OTP' && <>
+                <Alert severity="info">Email OTP sign-in is not available yet. These settings are saved, and runs are refused until it is.</Alert>
+                <MailboxFields value={e.mailbox} set={(m) => set(e.key, { mailbox: m })} errors={errors} prefix={`${e.key}.mailbox.`} />
+              </>}
+            </>}
+          </Stack>
+        </Box>
+      ))}
+      <Typography variant="caption" color="text.secondary">Where to sign in (the login flow) is set after saving, on the Login Profiles page. Runs that need sign-in wait until it is.</Typography>
+    </Stack>
+  );
+}
+
+function signInSummary(e: EnvironmentDraft) {
+  if (e.signIn === 'NONE') return 'None';
+  const who = hint(e.username);
+  return `${METHOD_LABELS[e.signIn]}${who ? `, ${who}` : ''}${e.signInEnabled ? '' : ', disabled'}`;
+}
+
 function ReviewStep({ details, environments, checks }: { details: Details; environments: EnvironmentDraft[]; checks: Record<number, BaseUrlCheck> }) {
   return (
     <Stack spacing={2}>
@@ -106,10 +159,11 @@ function ReviewStep({ details, environments, checks }: { details: Details; envir
           { key: 'url', label: 'Base URL, as it will be saved', render: (e) => <Mono>{checks[e.key]?.baseUrl ?? e.baseUrl}</Mono> },
           { key: 'run', label: 'Execution', render: (e) => (checks[e.key]?.executable ? <Tag>Local fixture</Tag> : <Tag title="Execution stays locked until the pre-pilot security gate passes.">Real target, locked</Tag>) },
           { key: 'policy', label: 'Policy', render: () => <Tag title="Reads only. Mutation is disabled.">Read-only</Tag> },
+          { key: 'signin', label: 'Sign-in', render: (e) => signInSummary(e) },
           { key: 'status', label: 'Status', render: (e) => (e.active && details.active ? 'Active' : 'Inactive') },
         ]} />
       </Card>
-      <Alert severity="info">Saving creates the application and all its environments together. If any part is refused, nothing is saved.</Alert>
+      <Alert severity="info">Saving creates the application, its environments and their sign-in credentials together. If any part is refused, nothing is saved.</Alert>
     </Stack>
   );
 }
@@ -156,7 +210,25 @@ function Wizard({ project }: { project: string }) {
     return found;
   };
 
+  const signInErrors = (): Errors => {
+    const found: Errors = {};
+    if (details.type === 'API') return found;
+    for (const e of environments) {
+      if (e.signIn === 'NONE') continue;
+      if (!e.username.trim()) found[`${e.key}.username`] = 'Enter the username.';
+      if (!e.password) found[`${e.key}.password`] = 'Enter the password.';
+      if (e.signIn === 'PASSWORD_EMAIL_OTP') for (const [k, v] of Object.entries(mailboxProblems(e.mailbox))) found[`${e.key}.mailbox.${k}`] = v;
+    }
+    return found;
+  };
+
   const next = async () => {
+    if (step === 2) {
+      const found = signInErrors();
+      setErrors(found);
+      if (Object.keys(found).length === 0) go(REVIEW);
+      return;
+    }
     if (step === 0) {
       const found = detailsErrors();
       setErrors(found);
@@ -196,6 +268,10 @@ function Wizard({ project }: { project: string }) {
         environments: environments.map((e) => ({
           name: e.name.trim(), classification: e.classification, baseUrl: checks[e.key]?.baseUrl ?? e.baseUrl.trim(), description: e.description.trim(),
           active: e.active, channel: details.type, apiSpecPath: details.type === 'API' && e.apiSpecPath.trim() ? e.apiSpecPath.trim() : null,
+          ...(details.type === 'WEB' && e.signIn !== 'NONE' ? { authentication: {
+            name: e.profileName.trim() || 'Default', method: e.signIn, username: e.username.trim(), password: e.password, enabled: e.signInEnabled,
+            mailbox: e.signIn === 'PASSWORD_EMAIL_OTP' ? mailboxBody(e.mailbox) : null,
+          } } : {}),
         })),
       });
       await Promise.all([client.invalidateQueries({ queryKey: ['targets', project] }), client.invalidateQueries({ queryKey: ['environments', project] })]);
@@ -209,25 +285,26 @@ function Wizard({ project }: { project: string }) {
 
   return (
     <>
-      <PageHeader title="Set up application" description="Describe the application and where it runs. Authentication and connection tests are added in a later release." />
+      <PageHeader title="Set up application" description="Describe the application, where it runs, and how runs sign in. The login flow and connection tests come in a later release." />
       <Stepper activeStep={step} sx={{ mb: 3 }}>
         {STEPS.map((s, i) => <Step key={s} completed={i < step}><StepLabel>{s}</StepLabel></Step>)}
       </Stepper>
       <Card>
-        <form onSubmit={(e) => { e.preventDefault(); void (step === 2 ? save() : next()); }} noValidate>
+        <form onSubmit={(e) => { e.preventDefault(); void (step === REVIEW ? save() : next()); }} noValidate>
           <StepHeading index={step} focus={moved} />
           <ErrorSummary errors={errors} />
           {saveError ? <Box sx={{ mb: 2 }}><Failure error={saveError} /></Box> : null}
           {step === 0 && <DetailsStep details={details} set={setDetailsAndApiPaths} errors={errors} />}
           {step === 1 && <EnvironmentsStep type={details.type} environments={environments} set={setEnvironment} errors={errors}
             add={() => { setEnvironments((all) => [...all, blankEnvironment(nextKey, details.type)]); setNextKey(nextKey + 1); }} />}
-          {step === 2 && <ReviewStep details={details} environments={environments} checks={checks} />}
+          {step === 2 && <SignInStep type={details.type} environments={environments} set={setEnvironment} errors={errors} />}
+          {step === REVIEW && <ReviewStep details={details} environments={environments} checks={checks} />}
           <Stack direction="row" spacing={1} justifyContent="space-between" sx={{ mt: 3 }}>
             <Button onClick={() => navigate('/applications')}>Cancel</Button>
             <Stack direction="row" spacing={1}>
               {step > 0 && <Button variant="outlined" disabled={busy} onClick={() => go(step - 1)}>Back</Button>}
               <Button type="submit" variant="contained" disabled={busy} startIcon={busy ? <CircularProgress size={13} color="inherit" /> : undefined}>
-                {step === 2 ? 'Save application' : 'Next'}
+                {step === REVIEW ? 'Save application' : 'Next'}
               </Button>
             </Stack>
           </Stack>

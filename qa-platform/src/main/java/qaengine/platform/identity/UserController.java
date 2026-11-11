@@ -46,9 +46,9 @@ public class UserController {
     private final Access access;
     private final PasswordEncoder encoder;
     private final AuditLog audit;
-    private final SecretBox box;
+    private final SecretStore box;
 
-    public UserController(JdbcClient db, Access access, PasswordEncoder encoder, AuditLog audit, SecretBox box) {
+    public UserController(JdbcClient db, Access access, PasswordEncoder encoder, AuditLog audit, SecretStore box) {
         this.db = db;
         this.access = access;
         this.encoder = encoder;

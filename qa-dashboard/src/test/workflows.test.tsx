@@ -13,6 +13,8 @@ const dashboard = {
 const shell = { 'GET /notifications': { items: [], unread: 0 }, 'GET /dashboard': dashboard };
 const env = (over: object) => ({ id: 'e1', targetId: 't1', targetName: 'Shop', name: 'Fixture', classification: 'LOCAL', baseUrl: 'http://fixture.qa.internal:8090/', mode: 'READ_ONLY', channel: 'WEB', description: '', active: true, applicationActive: true, executable: true, includePaths: [], excludePaths: [], apiSpecPath: null, apiSlowMillis: 1000, loginMethod: null, credentialName: null, lastRunStatus: null, lastRunAt: null, ...over });
 const signedIn = (me = admin, role: string | null = 'PROJECT_ADMIN') => ({ ...shell, 'GET /auth/me': me, 'GET /projects': [project(role)] });
+const credential = (over: object) => ({ id: 'c1', name: 'login', environmentId: 'e1', environmentName: 'Fixture', shared: false, enabled: true, usernameHint: 'f•••r',
+  storedFields: ['username', 'password'], createdAt: '2026-11-01T00:00:00Z', updatedAt: '2026-11-02T00:00:00Z', usedBy: ['Fixture / Default'], ...over });
 
 describe('signing in', () => {
   it('reports a refused login without detail', async () => {
@@ -153,7 +155,7 @@ describe('application setup', () => {
     mount(<App />, '/applications');
     await userEvent.click(await screen.findByRole('link', { name: 'Set up application' }));
     expect(await screen.findByRole('heading', { level: 1, name: 'Set up application' })).toBeInTheDocument();
-    expect(screen.getByText('Step 1 of 3')).toBeInTheDocument();
+    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
   });
 
   it('is only for project admins', async () => {
@@ -208,7 +210,7 @@ describe('application setup', () => {
     expect(await screen.findByText('Each environment needs a different name.')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Remove environment 2' }));
     await next();
-    expect(await screen.findByRole('heading', { level: 2, name: 'Review and save' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 2, name: 'Sign-in' })).toBeInTheDocument();
   });
 
   it('offers UAT, and not production', async () => {
@@ -234,6 +236,8 @@ describe('application setup', () => {
     await userEvent.click(await screen.findByRole('option', { name: 'UAT' }));
     await userEvent.type(screen.getAllByLabelText(/Base URL/)[1], 'HTTPS://UAT.Shop.Example');
     await userEvent.click(screen.getAllByLabelText('Active')[1]);
+    await next();
+    await screen.findByRole('heading', { level: 2, name: 'Sign-in' });
     await next();
 
     await screen.findByRole('heading', { level: 2, name: 'Review and save' });
@@ -265,9 +269,97 @@ describe('application setup', () => {
     await userEvent.type(await screen.findByLabelText(/Environment name/), 'Fixture');
     await userEvent.click(screen.getByRole('button', { name: 'Use local fixture' }));
     await next();
+    await screen.findByRole('heading', { level: 2, name: 'Sign-in' });
+    await next();
     await userEvent.click(await screen.findByRole('button', { name: 'Save application' }));
     expect(await screen.findByText(/Request conflicts with existing data/)).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 2, name: 'Review and save' })).toBeInTheDocument();
+  });
+});
+
+describe('application setup: sign-in', () => {
+  const check = (c: Call) => ({ baseUrl: (c.body as { baseUrl: string }).baseUrl, origin: '', executable: false });
+  const routes = { ...signedIn(), 'GET /projects/p1/targets': [], 'GET /projects/p1/environments': [], 'POST /projects/p1/base-url-check': check };
+  const next = () => userEvent.click(screen.getByRole('button', { name: 'Next' }));
+  async function toSignIn() {
+    await userEvent.type(await screen.findByLabelText(/Application name/), 'Shop');
+    await next();
+    await userEvent.type(await screen.findByLabelText(/Environment name/), 'Staging');
+    await userEvent.type(screen.getByLabelText(/Base URL/), 'https://staging.shop.example/');
+    await next();
+    await screen.findByRole('heading', { level: 2, name: 'Sign-in' });
+  }
+
+  it('needs a username and password, and a complete mailbox for email OTP', async () => {
+    server(routes);
+    mount(<App />, '/applications/new');
+    await toSignIn();
+    await userEvent.click(screen.getByLabelText('Sign-in for Staging'));
+    await userEvent.click(await screen.findByRole('option', { name: 'Username, password and email OTP' }));
+    expect(screen.getByLabelText(/^Password/)).toHaveAttribute('type', 'password');
+    expect(screen.getByLabelText(/^Mailbox password/)).toHaveAttribute('type', 'password');
+    await next();
+    for (const text of ['Enter the username.', 'Enter the password.', 'Enter the mailbox address.', 'Enter the mail server.', 'Enter the mailbox password.', 'Confirm the mailbox is dedicated to testing.']) {
+      expect(await screen.findByText(text)).toBeInTheDocument();
+    }
+    expect(screen.getByRole('heading', { level: 2, name: 'Sign-in' })).toBeInTheDocument();
+  });
+
+  it('reviews a mask, never the password, and sends the sign-in once with the save', async () => {
+    const calls = server({ ...routes, 'POST /projects/p1/targets': { id: 't9', name: 'Shop', type: 'WEB', description: '', active: true } });
+    mount(<App />, '/applications/new');
+    await toSignIn();
+    await userEvent.click(screen.getByLabelText('Sign-in for Staging'));
+    await userEvent.click(await screen.findByRole('option', { name: 'Username and password' }));
+    await userEvent.type(screen.getByRole('textbox', { name: /^Username/ }), 'qa-bot@shop.example');
+    await userEvent.type(screen.getByLabelText(/^Password/), 'pw-canary-1');
+    await next();
+    const row = (await screen.findAllByTestId('review-environment'))[0];
+    expect(row).toHaveTextContent('Username and password, q•••e');
+    expect(document.body.textContent).not.toContain('pw-canary-1');
+    expect(document.body.textContent).not.toContain('qa-bot@shop.example');
+    await userEvent.click(screen.getByRole('button', { name: 'Save application' }));
+    await screen.findByRole('heading', { level: 1, name: 'Applications & Environments' });
+    const saves = calls.filter((c) => c.method === 'POST' && c.path === '/projects/p1/targets');
+    expect(saves).toHaveLength(1);
+    expect((saves[0].body as { environments: unknown[] }).environments[0]).toMatchObject({
+      authentication: { name: 'Default', method: 'PASSWORD', username: 'qa-bot@shop.example', password: 'pw-canary-1', enabled: true, mailbox: null },
+    });
+    expect(calls.filter((c) => JSON.stringify(c.body ?? '').includes('pw-canary-1'))).toHaveLength(1);
+  });
+
+  it('sends the mailbox settings for email OTP', async () => {
+    const calls = server({ ...routes, 'POST /projects/p1/targets': { id: 't9', name: 'Shop', type: 'WEB', description: '', active: true } });
+    mount(<App />, '/applications/new');
+    await toSignIn();
+    await userEvent.click(screen.getByLabelText('Sign-in for Staging'));
+    await userEvent.click(await screen.findByRole('option', { name: 'Username, password and email OTP' }));
+    await userEvent.type(screen.getByRole('textbox', { name: /^Username/ }), 'qa-bot');
+    await userEvent.type(screen.getByLabelText(/^Password/), 'pw');
+    await userEvent.type(screen.getByLabelText(/^Mailbox address/), 'otp@mail.example');
+    await userEvent.type(screen.getByLabelText(/^IMAP server/), 'imap.mail.example');
+    await userEvent.type(screen.getByLabelText(/^Mailbox password/), 'mb');
+    await userEvent.click(screen.getByLabelText('This is a dedicated test mailbox I am authorized to use'));
+    await next();
+    await userEvent.click(await screen.findByRole('button', { name: 'Save application' }));
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.path === '/projects/p1/targets')).toBe(true));
+    const body = calls.find((c) => c.method === 'POST' && c.path === '/projects/p1/targets')!.body as { environments: { authentication: { mailbox: object } }[] };
+    expect(body.environments[0].authentication.mailbox).toEqual({ address: 'otp@mail.example', host: 'imap.mail.example', security: 'IMAPS', password: 'mb', folder: 'INBOX',
+      senderFilter: '', subjectFilter: '', codePattern: '\\b(\\d{6})\\b', timeoutSeconds: 120, pollSeconds: 5, dedicatedMailboxConfirmed: true });
+  });
+
+  it('does not ask an API application for a password', async () => {
+    server(routes);
+    mount(<App />, '/applications/new');
+    await userEvent.type(await screen.findByLabelText(/Application name/), 'Shop API');
+    await userEvent.click(screen.getByLabelText('Application type'));
+    await userEvent.click(await screen.findByRole('option', { name: 'API' }));
+    await next();
+    await userEvent.type(await screen.findByLabelText(/Environment name/), 'Staging');
+    await userEvent.type(screen.getByLabelText(/Base URL/), 'https://api.shop.example/');
+    await next();
+    expect(await screen.findByText(/API applications sign in with a token/)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Password/)).toBeNull();
   });
 });
 
@@ -346,13 +438,45 @@ describe('defects', () => {
 
 describe('credentials', () => {
   it('lists names only and clears nothing into the page', async () => {
-    server({ ...signedIn(), 'GET /projects/p1/credentials': [{ id: 'c1', name: 'login', createdAt: '2026-11-01T00:00:00Z', usedBy: ['Fixture'] }] });
+    server({ ...signedIn(), 'GET /projects/p1/environments': [], 'GET /projects/p1/credentials': [credential({})] });
     mount(<App />, '/credentials');
     expect(await screen.findByText('login')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete' })).toBeDisabled();
   });
+  it('shows masks, binding and status, never values', async () => {
+    server({ ...signedIn(), 'GET /projects/p1/environments': [], 'GET /projects/p1/credentials': [
+      credential({}), credential({ id: 'c2', name: 'legacy', environmentId: null, environmentName: null, shared: true, enabled: false, usedBy: [] }),
+      credential({ id: 'c3', name: 'spare', environmentId: null, environmentName: null, usedBy: [], usernameHint: '', storedFields: [] }),
+    ] });
+    mount(<App />, '/credentials');
+    const rows = await screen.findAllByTestId('credential-row');
+    expect(rows[0]).toHaveTextContent('Fixture');
+    expect(rows[0]).toHaveTextContent('f•••r');
+    expect(rows[0]).toHaveTextContent('Username, Password');
+    expect(rows[1]).toHaveTextContent('Shared, legacy');
+    expect(rows[1]).toHaveTextContent('Disabled');
+    expect(rows[2]).toHaveTextContent('Not bound yet');
+  });
+  it('edits by sending only what was typed, so blank fields keep their values', async () => {
+    const calls = server({ ...signedIn(), 'GET /projects/p1/environments': [], 'GET /projects/p1/credentials': [credential({})], 'PUT /projects/p1/credentials/c1': credential({}) });
+    mount(<App />, '/credentials');
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Edit login' });
+    expect(within(dialog).getByLabelText('Password')).toHaveValue('');
+    expect(within(dialog).getAllByText('Leave blank to keep the current value.').length).toBeGreaterThan(0);
+    await userEvent.type(within(dialog).getByLabelText('Password'), 'new-secret');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toEqual({ name: 'login', username: null, password: 'new-secret', totpSeed: null, cookieName: null, cookieValue: null, lowPrivilegeToken: null }));
+  });
+  it('disables a credential only after confirming', async () => {
+    const calls = server({ ...signedIn(), 'GET /projects/p1/environments': [], 'GET /projects/p1/credentials': [credential({})], 'POST /projects/p1/credentials/c1/disable': credential({ enabled: false }) });
+    mount(<App />, '/credentials');
+    await userEvent.click(await screen.findByRole('button', { name: 'Disable' }));
+    await userEvent.click(within(await screen.findByRole('dialog', { name: 'Disable credential' })).getByRole('button', { name: 'Disable' }));
+    await waitFor(() => expect(calls.some((c) => c.path === '/projects/p1/credentials/c1/disable')).toBe(true));
+  });
   it('sends what was typed and uses password fields', async () => {
-    const calls = server({ ...signedIn(), 'GET /projects/p1/credentials': [], 'POST /projects/p1/credentials': { id: 'c1' } });
+    const calls = server({ ...signedIn(), 'GET /projects/p1/environments': [env({})], 'GET /projects/p1/credentials': [], 'POST /projects/p1/credentials': credential({}) });
     mount(<App />, '/credentials');
     await userEvent.click(await screen.findByRole('button', { name: 'New credential' }));
     await userEvent.type(await screen.findByLabelText(/Credential name/), 'login');
@@ -360,7 +484,73 @@ describe('credentials', () => {
     expect(secret).toHaveAttribute('type', 'password');
     await userEvent.type(secret, 's3cret');
     await userEvent.click(screen.getByRole('button', { name: 'Save credential' }));
-    await waitFor(() => expect(calls.find((c) => c.method === 'POST')?.body).toMatchObject({ name: 'login', password: 's3cret' }));
+    await waitFor(() => expect(calls.find((c) => c.method === 'POST')?.body).toMatchObject({ name: 'login', password: 's3cret', environmentId: null }));
+  });
+  it('can bind a new credential to an environment', async () => {
+    const calls = server({ ...signedIn(), 'GET /projects/p1/environments': [env({})], 'GET /projects/p1/credentials': [], 'POST /projects/p1/credentials': credential({}) });
+    mount(<App />, '/credentials');
+    await userEvent.click(await screen.findByRole('button', { name: 'New credential' }));
+    await userEvent.type(await screen.findByLabelText(/Credential name/), 'login');
+    await userEvent.click(screen.getByLabelText('Environment'));
+    await userEvent.click(await screen.findByRole('option', { name: 'Shop / Fixture' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Save credential' }));
+    await waitFor(() => expect(calls.find((c) => c.method === 'POST')?.body).toMatchObject({ environmentId: 'e1' }));
+  });
+});
+
+describe('login profiles', () => {
+  const row = { environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', method: 'PASSWORD', credentialId: 'c1', credentialName: 'login', loginPath: '/login', submitPath: '/session', successPath: null };
+  const profile = { id: 'ap1', environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', name: 'Default', method: 'PASSWORD', credentialId: 'c1', credentialName: 'login',
+    credentialEnabled: true, credentialShared: false, usernameHint: 'f•••r', enabled: true, isDefault: true, loginPath: '/login', submitPath: '/session', successPath: null, loginFlowComplete: false, mailbox: null, updatedAt: '2026-11-01T00:00:00Z' };
+  const routes = { ...signedIn(), 'GET /projects/p1/login-profiles': [row], 'GET /projects/p1/auth-profiles': [profile],
+    'GET /projects/p1/credentials': [credential({}), credential({ id: 'c9', name: 'elsewhere', environmentId: 'e9', environmentName: 'Other' })] };
+
+  it('says when a profile cannot run yet, and offers only this environment\'s credentials', async () => {
+    server(routes);
+    mount(<App />, '/login-profiles');
+    const r = await screen.findByTestId('profile-row');
+    expect(r).toHaveTextContent('login (f•••r)');
+    expect(r).toHaveTextContent('Needs a success path');
+    await userEvent.click(within(r).getByRole('button', { name: 'Configure' }));
+    await userEvent.click(await screen.findByRole('combobox', { name: /^Credential/ }));
+    expect(await screen.findByRole('option', { name: /login/ })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /elsewhere/ })).toBeNull();
+  });
+
+  it('switches to email OTP with a mailbox, checked before anything is sent', async () => {
+    const calls = server({ ...routes, 'PUT /projects/p1/auth-profiles/ap1': profile });
+    mount(<App />, '/login-profiles');
+    await userEvent.click(within(await screen.findByTestId('profile-row')).getByRole('button', { name: 'Configure' }));
+    await userEvent.click(await screen.findByLabelText('Method'));
+    await userEvent.click(await screen.findByRole('option', { name: 'Password and email OTP' }));
+    const dialog = screen.getByRole('dialog');
+    await userEvent.type(within(dialog).getByLabelText(/^Mailbox address/), 'otp@mail.example');
+    await userEvent.type(within(dialog).getByLabelText(/^IMAP server/), 'imap.mail.example');
+    await userEvent.type(within(dialog).getByLabelText(/^Mailbox password/), 'mb');
+    // Required fields are filled; the dedicated-mailbox confirmation is not, and nothing is sent without it.
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save profile' }));
+    expect(await within(dialog).findByText('Check the highlighted mailbox fields.')).toBeInTheDocument();
+    expect(within(dialog).getByText('Confirm the mailbox is dedicated to testing.')).toBeInTheDocument();
+    expect(calls.some((c) => c.method === 'PUT')).toBe(false);
+    await userEvent.click(within(dialog).getByLabelText('This is a dedicated test mailbox I am authorized to use'));
+    await userEvent.type(within(dialog).getByLabelText(/^Path after signing in/), 'account');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save profile' }));
+    await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ name: 'Default', method: 'PASSWORD_EMAIL_OTP', credentialId: 'c1', isDefault: true,
+      mailbox: { address: 'otp@mail.example', host: 'imap.mail.example', password: 'mb', dedicatedMailboxConfirmed: true } }));
+  });
+
+  it('keeps a saved mailbox password when the field is left blank', async () => {
+    const mailbox = { address: 'otp@mail.example', host: 'imap.mail.example', security: 'IMAPS', port: 993, folder: 'INBOX', senderFilter: '', subjectFilter: '', codePattern: '\b(\d{6})\b',
+      timeoutSeconds: 120, pollSeconds: 5, dedicatedConfirmedBy: 'admin@qa.local', dedicatedConfirmedAt: '2026-11-01T00:00:00Z' };
+    const otp = { ...profile, method: 'PASSWORD_EMAIL_OTP', mailbox, successPath: '/account', loginFlowComplete: true };
+    const calls = server({ ...routes, 'GET /projects/p1/login-profiles': [{ ...row, method: 'PASSWORD_EMAIL_OTP', successPath: '/account' }], 'GET /projects/p1/auth-profiles': [otp], 'PUT /projects/p1/auth-profiles/ap1': otp });
+    mount(<App />, '/login-profiles');
+    await userEvent.click(within(await screen.findByTestId('profile-row')).getByRole('button', { name: 'Configure' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByLabelText(/^Mailbox password/)).toHaveValue('');
+    expect(within(dialog).getByText('Leave blank to keep the current password.')).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save profile' }));
+    await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ mailbox: { password: null, dedicatedMailboxConfirmed: false } }));
   });
 });
 

@@ -210,11 +210,11 @@ class ApiSecurityTest extends IntegrationTestBase {
     }
 
     @Test void loginMethodMustFitTheChannel() throws Exception {
-        String cred = credential();
-        assertEquals(409, configureLogin(channelEnvironment("API"), "PASSWORD", cred), "a password must not become a bearer token");
-        assertEquals(409, configureLogin(channelEnvironment("WEB"), "API_TOKEN", cred));
-        assertEquals(200, configureLogin(channelEnvironment("API"), "API_TOKEN", cred));
-        assertEquals(200, configureLogin(channelEnvironment("WEB"), "PASSWORD", cred));
+        // One credential per environment: a credential is bound to the first environment that uses it.
+        assertEquals(409, configureLogin(channelEnvironment("API"), "PASSWORD", credential()), "a password must not become a bearer token");
+        assertEquals(409, configureLogin(channelEnvironment("WEB"), "API_TOKEN", credential()));
+        assertEquals(200, configureLogin(channelEnvironment("API"), "API_TOKEN", credential()));
+        assertEquals(200, configureLogin(channelEnvironment("WEB"), "PASSWORD", credential()));
     }
 
     @Test void apiEnvironmentInputsAreChecked() throws Exception {

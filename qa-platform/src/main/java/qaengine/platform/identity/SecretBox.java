@@ -21,10 +21,7 @@ import org.springframework.stereotype.Component;
  * read from a Docker secret file and is never stored in the database.
  */
 @Component
-public class SecretBox {
-
-    /** A sealed value. Binding to an owner stops ciphertext being moved between records. */
-    public record Sealed(byte[] wrappedKey, byte[] ciphertext) {}
+public class SecretBox implements SecretStore {
 
     private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -49,6 +46,7 @@ public class SecretBox {
         return master;
     }
 
+    @Override
     public Sealed seal(String value, String owner) {
         try {
             KeyGenerator generator = KeyGenerator.getInstance("AES");
@@ -61,6 +59,7 @@ public class SecretBox {
         }
     }
 
+    @Override
     public String open(Sealed sealed, String owner) {
         try {
             byte[] dataKey = decrypt(master(), sealed.wrappedKey(), owner);

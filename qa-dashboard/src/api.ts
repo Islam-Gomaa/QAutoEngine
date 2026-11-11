@@ -86,7 +86,20 @@ export interface ReproStep { sequence: number; kind: string; url: string; label:
 export interface Trace { defect: Defect; findings: { runId: string; attempt: number; step: number; evidence: EvidenceLink[]; reproduction: ReproStep[] }[]; testCases: { id: string; title: string }[] }
 export interface EvidenceItem { id: string; runId: string; step: number; type: string; sha256: string; size: number; createdAt: string; expiresAt: string; legalHold: boolean; inline: boolean }
 export interface ApiMetric { operation: string; calls: number; passed: number; failed: number; blocked: number; averageMs: number; p95Ms: number; maxMs: number }
-export interface Credential { id: string; name: string; createdAt: string; usedBy: string[] }
+/** Masks and names only. No field in any response carries a secret value. */
+export interface Credential {
+  id: string; name: string; environmentId: string | null; environmentName: string | null; shared: boolean; enabled: boolean; usernameHint: string;
+  storedFields: string[]; createdAt: string; updatedAt: string; usedBy: string[];
+}
+export interface Mailbox {
+  address: string; host: string; security: 'IMAPS' | 'STARTTLS'; port: number; folder: string; senderFilter: string; subjectFilter: string; codePattern: string;
+  timeoutSeconds: number; pollSeconds: number; dedicatedConfirmedBy: string; dedicatedConfirmedAt: string;
+}
+export interface AuthProfile {
+  id: string; environmentId: string; environmentName: string; applicationName: string; channel: 'WEB' | 'API'; name: string; method: string;
+  credentialId: string; credentialName: string; credentialEnabled: boolean; credentialShared: boolean; usernameHint: string; enabled: boolean; isDefault: boolean;
+  loginPath: string | null; submitPath: string | null; successPath: string | null; loginFlowComplete: boolean; mailbox: Mailbox | null; updatedAt: string;
+}
 export interface LoginProfile {
   environmentId: string; environmentName: string; applicationName: string; channel: string; method: string | null; credentialId: string | null; credentialName: string | null;
   loginPath: string | null; submitPath: string | null; successPath: string | null;

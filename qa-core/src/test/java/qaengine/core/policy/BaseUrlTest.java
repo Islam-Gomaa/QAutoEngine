@@ -68,6 +68,14 @@ class BaseUrlTest {
     }
 
     @Test
+    void bareHostsFollowTheSameRules() {
+        assertEquals("imap.mail.example", BaseUrl.host("  IMAP.Mail.Example "));
+        for (String bad : new String[] {"", "10.0.0.1", "[::1]", "::1", "2130706433", "metadata.google.internal", "mail.example.", "mail_example.com", "mail.example:993", "imap.123"}) {
+            assertThrows(PolicyException.class, () -> BaseUrl.host(bad), bad);
+        }
+    }
+
+    @Test
     void originDropsThePathAndKeepsAnExplicitPort() {
         assertEquals("http://fixture.qa.internal:8090", BaseUrl.origin(BaseUrl.normalize("http://fixture.qa.internal:8090/x")));
         assertEquals("https://shop.example.com", BaseUrl.origin(BaseUrl.normalize("https://shop.example.com:443/x")));

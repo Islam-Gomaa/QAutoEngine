@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { Alert, Box, Button, FormControlLabel, Stack, Switch, Table, TableBody, TableCell, TableHead, TableRow, TextField, Typography } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, type Credential, type LoginProfile, type User } from '../api';
+import { api, type AuthProfile, type Credential, type Environment, type LoginProfile, type User } from '../api';
 import { Async, Card, Confirm, DataTable, dateTime, Empty, Failure, FormDialog, KeyValue, PageHeader, Tag, words } from '../design/ui';
 import { useWorkspace } from '../shell/context';
 import { Choice, NeedsProject, useForm } from './shared';
+import { blankMailbox, MailboxFields, mailboxBody, mailboxDraft, mailboxProblems, METHOD_LABELS, type MailboxDraft } from './signin';
 
 /** Mirrors Access.Level and the checks in each controller. */
 const MATRIX: [string, boolean, boolean, boolean, boolean][] = [
@@ -65,78 +66,131 @@ export function UsersPage() {
   );
 }
 
-const blank = { name: '', username: '', password: '', totpSeed: '', cookieName: '', cookieValue: '', lowPrivilegeToken: '' };
-const clean = (v: typeof blank) => Object.fromEntries(Object.entries(v).map(([k, x]) => [k, x || null]));
+const blank = { name: '', environmentId: '', username: '', password: '', totpSeed: '', cookieName: '', cookieValue: '', lowPrivilegeToken: '' };
+type Values = typeof blank;
+const clean = (v: Values) => Object.fromEntries(Object.entries(v).map(([k, x]) => [k, x || null]));
+const FIELDS: Record<string, string> = { username: 'Username', password: 'Password', totpSeed: 'TOTP seed', cookieName: 'Cookie name', cookieValue: 'Cookie value', lowPrivilegeToken: 'Low-privilege token' };
 
-function SecretFields({ v, set, kind }: { v: typeof blank; set: (x: typeof blank) => void; kind: string }) {
+/** @param keeping true when editing: every field may stay blank, which keeps the sealed value */
+function SecretFields({ v, set, kind, keeping }: { v: Values; set: (x: Values) => void; kind: string; keeping?: boolean }) {
+  const keep = keeping ? 'Leave blank to keep the current value.' : undefined;
   return (
     <>
       {kind === 'PASSWORD' && <>
-        <TextField label="Username" autoComplete="off" value={v.username} onChange={(e) => set({ ...v, username: e.target.value })} />
-        <TextField label="Password" type="password" autoComplete="new-password" value={v.password} onChange={(e) => set({ ...v, password: e.target.value })} />
-        <TextField label="TOTP seed (optional)" type="password" autoComplete="off" value={v.totpSeed} onChange={(e) => set({ ...v, totpSeed: e.target.value })} />
+        <TextField label="Username" autoComplete="off" value={v.username} onChange={(e) => set({ ...v, username: e.target.value })} helperText={keep} />
+        <TextField label="Password" type="password" autoComplete="new-password" value={v.password} onChange={(e) => set({ ...v, password: e.target.value })} helperText={keep} />
+        <TextField label="TOTP seed (optional)" type="password" autoComplete="off" value={v.totpSeed} onChange={(e) => set({ ...v, totpSeed: e.target.value })} helperText={keep} />
       </>}
       {kind === 'API_TOKEN' && <>
-        <TextField label="API token" type="password" autoComplete="off" value={v.password} onChange={(e) => set({ ...v, password: e.target.value })} />
-        <TextField label="Low-privilege token (optional)" type="password" autoComplete="off" value={v.lowPrivilegeToken} onChange={(e) => set({ ...v, lowPrivilegeToken: e.target.value })} helperText="Lets a run check that lower roles are refused." />
+        <TextField label="API token" type="password" autoComplete="off" value={v.password} onChange={(e) => set({ ...v, password: e.target.value })} helperText={keep} />
+        <TextField label="Low-privilege token (optional)" type="password" autoComplete="off" value={v.lowPrivilegeToken} onChange={(e) => set({ ...v, lowPrivilegeToken: e.target.value })} helperText={keep ?? 'Lets a run check that lower roles are refused.'} />
       </>}
       {kind === 'SESSION_IMPORT' && <>
-        <TextField label="Cookie name" autoComplete="off" value={v.cookieName} onChange={(e) => set({ ...v, cookieName: e.target.value })} />
-        <TextField label="Cookie value" type="password" autoComplete="off" value={v.cookieValue} onChange={(e) => set({ ...v, cookieValue: e.target.value })} />
+        <TextField label="Cookie name" autoComplete="off" value={v.cookieName} onChange={(e) => set({ ...v, cookieName: e.target.value })} helperText={keep} />
+        <TextField label="Cookie value" type="password" autoComplete="off" value={v.cookieValue} onChange={(e) => set({ ...v, cookieValue: e.target.value })} helperText={keep} />
       </>}
-      <Alert severity="info">Values are sealed on save and cannot be read back, here or through the API.</Alert>
+      <Alert severity="info">{keeping ? 'Only the values you type are replaced. ' : ''}Values are sealed on save and cannot be read back, here or through the API.</Alert>
     </>
   );
 }
 
 const kinds: [string, string][] = [['PASSWORD', 'Username and password'], ['API_TOKEN', 'API token'], ['SESSION_IMPORT', 'Session cookie']];
 
+function bindingOf(c: Credential) {
+  if (c.shared) return <Tag title="Several environments used this credential before credentials were bound to one environment. It keeps working until it is migrated.">Shared, legacy</Tag>;
+  return c.environmentName ?? 'Not bound yet';
+}
+
 function Credentials({ project }: { project: string }) {
   const client = useQueryClient();
   const q = useQuery({ queryKey: ['credentials', project], queryFn: () => api<Credential[]>(`/projects/${project}/credentials`) });
+  const envs = useQuery({ queryKey: ['environments', project], queryFn: () => api<Environment[]>(`/projects/${project}/environments`) });
   const [v, set] = useState(blank);
   const [kind, setKind] = useState('PASSWORD');
   const add = useForm<void>(async () => { await api(`/projects/${project}/credentials`, 'POST', clean(v)); set(blank); }, [['credentials', project]]);
-  const [rotating, setRotating] = useState<Credential | null>(null);
-  const rotate = useForm<void>(async () => { await api(`/projects/${project}/credentials/${rotating!.id}`, 'PUT', clean(v)); set(blank); setRotating(null); }, [['credentials', project]]);
+  const [editing, setEditing] = useState<Credential | null>(null);
+  const edit = useForm<void>(async () => {
+    const { environmentId: _bound, ...values } = clean(v);
+    await api(`/projects/${project}/credentials/${editing!.id}`, 'PUT', values);
+    set(blank);
+    setEditing(null);
+  }, [['credentials', project]]);
+  const refresh = () => client.invalidateQueries({ queryKey: ['credentials', project] });
   return (
     <>
-      <PageHeader title="Credentials" description="Secrets this project's runs can use. Only names are ever shown." actions={<Button variant="contained" onClick={() => { set(blank); add.show(); }}>New credential</Button>} />
+      <PageHeader title="Credentials" description="Secrets this project's runs can use. Each belongs to one environment. Only names and masks are ever shown." actions={<Button variant="contained" onClick={() => { set(blank); add.show(); }}>New credential</Button>} />
       <Card pad={false}>
         <Async q={q}>{(rows) => (rows.length === 0 ? <Empty title="No credentials">Add one to test a login or a secured API.</Empty> : (
           <DataTable label="Credentials" testId="credential-row" rows={rows} rowKey={(r) => r.id} columns={[
-            { key: 'n', label: 'Name', render: (r) => r.name }, { key: 'u', label: 'Used by', render: (r) => r.usedBy.join(', ') || 'Not used' }, { key: 'c', label: 'Created', render: (r) => dateTime(r.createdAt) },
+            { key: 'n', label: 'Name', render: (r) => r.name },
+            { key: 'e', label: 'Environment', render: (r) => bindingOf(r) },
+            { key: 'h', label: 'Username', render: (r) => r.usernameHint || 'None' },
+            { key: 's', label: 'Stored values', render: (r) => (r.storedFields.length ? r.storedFields.map((f) => FIELDS[f] ?? f).join(', ') : 'Not recorded') },
+            { key: 'u', label: 'Used by', render: (r) => r.usedBy.join(', ') || 'Not used' },
+            { key: 'st', label: 'Status', render: (r) => (r.enabled ? 'Enabled' : <Tag title="Runs that would sign in with it are refused.">Disabled</Tag>) },
+            { key: 'c', label: 'Updated', render: (r) => dateTime(r.updatedAt ?? r.createdAt) },
             { key: 'x', label: '', align: 'right', render: (r) => (
               <Stack direction="row" justifyContent="flex-end">
-                <Button onClick={() => { set(blank); rotate.show(); setRotating(r); }}>Rotate</Button>
-                <Confirm label="Delete" color="error" title="Delete credential" disabled={r.usedBy.length > 0} body={`Delete ${r.name}? This cannot be undone.`} onConfirm={async () => { await api(`/projects/${project}/credentials/${r.id}`, 'DELETE'); await client.invalidateQueries({ queryKey: ['credentials', project] }); }} />
+                <Button onClick={() => { set({ ...blank, name: r.name }); setKind(r.storedFields.includes('cookieValue') ? 'SESSION_IMPORT' : r.storedFields.includes('lowPrivilegeToken') || (r.storedFields.includes('password') && !r.storedFields.includes('username')) ? 'API_TOKEN' : 'PASSWORD'); edit.show(); setEditing(r); }}>Edit</Button>
+                <Confirm label={r.enabled ? 'Disable' : 'Enable'} title={`${r.enabled ? 'Disable' : 'Enable'} credential`}
+                  body={r.enabled ? `Disable ${r.name}? Runs that would sign in with it are refused until it is enabled again.` : `Enable ${r.name}? Runs can sign in with it again.`}
+                  onConfirm={async () => { await api(`/projects/${project}/credentials/${r.id}/${r.enabled ? 'disable' : 'enable'}`, 'POST'); await refresh(); }} />
+                <Confirm label="Delete" color="error" title="Delete credential" disabled={r.usedBy.length > 0} body={`Delete ${r.name}? This cannot be undone.`} onConfirm={async () => { await api(`/projects/${project}/credentials/${r.id}`, 'DELETE'); await refresh(); }} />
               </Stack>) },
           ]} />))}</Async>
       </Card>
       <FormDialog open={add.open} title="New credential" submit="Save credential" busy={add.busy} error={add.error} onClose={add.close} onSubmit={() => add.submit()}>
         <TextField label="Credential name" required autoComplete="off" value={v.name} onChange={(e) => set({ ...v, name: e.target.value })} />
+        <Choice label="Environment" value={v.environmentId} onChange={(x) => set({ ...v, environmentId: x })}
+          options={[['', 'The first environment that uses it'], ...(envs.data ?? []).map((e) => [e.id, `${e.targetName} / ${e.name}`] as [string, string])]} />
         <Choice label="Kind" value={kind} onChange={setKind} options={kinds} />
         <SecretFields v={v} set={set} kind={kind} />
       </FormDialog>
-      <FormDialog open={!!rotating} title={`Rotate ${rotating?.name}`} submit="Replace values" busy={rotate.busy} error={rotate.error} onClose={() => setRotating(null)} onSubmit={() => rotate.submit()}>
+      <FormDialog open={!!editing} title={`Edit ${editing?.name}`} submit="Save changes" busy={edit.busy} error={edit.error} onClose={() => setEditing(null)} onSubmit={() => edit.submit()}>
+        <TextField label="Credential name" required autoComplete="off" value={v.name} onChange={(e) => set({ ...v, name: e.target.value })} />
         <Choice label="Kind" value={kind} onChange={setKind} options={kinds} />
-        <SecretFields v={v} set={set} kind={kind} />
+        <SecretFields v={v} set={set} kind={kind} keeping />
       </FormDialog>
     </>
   );
 }
 
+interface ProfileForm { method: string; credentialId: string; loginPath: string; submitPath: string; successPath: string }
+
 function Profiles({ project }: { project: string }) {
   const client = useQueryClient();
   const q = useQuery({ queryKey: ['login-profiles', project], queryFn: () => api<LoginProfile[]>(`/projects/${project}/login-profiles`) });
+  const details = useQuery({ queryKey: ['auth-profiles', project], queryFn: () => api<AuthProfile[]>(`/projects/${project}/auth-profiles`) });
   const credentials = useQuery({ queryKey: ['credentials', project], queryFn: () => api<Credential[]>(`/projects/${project}/credentials`) });
   const [editing, setEditing] = useState<LoginProfile | null>(null);
-  const [v, set] = useState({ method: 'PASSWORD', credentialId: '', loginPath: '/login', submitPath: '/login', successPath: '/' });
+  const [v, set] = useState<ProfileForm>({ method: 'PASSWORD', credentialId: '', loginPath: '/login', submitPath: '/login', successPath: '/' });
+  const [mailbox, setMailbox] = useState<MailboxDraft>(blankMailbox());
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const profileOf = (environmentId: string) => details.data?.find((d) => d.environmentId === environmentId && d.isDefault);
+  const current = editing ? profileOf(editing.environmentId) : undefined;
+  const otp = v.method === 'PASSWORD_EMAIL_OTP';
   const save = useForm<void>(async () => {
-    await api(`/projects/${project}/environments/${editing!.environmentId}/login`, 'PUT', v);
+    const found = otp ? mailboxProblems(mailbox, current?.mailbox) : {};
+    setErrors(found);
+    if (Object.keys(found).length) throw new Error('Check the highlighted mailbox fields.');
+    const body = { name: current?.name ?? 'Default', method: v.method, credentialId: v.credentialId || null, loginPath: v.loginPath, submitPath: v.submitPath, successPath: v.successPath,
+      isDefault: true, mailbox: otp ? mailboxBody(mailbox) : null };
+    if (current) await api(`/projects/${project}/auth-profiles/${current.id}`, 'PUT', body);
+    else await api(`/projects/${project}/environments/${editing!.environmentId}/auth-profiles`, 'POST', body);
+    setMailbox(blankMailbox());
     setEditing(null);
-  }, [['login-profiles', project], ['environments', project], ['credentials', project]]);
+  }, [['login-profiles', project], ['auth-profiles', project], ['environments', project], ['credentials', project]]);
+  const refresh = () => Promise.all([client.invalidateQueries({ queryKey: ['login-profiles', project] }), client.invalidateQueries({ queryKey: ['auth-profiles', project] })]);
+  const open = (r: LoginProfile) => {
+    const p = profileOf(r.environmentId);
+    set({ method: r.method ?? (r.channel === 'API' ? 'API_TOKEN' : 'PASSWORD'), credentialId: r.credentialId ?? '', loginPath: r.loginPath ?? '/login', submitPath: r.submitPath ?? '/login', successPath: r.successPath ?? '/' });
+    setMailbox(p?.mailbox ? mailboxDraft(p.mailbox) : blankMailbox());
+    setErrors({});
+    save.show();
+    setEditing(r);
+  };
   const api2 = editing?.channel === 'API';
+  const usable = (credentials.data ?? []).filter((c) => !editing || c.shared || c.environmentId === null || c.environmentId === editing.environmentId);
   return (
     <>
       <PageHeader title="Login Profiles" description="How a run signs in to each environment. MFA is never bypassed: a profile supplies a credential, and the run signs in like a user." />
@@ -144,21 +198,33 @@ function Profiles({ project }: { project: string }) {
         <Async q={q}>{(rows) => (rows.length === 0 ? <Empty title="No environments yet">Add an environment under Applications & Environments first.</Empty> : (
           <DataTable label="Login profiles" testId="profile-row" rows={rows} rowKey={(r) => r.environmentId} columns={[
             { key: 'e', label: 'Environment', render: (r) => `${r.applicationName} / ${r.environmentName}` }, { key: 't', label: 'Type', render: (r) => <Tag>{r.channel === 'WEB' ? 'Web' : 'API'}</Tag> },
-            { key: 'm', label: 'Method', render: (r) => (r.method ? words(r.method) : 'None') }, { key: 'c', label: 'Credential', render: (r) => r.credentialName ?? 'None' }, { key: 'p', label: 'Login path', render: (r) => r.loginPath ?? '' },
-            { key: 'x', label: '', align: 'right', render: (r) => (
+            { key: 'm', label: 'Method', render: (r) => (r.method ? METHOD_LABELS[r.method] ?? words(r.method) : 'None') },
+            { key: 'c', label: 'Credential', render: (r) => { const p = profileOf(r.environmentId); return r.credentialName ? `${r.credentialName}${p?.usernameHint ? ` (${p.usernameHint})` : ''}` : 'None'; } },
+            { key: 'f', label: 'Login flow', render: (r) => { const p = profileOf(r.environmentId); if (!p) return ''; return p.loginFlowComplete ? 'Ready' : <Tag title="Runs are refused until the path after signing in is set.">Needs a success path</Tag>; } },
+            { key: 's', label: 'Status', render: (r) => { const p = profileOf(r.environmentId); if (!p) return ''; if (!p.enabled) return <Tag>Disabled</Tag>; return p.credentialEnabled ? 'Enabled' : <Tag title="Its credential is disabled, so runs are refused.">Credential disabled</Tag>; } },
+            { key: 'x', label: '', align: 'right', render: (r) => { const p = profileOf(r.environmentId); return (
               <Stack direction="row" justifyContent="flex-end">
-                <Button onClick={() => { set({ method: r.method ?? (r.channel === 'API' ? 'API_TOKEN' : 'PASSWORD'), credentialId: r.credentialId ?? '', loginPath: r.loginPath ?? '/login', submitPath: r.submitPath ?? '/login', successPath: r.successPath ?? '/' }); save.show(); setEditing(r); }}>Configure</Button>
-                {r.method && <Confirm label="Clear" color="error" title="Clear login profile" body="Runs of this environment will no longer sign in." onConfirm={async () => { await api(`/projects/${project}/environments/${r.environmentId}/login`, 'DELETE'); await client.invalidateQueries({ queryKey: ['login-profiles', project] }); }} />}
-              </Stack>) },
+                <Button onClick={() => open(r)}>Configure</Button>
+                {p && <Confirm label={p.enabled ? 'Disable' : 'Enable'} title={`${p.enabled ? 'Disable' : 'Enable'} login profile`}
+                  body={p.enabled ? `Disable sign-in for ${r.environmentName}? Its runs are refused until it is enabled again.` : `Enable sign-in for ${r.environmentName}?`}
+                  onConfirm={async () => { await api(`/projects/${project}/auth-profiles/${p.id}/${p.enabled ? 'disable' : 'enable'}`, 'POST'); await refresh(); }} />}
+                {r.method && <Confirm label="Clear" color="error" title="Clear login profile" body="Runs of this environment will no longer sign in." onConfirm={async () => { await api(`/projects/${project}/environments/${r.environmentId}/login`, 'DELETE'); await refresh(); }} />}
+              </Stack>); } },
           ]} />))}</Async>
       </Card>
-      <FormDialog open={!!editing} title={`Login for ${editing?.environmentName}`} submit="Save profile" busy={save.busy} error={save.error} onClose={() => setEditing(null)} onSubmit={() => save.submit()}>
-        <Choice label="Method" value={v.method} onChange={(x) => set({ ...v, method: x })} options={api2 ? [['API_TOKEN', 'API token']] : [['PASSWORD', 'Password'], ['TOTP', 'Password and TOTP'], ['SESSION_IMPORT', 'Session cookie']]} />
-        <Choice label="Credential" required value={v.credentialId} onChange={(x) => set({ ...v, credentialId: x })} options={(credentials.data ?? []).map((c) => [c.id, c.name] as [string, string])} />
+      <FormDialog open={!!editing} title={`Login for ${editing?.environmentName}`} submit="Save profile" busy={save.busy} error={save.error} onClose={() => setEditing(null)} onSubmit={() => save.submit()} width={otp ? 'md' : 'sm'}>
+        <Choice label="Method" value={v.method} onChange={(x) => set({ ...v, method: x })} options={api2 ? [['API_TOKEN', 'API token']] : [['PASSWORD', 'Password'], ['PASSWORD_EMAIL_OTP', 'Password and email OTP'], ['TOTP', 'Password and TOTP'], ['SESSION_IMPORT', 'Session cookie']]} />
+        <Choice label="Credential" required value={v.credentialId} onChange={(x) => set({ ...v, credentialId: x })}
+          options={usable.map((c) => [c.id, `${c.name}${c.usernameHint ? ` (${c.usernameHint})` : ''}${c.enabled ? '' : ', disabled'}${c.shared ? ', shared' : ''}`] as [string, string])} />
+        <Typography variant="caption" color="text.secondary">Only credentials for this environment, or not yet bound to one, are offered. Choosing an unbound one binds it here.</Typography>
         {!api2 && <>
           <TextField label="Login page path" value={v.loginPath} onChange={(e) => set({ ...v, loginPath: e.target.value })} />
           <TextField label="Form submit path" value={v.submitPath} onChange={(e) => set({ ...v, submitPath: e.target.value })} />
           <TextField label="Path after signing in" required value={v.successPath} onChange={(e) => set({ ...v, successPath: e.target.value })} />
+        </>}
+        {otp && <>
+          <Alert severity="info">Email OTP sign-in is not available yet. The profile can be saved, and runs are refused until it is.</Alert>
+          <MailboxFields value={mailbox} set={setMailbox} errors={errors} prefix="" existing={current?.mailbox} />
         </>}
       </FormDialog>
     </>

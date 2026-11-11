@@ -229,9 +229,18 @@ class WorkerApiTest extends IntegrationTestBase {
         mvc.perform(get("/api/v1/projects/" + project + "/evidence/" + free + "/content").with(as(admin))).andExpect(status().isNotFound());
     }
 
+    /** The run is pinned to a profile when it is created, as RunController does. */
+    UUID signInWith(UUID credential) {
+        UUID profile = UUID.randomUUID();
+        db.sql("INSERT INTO auth_profile (organization_id, id, environment_id, name, method, credential_id, is_default, success_path) VALUES (?,?,?, 'Default', 'PASSWORD', ?, true, '/account')")
+                .params(org, profile, env, credential).update();
+        db.sql("UPDATE test_run SET auth_profile_id = ? WHERE organization_id = ? AND id = ?").params(profile, org, run).update();
+        return profile;
+    }
+
     @Test void credentialIsReleasedOncePerAttemptAndOnlyToTheOwner() throws Exception {
-        UUID cred = credentials.store(org, project, "acct", new qaengine.platform.credentials.CredentialService.Material("u", "canary-value-123", null, null, null, null));
-        db.sql("UPDATE environment SET login_credential_id = ?, login_method = 'PASSWORD' WHERE id = ?").params(cred, env).update();
+        UUID cred = credentials.store(org, project, env, "acct", new qaengine.platform.credentials.CredentialService.Material("u", "canary-value-123", null, null, null, null));
+        signInWith(cred);
         String token = claim();
         String url = "/internal/v1/jobs/" + job + "/login";
         mvc.perform(post(url)).andExpect(status().isUnauthorized());
@@ -241,6 +250,23 @@ class WorkerApiTest extends IntegrationTestBase {
         mvc.perform(post(url).header("Authorization", "Bearer " + token)).andExpect(status().isForbidden());
         assertEquals(1L, db.sql("SELECT count(*) FROM audit_event WHERE action = 'CREDENTIAL_RELEASED'").query(Long.class).single());
         assertEquals(0L, db.sql("SELECT count(*) FROM audit_event WHERE detail LIKE '%canary-value-123%'").query(Long.class).single());
+    }
+
+    @Test void aCredentialDisabledAfterTheRunWasQueuedIsNotReleased() throws Exception {
+        UUID cred = credentials.store(org, project, env, "acct", new qaengine.platform.credentials.CredentialService.Material("u", "canary-value-456", null, null, null, null));
+        signInWith(cred);
+        db.sql("UPDATE credential SET enabled = false WHERE organization_id = ? AND id = ?").params(org, cred).update();
+        String token = claim();
+        String body = mvc.perform(post("/internal/v1/jobs/" + job + "/login").header("Authorization", "Bearer " + token)).andExpect(status().isForbidden()).andReturn().getResponse().getContentAsString();
+        assertFalse(body.contains("canary-value-456"));
+        assertEquals(1L, db.sql("SELECT count(*) FROM audit_event WHERE action = 'CREDENTIAL_REFUSED'").query(Long.class).single());
+    }
+
+    @Test void theAssignmentCarriesTheRunsOwnProfile() throws Exception {
+        signInWith(credentials.store(org, project, env, "acct", new qaengine.platform.credentials.CredentialService.Material("u", "p", null, null, null, null)));
+        String json = mvc.perform(post("/internal/v1/jobs/claim").header("X-Worker-Key", KEY).contentType(MediaType.APPLICATION_JSON).content("{}")).andReturn().getResponse().getContentAsString();
+        assertTrue(json.contains("\"login\":{\"method\":\"PASSWORD\""), json);
+        assertTrue(json.contains("\"successPath\":\"/account\""), json);
     }
 
     @Test void tamperingIsDetected() throws Exception {

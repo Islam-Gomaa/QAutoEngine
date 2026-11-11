@@ -39,10 +39,10 @@ public class AuthController {
     private final PasswordEncoder encoder;
     private final LoginThrottle throttle;
     private final AuditLog audit;
-    private final SecretBox box;
+    private final SecretStore box;
     private final HttpSessionSecurityContextRepository contexts = new HttpSessionSecurityContextRepository();
 
-    public AuthController(JdbcClient db, PasswordEncoder encoder, LoginThrottle throttle, AuditLog audit, SecretBox box) {
+    public AuthController(JdbcClient db, PasswordEncoder encoder, LoginThrottle throttle, AuditLog audit, SecretStore box) {
         this.db = db;
         this.encoder = encoder;
         this.throttle = throttle;

@@ -1,0 +1,336 @@
+package qaengine.platform.credentials;
+
+import java.time.OffsetDateTime;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.stereotype.Component;
+import qaengine.core.policy.BaseUrl;
+import qaengine.core.policy.PolicyException;
+import qaengine.platform.audit.AuditLog;
+import qaengine.platform.identity.SecretStore;
+import qaengine.platform.shared.ConflictException;
+import qaengine.platform.shared.NotFoundException;
+import qaengine.platform.shared.Principal;
+
+/**
+ * How a run signs in to an environment. Each profile uses one credential, and that credential belongs
+ * to the profile's environment. Callers check project access first; this checks everything else.
+ */
+@Component
+public class AuthProfiles {
+
+    public static final Set<String> METHODS = Set.of("PASSWORD", "PASSWORD_EMAIL_OTP", "TOTP", "SESSION_IMPORT", "API_TOKEN");
+    /** The two methods offered when an application is set up. The others stay available on existing profiles. */
+    public static final Set<String> ONBOARDING_METHODS = Set.of("PASSWORD", "PASSWORD_EMAIL_OTP");
+    private static final String RELATIVE = "/[A-Za-z0-9._~/-]*";
+    private static final Pattern ADDRESS = Pattern.compile("^[^@\\s]{1,64}@[^@\\s]{1,189}$");
+    private static final Pattern CONTROL = Pattern.compile("\\p{Cntrl}");
+    static final String DEFAULT_CODE_PATTERN = "\\b(\\d{6})\\b";
+
+    /**
+     * Mailbox settings. On an update a blank password keeps the sealed one. Confirming the mailbox is
+     * dedicated to testing is required when it is first set and whenever its address or server changes.
+     */
+    public record MailboxSettings(String address, String host, String security, String password, String folder, String senderFilter,
+                                  String subjectFilter, String codePattern, Integer timeoutSeconds, Integer pollSeconds, Boolean dedicatedMailboxConfirmed) {}
+
+    public record MailboxView(String address, String host, String security, int port, String folder, String senderFilter, String subjectFilter,
+                              String codePattern, int timeoutSeconds, int pollSeconds, String dedicatedConfirmedBy, OffsetDateTime dedicatedConfirmedAt) {}
+
+    /**
+     * @param isDefault true makes this the profile runs use; false is ignored, so an environment never
+     *                  silently loses its default
+     */
+    public record Settings(String name, String method, UUID credentialId, String loginPath, String submitPath, String successPath,
+                           Boolean enabled, Boolean isDefault, MailboxSettings mailbox) {}
+
+    /** A new profile together with a new credential for it, as the setup wizard creates them. */
+    public record NewProfile(String name, String method, String username, String password, Boolean enabled, MailboxSettings mailbox) {}
+
+    /** @param loginFlowComplete false while a web profile has no success path: runs are refused until it does */
+    public record View(UUID id, UUID environmentId, String environmentName, String applicationName, String channel, String name, String method,
+                       UUID credentialId, String credentialName, boolean credentialEnabled, boolean credentialShared, String usernameHint,
+                       boolean enabled, boolean isDefault, String loginPath, String submitPath, String successPath, boolean loginFlowComplete,
+                       MailboxView mailbox, OffsetDateTime updatedAt) {}
+
+    /** The profile a new run will use, or why the run cannot start. Both null: the environment has no sign-in. */
+    public record ForRun(UUID profileId, String refusal) {}
+
+    private record Environment(String name, String classification, String channel) {}
+    private record Mailbox(String address, String host, String security, int port, String folder, String sender, String subject, String pattern, int timeout, int poll) {}
+
+    private final JdbcClient db;
+    private final SecretStore box;
+    private final CredentialService credentials;
+    private final AuditLog audit;
+
+    public AuthProfiles(JdbcClient db, SecretStore box, CredentialService credentials, AuditLog audit) {
+        this.db = db;
+        this.box = box;
+        this.credentials = credentials;
+        this.audit = audit;
+    }
+
+    // ---- reading
+
+    private static final String SELECT = """
+            SELECT ap.id, ap.environment_id, e.name, t.name, e.channel, ap.name, ap.method, ap.credential_id, c.name, c.enabled, c.shared, c.username_hint,
+                   ap.enabled, ap.is_default, ap.login_path, ap.submit_path, ap.success_path, ap.updated_at,
+                   m.address, m.host, m.security, m.port, m.folder, m.sender_filter, m.subject_filter, m.code_pattern, m.timeout_seconds, m.poll_seconds,
+                   m.dedicated_confirmed_by, m.dedicated_confirmed_at
+            FROM auth_profile ap
+            JOIN environment e ON e.organization_id = ap.organization_id AND e.id = ap.environment_id
+            JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id
+            JOIN credential c ON c.organization_id = ap.organization_id AND c.id = ap.credential_id
+            LEFT JOIN otp_mailbox m ON m.organization_id = ap.organization_id AND m.auth_profile_id = ap.id
+            """;
+
+    private static View view(java.sql.ResultSet rs) throws java.sql.SQLException {
+        String channel = rs.getString(5);
+        MailboxView mailbox = rs.getString(19) == null ? null : new MailboxView(rs.getString(19), rs.getString(20), rs.getString(21), rs.getInt(22), rs.getString(23),
+                rs.getString(24), rs.getString(25), rs.getString(26), rs.getInt(27), rs.getInt(28), rs.getString(29), rs.getObject(30, OffsetDateTime.class));
+        return new View(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4), channel, rs.getString(6), rs.getString(7),
+                rs.getObject(8, UUID.class), rs.getString(9), rs.getBoolean(10), rs.getBoolean(11), rs.getString(12), rs.getBoolean(13), rs.getBoolean(14),
+                rs.getString(15), rs.getString(16), rs.getString(17), channel.equals("API") || rs.getString(17) != null, mailbox, rs.getObject(18, OffsetDateTime.class));
+    }
+
+    public List<View> list(UUID org, UUID projectId) {
+        return db.sql(SELECT + " WHERE ap.organization_id = ? AND t.project_id = ? AND e.archived_at IS NULL ORDER BY t.name, e.name, ap.is_default DESC, ap.name")
+                .params(org, projectId).query((rs, n) -> view(rs)).list();
+    }
+
+    public View get(UUID org, UUID projectId, UUID id) {
+        return db.sql(SELECT + " WHERE ap.organization_id = ? AND t.project_id = ? AND ap.id = ?").params(org, projectId, id)
+                .query((rs, n) -> view(rs)).optional().orElseThrow(() -> new NotFoundException("Sign-in profile"));
+    }
+
+    public Optional<View> defaultFor(UUID org, UUID environmentId) {
+        return db.sql(SELECT + " WHERE ap.organization_id = ? AND ap.environment_id = ? AND ap.is_default").params(org, environmentId)
+                .query((rs, n) -> view(rs)).optional();
+    }
+
+    /** Decides what a new run of this environment signs in with. Anything that would make the sign-in fail or be skipped refuses the run. */
+    public ForRun forRun(UUID org, UUID environmentId) {
+        Optional<View> found = defaultFor(org, environmentId);
+        if (found.isEmpty()) return new ForRun(null, null);
+        View v = found.get();
+        if (!v.enabled()) return new ForRun(null, "The environment's sign-in profile is disabled");
+        if (!v.credentialEnabled()) return new ForRun(null, "The sign-in profile's credential is disabled");
+        if (v.method().equals("PASSWORD_EMAIL_OTP")) return new ForRun(null, "Email OTP sign-in is not available yet");
+        if (!v.loginFlowComplete()) return new ForRun(null, "Finish the sign-in profile's login flow before running");
+        return new ForRun(v.id(), null);
+    }
+
+    // ---- writing
+
+    private Environment environment(UUID org, UUID projectId, UUID environmentId) {
+        return db.sql("""
+                SELECT e.name, e.classification, e.channel FROM environment e JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id
+                WHERE e.organization_id = ? AND e.id = ? AND t.project_id = ? AND e.archived_at IS NULL
+                """).params(org, environmentId, projectId).query((rs, n) -> new Environment(rs.getString(1), rs.getString(2), rs.getString(3)))
+                .optional().orElseThrow(() -> new NotFoundException("Environment"));
+    }
+
+    private static String text(String s) {
+        return s == null ? "" : s.strip();
+    }
+
+    private static String path(String s) {
+        String p = text(s);
+        if (p.isEmpty()) return null;
+        if (!p.matches(RELATIVE)) throw new ConflictException("Login paths must be relative paths");
+        return p;
+    }
+
+    private void check(Principal p, Environment env, String name, String method) {
+        if (name.isEmpty() || name.length() > 100) throw new ConflictException("A sign-in profile needs a name of up to 100 characters");
+        if (!METHODS.contains(method)) throw new ConflictException("Unsupported login method");
+        if (env.classification().equals("PRODUCTION") && !p.organizationAdmin()) throw new AccessDeniedException("Production login needs Organization Admin");
+        // A password must never be sent as a bearer token, and a token never typed into a login form.
+        if (env.channel().equals("API") != method.equals("API_TOKEN")) throw new ConflictException("Login method does not fit this channel");
+    }
+
+    /**
+     * A credential is bound to the first environment that uses it and refused everywhere else. Shared
+     * credentials from before binding existed keep working until they are migrated.
+     */
+    private void bind(Principal p, UUID projectId, UUID environmentId, UUID credentialId) {
+        record Owner(UUID environment, boolean shared) {}
+        Owner owner = db.sql("SELECT environment_id, shared FROM credential WHERE organization_id = ? AND project_id = ? AND id = ?")
+                .params(p.organizationId(), projectId, credentialId).query((rs, n) -> new Owner(rs.getObject(1, UUID.class), rs.getBoolean(2)))
+                .optional().orElseThrow(() -> new NotFoundException("Credential"));
+        if (owner.shared() || environmentId.equals(owner.environment())) return;
+        if (owner.environment() == null && db.sql("UPDATE credential SET environment_id = ?, updated_at = now() WHERE organization_id = ? AND id = ? AND environment_id IS NULL AND NOT shared")
+                .params(environmentId, p.organizationId(), credentialId).update() == 1) {
+            audit.record(p.organizationId(), projectId, p.email(), "CREDENTIAL_BOUND", credentialId.toString(), "environment " + environmentId);
+            return;
+        }
+        throw new ConflictException("This credential belongs to another environment");
+    }
+
+    private void makeDefault(UUID org, UUID environmentId, UUID profileId) {
+        db.sql("UPDATE auth_profile SET is_default = false WHERE organization_id = ? AND environment_id = ? AND is_default AND id <> ?").params(org, environmentId, profileId).update();
+        db.sql("UPDATE auth_profile SET is_default = true, updated_at = now() WHERE organization_id = ? AND id = ?").params(org, profileId).update();
+    }
+
+    private boolean hasDefault(UUID org, UUID environmentId) {
+        return db.sql("SELECT count(*) FROM auth_profile WHERE organization_id = ? AND environment_id = ? AND is_default").params(org, environmentId).query(Long.class).single() > 0;
+    }
+
+    public UUID create(Principal p, UUID projectId, UUID environmentId, Settings s) {
+        Environment env = environment(p.organizationId(), projectId, environmentId);
+        String name = text(s.name());
+        String method = text(s.method());
+        check(p, env, name, method);
+        if (s.credentialId() == null) throw new ConflictException("Choose a credential");
+        String login = path(s.loginPath()), submit = path(s.submitPath()), success = path(s.successPath());
+        if (method.equals("PASSWORD_EMAIL_OTP") && s.mailbox() == null) throw new ConflictException("Email OTP needs a mailbox");
+        if (!method.equals("PASSWORD_EMAIL_OTP") && s.mailbox() != null) throw new ConflictException("A mailbox is only used with Email OTP");
+        Mailbox mailbox = s.mailbox() == null ? null : mailbox(s.mailbox());
+        bind(p, projectId, environmentId, s.credentialId());
+
+        UUID id = UUID.randomUUID();
+        db.sql("""
+                INSERT INTO auth_profile (organization_id, id, environment_id, name, method, credential_id, enabled, login_path, submit_path, success_path)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
+                """).params(p.organizationId(), id, environmentId, name, method, s.credentialId(), s.enabled() == null || s.enabled(), login, submit, success).update();
+        if (Boolean.TRUE.equals(s.isDefault()) || !hasDefault(p.organizationId(), environmentId)) makeDefault(p.organizationId(), environmentId, id);
+        if (mailbox != null) saveMailbox(p, projectId, id, mailbox, s.mailbox(), null);
+        audit.record(p.organizationId(), projectId, p.email(), "AUTH_PROFILE_CREATED", id.toString(), method + " " + name);
+        return id;
+    }
+
+    /** Creates a credential bound to the environment, and a profile that uses it, in the caller's transaction. */
+    public UUID createWithCredential(Principal p, UUID projectId, UUID environmentId, String credentialName, NewProfile n) {
+        String method = text(n.method());
+        if (!ONBOARDING_METHODS.contains(method)) throw new ConflictException("Choose username and password, with or without email OTP");
+        if (!CredentialService.present(n.username()) || !CredentialService.present(n.password())) throw new ConflictException("Enter the username and password");
+        environment(p.organizationId(), projectId, environmentId);
+        String unique = credentialName;
+        boolean taken = db.sql("SELECT count(*) FROM credential WHERE organization_id = ? AND project_id = ? AND name = ?").params(p.organizationId(), projectId, unique).query(Long.class).single() > 0;
+        if (taken) unique = credentialName + " · " + environmentId.toString().substring(0, 8);
+        UUID credential = credentials.store(p.organizationId(), projectId, environmentId, unique, new CredentialService.Material(n.username(), n.password(), null, null, null, null));
+        audit.record(p.organizationId(), projectId, p.email(), "CREDENTIAL_CREATED", credential.toString(), unique);
+        String name = text(n.name()).isEmpty() ? "Default" : text(n.name());
+        return create(p, projectId, environmentId, new Settings(name, method, credential, null, null, null, n.enabled(), true, n.mailbox()));
+    }
+
+    public void update(Principal p, UUID projectId, UUID id, Settings s) {
+        View current = get(p.organizationId(), projectId, id);
+        Environment env = environment(p.organizationId(), projectId, current.environmentId());
+        String name = text(s.name());
+        String method = text(s.method());
+        check(p, env, name, method);
+        UUID credential = s.credentialId() == null ? current.credentialId() : s.credentialId();
+        String login = path(s.loginPath()), submit = path(s.submitPath()), success = path(s.successPath());
+        boolean otp = method.equals("PASSWORD_EMAIL_OTP");
+        if (!otp && s.mailbox() != null) throw new ConflictException("A mailbox is only used with Email OTP");
+        if (otp && s.mailbox() == null && current.mailbox() == null) throw new ConflictException("Email OTP needs a mailbox");
+        Mailbox mailbox = s.mailbox() == null ? null : mailbox(s.mailbox());
+        if (!credential.equals(current.credentialId())) bind(p, projectId, current.environmentId(), credential);
+
+        db.sql("""
+                UPDATE auth_profile SET name = ?, method = ?, credential_id = ?, login_path = ?, submit_path = ?, success_path = ?,
+                       enabled = coalesce(?, enabled), updated_at = now()
+                WHERE organization_id = ? AND id = ?
+                """).params(name, method, credential, login, submit, success, s.enabled(), p.organizationId(), id).update();
+        if (Boolean.TRUE.equals(s.isDefault())) makeDefault(p.organizationId(), current.environmentId(), id);
+        if (!otp) db.sql("DELETE FROM otp_mailbox WHERE organization_id = ? AND auth_profile_id = ?").params(p.organizationId(), id).update();
+        else if (mailbox != null) saveMailbox(p, projectId, id, mailbox, s.mailbox(), current.mailbox());
+        audit.record(p.organizationId(), projectId, p.email(), "AUTH_PROFILE_UPDATED", id.toString(), method + " " + name);
+    }
+
+    public void setEnabled(Principal p, UUID projectId, UUID id, boolean enabled) {
+        get(p.organizationId(), projectId, id);
+        db.sql("UPDATE auth_profile SET enabled = ?, updated_at = now() WHERE organization_id = ? AND id = ?").params(enabled, p.organizationId(), id).update();
+        audit.record(p.organizationId(), projectId, p.email(), enabled ? "AUTH_PROFILE_ENABLED" : "AUTH_PROFILE_DISABLED", id.toString(), "");
+    }
+
+    /** Refused while an unfinished run signs in with it. A deleted default hands over to the oldest remaining profile. */
+    public void delete(Principal p, UUID projectId, UUID id) {
+        View current = get(p.organizationId(), projectId, id);
+        long running = db.sql("SELECT count(*) FROM test_run WHERE organization_id = ? AND auth_profile_id = ? AND finished_at IS NULL")
+                .params(p.organizationId(), id).query(Long.class).single();
+        if (running > 0) throw new ConflictException("A run that has not finished uses this sign-in profile");
+        db.sql("DELETE FROM auth_profile WHERE organization_id = ? AND id = ?").params(p.organizationId(), id).update();
+        if (current.isDefault()) {
+            db.sql("""
+                    UPDATE auth_profile SET is_default = true WHERE organization_id = ? AND id = (
+                        SELECT id FROM auth_profile WHERE organization_id = ? AND environment_id = ? ORDER BY created_at, id LIMIT 1)
+                    """).params(p.organizationId(), p.organizationId(), current.environmentId()).update();
+        }
+        audit.record(p.organizationId(), projectId, p.email(), "AUTH_PROFILE_DELETED", id.toString(), current.name());
+    }
+
+    // ---- mailbox
+
+    private static Mailbox mailbox(MailboxSettings m) {
+        String address = text(m.address());
+        if (!ADDRESS.matcher(address).matches() || address.length() > 254) throw new ConflictException("Enter the mailbox address");
+        String host;
+        try {
+            host = BaseUrl.host(m.host());
+        } catch (PolicyException e) {
+            throw new ConflictException("Mail server: " + e.getMessage());
+        }
+        String security = m.security() == null || m.security().isBlank() ? "IMAPS" : m.security();
+        if (!security.equals("IMAPS") && !security.equals("STARTTLS")) throw new ConflictException("Mailbox security must be IMAPS or STARTTLS");
+        String folder = text(m.folder()).isEmpty() ? "INBOX" : text(m.folder());
+        String sender = text(m.senderFilter()), subject = text(m.subjectFilter());
+        if (folder.length() > 100 || sender.length() > 254 || subject.length() > 200 || CONTROL.matcher(folder + sender + subject).find()) {
+            throw new ConflictException("Mailbox folder or filters are not valid");
+        }
+        String pattern = text(m.codePattern()).isEmpty() ? DEFAULT_CODE_PATTERN : text(m.codePattern());
+        if (pattern.length() > 200) throw new ConflictException("The code pattern is too long");
+        try {
+            if (Pattern.compile(pattern).matcher("").groupCount() > 1) throw new ConflictException("The code pattern may capture at most one group");
+        } catch (PatternSyntaxException e) {
+            throw new ConflictException("The code pattern is not a valid regular expression");
+        }
+        int timeout = m.timeoutSeconds() == null ? 120 : m.timeoutSeconds();
+        int poll = m.pollSeconds() == null ? 5 : m.pollSeconds();
+        if (timeout < 10 || timeout > 600 || poll < 2 || poll > 60 || poll >= timeout) throw new ConflictException("Mailbox timing is outside the allowed range");
+        return new Mailbox(address, host, security, security.equals("IMAPS") ? 993 : 143, folder, sender, subject, pattern, timeout, poll);
+    }
+
+    private static String mailboxOwner(UUID org, UUID profile) {
+        return "mailbox/" + org + "/" + profile;
+    }
+
+    private void saveMailbox(Principal p, UUID projectId, UUID profile, Mailbox m, MailboxSettings given, MailboxView current) {
+        boolean newPlace = current == null || !current.address().equalsIgnoreCase(m.address()) || !current.host().equals(m.host());
+        if (newPlace && !Boolean.TRUE.equals(given.dedicatedMailboxConfirmed())) throw new ConflictException("Confirm this is a dedicated test mailbox you are authorized to use");
+        boolean newPassword = CredentialService.present(given.password());
+        if (current == null && !newPassword) throw new ConflictException("Enter the mailbox password");
+        if (current == null) {
+            var sealed = box.seal(given.password(), mailboxOwner(p.organizationId(), profile));
+            db.sql("""
+                    INSERT INTO otp_mailbox (organization_id, auth_profile_id, address, host, security, port, folder, sender_filter, subject_filter, code_pattern,
+                                             timeout_seconds, poll_seconds, wrapped_key, ciphertext, dedicated_confirmed_by, dedicated_confirmed_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, now())
+                    """).params(p.organizationId(), profile, m.address(), m.host(), m.security(), m.port(), m.folder(), m.sender(), m.subject(), m.pattern(),
+                    m.timeout(), m.poll(), sealed.wrappedKey(), sealed.ciphertext(), p.email()).update();
+        } else {
+            db.sql("""
+                    UPDATE otp_mailbox SET address = ?, host = ?, security = ?, port = ?, folder = ?, sender_filter = ?, subject_filter = ?, code_pattern = ?,
+                           timeout_seconds = ?, poll_seconds = ?, updated_at = now(),
+                           dedicated_confirmed_by = CASE WHEN ? THEN ? ELSE dedicated_confirmed_by END,
+                           dedicated_confirmed_at = CASE WHEN ? THEN now() ELSE dedicated_confirmed_at END
+                    WHERE organization_id = ? AND auth_profile_id = ?
+                    """).params(m.address(), m.host(), m.security(), m.port(), m.folder(), m.sender(), m.subject(), m.pattern(), m.timeout(), m.poll(),
+                    newPlace, p.email(), newPlace, p.organizationId(), profile).update();
+            if (newPassword) {
+                var sealed = box.seal(given.password(), mailboxOwner(p.organizationId(), profile));
+                db.sql("UPDATE otp_mailbox SET wrapped_key = ?, ciphertext = ? WHERE organization_id = ? AND auth_profile_id = ?")
+                        .params(sealed.wrappedKey(), sealed.ciphertext(), p.organizationId(), profile).update();
+            }
+        }
+        audit.record(p.organizationId(), projectId, p.email(), "OTP_MAILBOX_SET", profile.toString(), m.host() + (newPassword ? ", password replaced" : ""));
+    }
+}

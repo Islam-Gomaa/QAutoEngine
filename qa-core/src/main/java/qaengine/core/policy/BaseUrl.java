@@ -49,20 +49,9 @@ public final class BaseUrl {
         if (uri.getRawFragment() != null) throw new PolicyException("Base URL must not contain a fragment");
         if (uri.getRawQuery() != null) throw new PolicyException("Base URL must not contain a query string");
 
-        String host = uri.getHost();
-        if (host == null || host.isEmpty()) throw new PolicyException("Base URL must name a host");
-        host = host.toLowerCase(Locale.ROOT);
-        if (host.startsWith("[")) throw new PolicyException("Base URL must use a host name, not an IP address");
-        if (host.endsWith(".")) throw new PolicyException("Host name must not end with a dot");
-        String[] labels = host.split("\\.", -1);
-        if (IPV4_LIKE.matcher(host).matches() || NUMERIC_LABEL.matcher(labels[labels.length - 1]).matches()) {
-            throw new PolicyException("Base URL must use a host name, not an IP address");
-        }
-        for (String label : labels) {
-            if (!LABEL.matcher(label).matches()) throw new PolicyException("Host name is not valid");
-        }
-        if (host.length() > 253) throw new PolicyException("Host name is not valid");
-        if (METADATA_HOSTS.contains(host)) throw new PolicyException("Cloud metadata hosts are not allowed");
+        String rawHost = uri.getHost();
+        if (rawHost == null || rawHost.isEmpty()) throw new PolicyException("Base URL must name a host");
+        String host = host(rawHost);
 
         int port = uri.getPort();
         boolean defaultPort = port == -1 || (scheme.equals("http") && port == 80) || (scheme.equals("https") && port == 443);
@@ -75,6 +64,27 @@ public final class BaseUrl {
             }
         }
         return scheme + "://" + host + (defaultPort ? "" : ":" + port) + path;
+    }
+
+    /**
+     * Checks a bare host name, such as a mail server, by the same rules as a base URL's host: a DNS
+     * name, never an IP address in any spelling, never a cloud metadata name. Returns it lower-cased.
+     */
+    public static String host(String raw) {
+        if (raw == null || raw.isBlank()) throw new PolicyException("A host name is required");
+        String host = raw.strip().toLowerCase(Locale.ROOT);
+        if (host.startsWith("[") || host.contains(":")) throw new PolicyException("Use a host name, not an IP address");
+        if (host.endsWith(".")) throw new PolicyException("Host name must not end with a dot");
+        String[] labels = host.split("\\.", -1);
+        if (IPV4_LIKE.matcher(host).matches() || NUMERIC_LABEL.matcher(labels[labels.length - 1]).matches()) {
+            throw new PolicyException("Use a host name, not an IP address");
+        }
+        for (String label : labels) {
+            if (!LABEL.matcher(label).matches()) throw new PolicyException("Host name is not valid");
+        }
+        if (host.length() > 253) throw new PolicyException("Host name is not valid");
+        if (METADATA_HOSTS.contains(host)) throw new PolicyException("Cloud metadata hosts are not allowed");
+        return host;
     }
 
     /** scheme://host[:port] of a URL that {@link #normalize} accepted, as the allowed-host table stores it. */

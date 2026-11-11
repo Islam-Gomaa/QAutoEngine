@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import qaengine.platform.audit.AuditLog;
+import qaengine.platform.credentials.AuthProfiles;
 import qaengine.platform.identity.Access;
 import qaengine.platform.shared.ConflictException;
 import qaengine.platform.shared.NotFoundException;
@@ -43,12 +44,14 @@ public class RunController {
     private final Access access;
     private final JobQueue queue;
     private final AuditLog audit;
+    private final AuthProfiles profiles;
 
-    public RunController(JdbcClient db, Access access, JobQueue queue, AuditLog audit) {
+    public RunController(JdbcClient db, Access access, JobQueue queue, AuditLog audit, AuthProfiles profiles) {
         this.db = db;
         this.access = access;
         this.queue = queue;
         this.audit = audit;
+        this.profiles = profiles;
     }
 
     private static final String SELECT = """
@@ -93,6 +96,9 @@ public class RunController {
         if (!policy.environmentActive()) throw new ConflictException("This environment is inactive");
         // The worker would refuse too. Saying so here keeps a real target from ever being queued.
         if (!qaengine.core.policy.ExecutionLock.isLocal(policy.baseUrl())) throw new ConflictException("Real targets are locked until the pre-pilot security gate passes");
+        // A run signs in with the environment's default profile as it is now. Anything that would make that sign-in fail, or be skipped, refuses the run.
+        AuthProfiles.ForRun signIn = profiles.forRun(p.organizationId(), body.environmentId());
+        if (signIn.refusal() != null) throw new ConflictException(signIn.refusal());
         if (body.maxPages() != null && (body.maxPages() < 1 || body.maxPages() > policy.maxPages())) throw new ConflictException("Page limit is outside the policy");
         if (body.suiteId() != null) {
             var suite = db.sql("""
@@ -106,9 +112,9 @@ public class RunController {
 
         UUID id = UUID.randomUUID();
         db.sql("""
-                INSERT INTO test_run (organization_id, id, project_id, environment_id, seed, idempotency_key, created_by, suite_id, max_pages)
-                VALUES (?,?,?,?,?,?,?,?,?)
-                """).params(p.organizationId(), id, projectId, body.environmentId(), RANDOM.nextLong(), key, p.userId(), body.suiteId(), body.maxPages()).update();
+                INSERT INTO test_run (organization_id, id, project_id, environment_id, seed, idempotency_key, created_by, suite_id, max_pages, auth_profile_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
+                """).params(p.organizationId(), id, projectId, body.environmentId(), RANDOM.nextLong(), key, p.userId(), body.suiteId(), body.maxPages(), signIn.profileId()).update();
         queue.enqueue(p.organizationId(), id, 2, policy.minutes());
         audit.record(p.organizationId(), projectId, p.email(), "RUN_CREATED", id.toString(), policy.channel());
         return ResponseEntity.status(HttpStatus.CREATED).body(view(p, projectId, id));

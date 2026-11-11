@@ -23,6 +23,7 @@ import qaengine.core.policy.BaseUrl;
 import qaengine.core.policy.ExecutionLock;
 import qaengine.core.policy.PolicyException;
 import qaengine.platform.audit.AuditLog;
+import qaengine.platform.credentials.AuthProfiles;
 import qaengine.platform.identity.Access;
 import qaengine.platform.shared.ConflictException;
 import qaengine.platform.shared.NotFoundException;
@@ -42,7 +43,8 @@ public class TargetController {
     public record TargetView(UUID id, String name, String type, String description, boolean active, OffsetDateTime archivedAt) {}
     public record CreateEnvironment(@NotBlank String name, @NotBlank String classification, @NotBlank String baseUrl,
                                     List<String> includePaths, List<String> excludePaths, String authorizedBy,
-                                    String channel, String apiSpecPath, Integer apiSlowMillis, List<String> apiSeedPaths, String description, Boolean active) {}
+                                    String channel, String apiSpecPath, Integer apiSlowMillis, List<String> apiSeedPaths, String description, Boolean active,
+                                    AuthProfiles.NewProfile authentication) {}
     public record UpdateEnvironment(@NotBlank String name, String description, List<String> includePaths, List<String> excludePaths,
                                     String apiSpecPath, Integer apiSlowMillis) {}
     /**
@@ -63,11 +65,13 @@ public class TargetController {
     private final JdbcClient db;
     private final Access access;
     private final AuditLog audit;
+    private final AuthProfiles profiles;
 
-    public TargetController(JdbcClient db, Access access, AuditLog audit) {
+    public TargetController(JdbcClient db, Access access, AuditLog audit, AuthProfiles profiles) {
         this.db = db;
         this.access = access;
         this.audit = audit;
+        this.profiles = profiles;
     }
 
     private static final String TARGET = "SELECT id, name, type, description, active, archived_at FROM target ";
@@ -163,12 +167,13 @@ public class TargetController {
 
     private static final String ENV = """
             SELECT e.id, e.target_id, t.name, e.name, e.classification, e.base_url, ep.mode, e.channel, e.description, ep.include_paths, ep.exclude_paths,
-                   e.api_spec_path, e.api_slow_ms, e.login_method,
-                   (SELECT c.name FROM credential c WHERE c.organization_id = e.organization_id AND c.id = e.login_credential_id),
+                   e.api_spec_path, e.api_slow_ms, ap.method, ap.credential_name,
                    lr.status, lr.created_at, e.active, t.active
             FROM environment e
             JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id
             JOIN execution_policy ep ON ep.organization_id = e.organization_id AND ep.environment_id = e.id
+            LEFT JOIN LATERAL (SELECT a.method, c.name AS credential_name FROM auth_profile a JOIN credential c ON c.organization_id = a.organization_id AND c.id = a.credential_id
+                               WHERE a.organization_id = e.organization_id AND a.environment_id = e.id AND a.is_default) ap ON true
             LEFT JOIN LATERAL (SELECT r.status, r.created_at FROM test_run r WHERE r.organization_id = e.organization_id AND r.environment_id = e.id ORDER BY r.created_at DESC LIMIT 1) lr ON true
             """;
 
@@ -227,6 +232,12 @@ public class TargetController {
                 .params(p.organizationId(), id, include.toArray(String[]::new),
                         (body.excludePaths() == null ? List.<String>of() : body.excludePaths()).toArray(String[]::new)).update();
         audit.record(p.organizationId(), projectId, p.email(), "ENVIRONMENT_CREATED", id.toString(), body.classification() + " " + origin);
+        if (body.authentication() != null) {
+            // A new credential, bound to this environment only, and a default profile that uses it.
+            String application = db.sql("SELECT name FROM target WHERE organization_id = ? AND id = ?").params(p.organizationId(), targetId).query(String.class).single();
+            String profile = body.authentication().name() == null || body.authentication().name().isBlank() ? "Default" : body.authentication().name().strip();
+            profiles.createWithCredential(p, projectId, id, application + " / " + body.name() + " / " + profile, body.authentication());
+        }
         return id;
     }
 
