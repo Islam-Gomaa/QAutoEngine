@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Pattern;
+import qaengine.core.auth.LocatorSpec;
 import qaengine.core.model.Control;
 import qaengine.core.model.Navigation;
 import qaengine.core.model.PageSnapshot;
@@ -53,6 +54,13 @@ public final class PlaywrightBrowser implements BrowserPort {
     private final ActionGate gate;
     private final List<Signal> signals = new CopyOnWriteArrayList<>();
     private final Map<String, String> redirects = new HashMap<>();
+    /** Where the last page-level redirect pointed. A form post's URL is not known in advance, so this is how its redirect is found. */
+    private volatile String lastDocumentRedirect;
+    /**
+     * Why the guard's own fetch failed, by URL. The guard then aborts the request, so without this the
+     * browser would report every DNS, connection or TLS failure as a refusal by the client.
+     */
+    private final Map<String, String> fetchErrors = new java.util.concurrent.ConcurrentHashMap<>();
 
     public PlaywrightBrowser(ActionGate gate) {
         this(gate, new BrowserType.LaunchOptions().setHeadless(true));
@@ -123,13 +131,16 @@ public final class PlaywrightBrowser implements BrowserPort {
             var response = route.fetch(new Route.FetchOptions().setMaxRedirects(0));
             String location = response.headers().get("location");
             if (response.status() >= 300 && response.status() < 400 && location != null) {
-                redirects.put(r.url(), URI.create(r.url()).resolve(location).toString());
+                String target = URI.create(r.url()).resolve(location).toString();
+                redirects.put(r.url(), target);
+                if ("document".equals(r.resourceType())) lastDocumentRedirect = target;
                 route.abort("blockedbyclient");
                 return;
             }
             route.fulfill(new Route.FulfillOptions().setResponse(response));
         } catch (PlaywrightException e) {
             // The page or request went away, or the fetch failed. Never let the request continue.
+            fetchErrors.put(r.url(), networkCode(e.getMessage()));
             signals.add(Signal.of(Signal.Type.REQUEST_FAILED, r.url(), "request could not be completed"));
             abortQuietly(route);
         } catch (RuntimeException e) {
@@ -158,6 +169,7 @@ public final class PlaywrightBrowser implements BrowserPort {
     @Override
     public Navigation open(String url) {
         redirects.remove(url);
+        fetchErrors.remove(url);
         newPage();
         try {
             Response response = page.navigate(url, new Page.NavigateOptions().setTimeout(NAV_TIMEOUT_MS));
@@ -166,9 +178,24 @@ public final class PlaywrightBrowser implements BrowserPort {
         } catch (PlaywrightException e) {
             String target = redirects.remove(url);
             if (target != null) return Navigation.redirected(url, target);
+            String cause = fetchErrors.remove(url);
+            if (cause != null) return Navigation.failed(url, cause);
             boolean blocked = signals.stream().anyMatch(s -> s.type() == Signal.Type.BLOCKED_BY_POLICY && s.url().equals(url));
             return blocked ? Navigation.blocked(url, "blocked by policy") : Navigation.failed(url, firstLine(e.getMessage()));
         }
+    }
+
+    /** The fetch reports Node-style errors; this names them the way the browser would, and keeps nothing else from the message. */
+    static String networkCode(String message) {
+        String m = message == null ? "" : message.toLowerCase(java.util.Locale.ROOT);
+        if (m.contains("enotfound") || m.contains("eai_again") || m.contains("getaddrinfo")) return "net::ERR_NAME_NOT_RESOLVED";
+        if (m.contains("econnrefused")) return "net::ERR_CONNECTION_REFUSED";
+        if (m.contains("tunnel") || m.contains("proxy")) return "net::ERR_TUNNEL_CONNECTION_FAILED";
+        if (m.contains("eproto") || m.contains("ssl") || m.contains("tls") || m.contains("certificate") || m.contains("cert_") || m.contains("self signed")
+                || m.contains("self-signed") || m.contains("wrong version number")) return "net::ERR_SSL_PROTOCOL_ERROR";
+        if (m.contains("econnreset") || m.contains("socket hang up")) return "net::ERR_CONNECTION_RESET";
+        if (m.contains("etimedout") || m.contains("timeout")) return "net::ERR_CONNECTION_TIMED_OUT";
+        return "net::ERR_FAILED";
     }
 
     /** Lets late scripts and subresources report in, without treating busy pages as failures. */
@@ -228,6 +255,135 @@ public final class PlaywrightBrowser implements BrowserPort {
             String target = redirects.remove(submitUrl);
             return target != null ? Navigation.redirected(submitUrl, target) : Navigation.failed(submitUrl, "login did not complete");
         }
+    }
+
+    private com.microsoft.playwright.Locator resolve(LocatorSpec s) {
+        com.microsoft.playwright.Locator found = switch (s.strategy()) {
+            case ROLE -> page.getByRole(com.microsoft.playwright.options.AriaRole.valueOf(s.value().toUpperCase(java.util.Locale.ROOT)),
+                    s.name() == null ? new Page.GetByRoleOptions() : new Page.GetByRoleOptions().setName(s.name()));
+            case LABEL -> page.getByLabel(s.value());
+            case PLACEHOLDER -> page.getByPlaceholder(s.value());
+            case TEST_ID -> page.getByTestId(s.value());
+            case CSS -> page.locator(s.value());
+        };
+        return found.first();
+    }
+
+    @Override
+    public String currentUrl() {
+        return page.url();
+    }
+
+    @Override
+    public boolean isVisible(LocatorSpec element) {
+        try {
+            return resolve(element).isVisible();
+        } catch (PlaywrightException e) {
+            return false; // An unusable selector finds nothing.
+        }
+    }
+
+    @Override
+    public boolean appears(LocatorSpec element, java.time.Duration timeout) {
+        try {
+            resolve(element).waitFor(new com.microsoft.playwright.Locator.WaitForOptions()
+                    .setState(com.microsoft.playwright.options.WaitForSelectorState.VISIBLE).setTimeout(timeout.toMillis()));
+            return true;
+        } catch (PlaywrightException e) {
+            return false;
+        }
+    }
+
+    @Override
+    public void fill(LocatorSpec field, String value) {
+        resolve(field).fill(value == null ? "" : value, new com.microsoft.playwright.Locator.FillOptions().setTimeout(5000));
+    }
+
+    @Override
+    public Navigation submitWith(LocatorSpec button, java.time.Duration timeout) {
+        lastDocumentRedirect = null;
+        int before = signals.size();
+        var target = resolve(button);
+        String from = page.url();
+        try {
+            Response response = page.waitForNavigation(new Page.WaitForNavigationOptions().setTimeout(timeout.toMillis()),
+                    () -> target.click(new com.microsoft.playwright.Locator.ClickOptions().setTimeout(5000)));
+            settle();
+            return Navigation.loaded(response == null ? 0 : response.status(), page.url());
+        } catch (com.microsoft.playwright.TimeoutError e) {
+            // No navigation: the page signed in, or showed its error, in place.
+            String redirect = lastDocumentRedirect;
+            if (redirect != null) return Navigation.redirected(from, redirect);
+            settle();
+            waitForDomQuiet();
+            return Navigation.loaded(0, page.url());
+        } catch (PlaywrightException e) {
+            String redirect = lastDocumentRedirect;
+            if (redirect != null) return Navigation.redirected(from, redirect);
+            boolean blocked = signals.stream().skip(Math.min(before, signals.size())).anyMatch(x -> x.type() == Signal.Type.BLOCKED_BY_POLICY);
+            return blocked ? Navigation.blocked(from, "sign-in request refused") : Navigation.failed(from, firstLine(e.getMessage()));
+        }
+    }
+
+    private static final String SUGGEST = """
+        () => {
+          const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+          const pw = [...document.querySelectorAll('input[type=password]')].find(visible);
+          if (!pw) return null;
+          const form = pw.closest('form') || document;
+          const skip = ['password', 'hidden', 'submit', 'button', 'checkbox', 'radio', 'image', 'reset', 'file'];
+          const user = [...form.querySelectorAll('input')].find(e => e !== pw && visible(e) && !skip.includes((e.getAttribute('type') || 'text').toLowerCase()));
+          const submit = [...form.querySelectorAll('button[type=submit], input[type=submit], button:not([type])')].find(visible);
+          const d = el => el && ({
+            tag: el.tagName.toLowerCase(), testid: el.getAttribute('data-testid'), id: el.id || null, name: el.getAttribute('name'),
+            label: (el.labels && el.labels[0] ? el.labels[0].innerText : el.getAttribute('aria-label') || '').trim() || null,
+            placeholder: el.getAttribute('placeholder'), text: (el.innerText || el.value || '').trim() || null });
+          return { username: d(user), password: d(pw), submit: d(submit) };
+        }
+        """;
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public Map<String, LocatorSpec> suggestLoginFields() {
+        Map<String, Object> found;
+        try {
+            found = (Map<String, Object>) page.evaluate(SUGGEST);
+        } catch (PlaywrightException e) {
+            return Map.of();
+        }
+        if (found == null) return Map.of();
+        Map<String, LocatorSpec> out = new java.util.LinkedHashMap<>();
+        for (String field : List.of("username", "password", "submit")) {
+            Object raw = found.get(field);
+            if (raw instanceof Map<?, ?> m) {
+                LocatorSpec spec = suggestion((Map<String, Object>) m, field.equals("submit"));
+                if (spec != null) out.put(field, spec);
+            }
+        }
+        return out;
+    }
+
+    /** The most stable way to find this element: test id, then label or button text, then placeholder, then CSS. */
+    private static LocatorSpec suggestion(Map<String, Object> el, boolean button) {
+        java.util.function.Function<String, String> get = k -> el.get(k) instanceof String v && !v.isBlank() ? v : null;
+        try {
+            if (get.apply("testid") != null) return LocatorSpec.of(LocatorSpec.Strategy.TEST_ID, get.apply("testid"));
+            if (button && get.apply("text") != null) return new LocatorSpec(LocatorSpec.Strategy.ROLE, "button", get.apply("text"));
+            if (!button && get.apply("label") != null) return LocatorSpec.of(LocatorSpec.Strategy.LABEL, get.apply("label"));
+            if (get.apply("placeholder") != null) return LocatorSpec.of(LocatorSpec.Strategy.PLACEHOLDER, get.apply("placeholder"));
+            if (get.apply("id") != null && get.apply("id").matches("[A-Za-z][A-Za-z0-9_-]*")) return LocatorSpec.of(LocatorSpec.Strategy.CSS, "#" + get.apply("id"));
+            if (get.apply("name") != null && get.apply("name").matches("[A-Za-z0-9_.-]+")) return LocatorSpec.of(LocatorSpec.Strategy.CSS, get.apply("tag") + "[name=\"" + get.apply("name") + "\"]");
+        } catch (RuntimeException e) {
+            return null; // Too long or otherwise unusable: no suggestion beats a wrong one.
+        }
+        return null;
+    }
+
+    @Override
+    public byte[] screenshot(List<String> maskSelectors, List<LocatorSpec> maskElements) {
+        List<com.microsoft.playwright.Locator> mask = new ArrayList<>(maskSelectors.stream().map(page::locator).toList());
+        for (LocatorSpec element : maskElements) mask.add(resolve(element));
+        return page.screenshot(new Page.ScreenshotOptions().setMask(mask).setFullPage(true));
     }
 
     @Override

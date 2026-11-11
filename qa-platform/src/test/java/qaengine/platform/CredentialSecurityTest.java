@@ -291,7 +291,7 @@ class CredentialSecurityTest extends IntegrationTestBase {
         assertEquals(201, run(env));
         UUID first = db.sql("SELECT auth_profile_id FROM test_run WHERE organization_id = ?").param(org).query(UUID.class).single();
         JsonNode second = ok(admin, post(base() + "/environments/" + env + "/auth-profiles"),
-                Map.of("name", "Second", "method", "PASSWORD", "credentialId", credential(env, canary).toString(), "successPath", "/account", "isDefault", true));
+                Map.of("name", "Second", "method", "PASSWORD", "credentialId", credential(env, canary).toString(), "successPath", "/account", "submitPath", "/session", "isDefault", true));
         assertTrue(second.get("isDefault").asBoolean());
         assertFalse(profile(first).get("isDefault").asBoolean(), "one default per environment");
         assertEquals(first, db.sql("SELECT auth_profile_id FROM test_run WHERE organization_id = ?").param(org).query(UUID.class).single());
@@ -314,6 +314,8 @@ class CredentialSecurityTest extends IntegrationTestBase {
         assertEquals("Finish the sign-in profile's login flow before running", runRefusal(env));
         assertEquals("A web login needs a success path", detail(admin, put(base() + "/environments/" + env + "/login"), Map.of("method", "PASSWORD", "credentialId", cred.toString())));
         ok(admin, put(base() + "/auth-profiles/" + created.get("id").asString()), Map.of("name", "Draft", "method", "PASSWORD", "successPath", "/account"));
+        assertEquals("Finish the sign-in profile's login flow before running", runRefusal(env), "the gate needs the submit path to let the sign-in through");
+        ok(admin, put(base() + "/auth-profiles/" + created.get("id").asString()), Map.of("name", "Draft", "method", "PASSWORD", "successPath", "/account", "submitPath", "/session"));
         assertEquals(201, run(env));
         assertEquals("Login paths must be relative paths", detail(admin, put(base() + "/auth-profiles/" + created.get("id").asString()),
                 Map.of("name", "Draft", "method", "PASSWORD", "successPath", "https://evil.example/account")));
@@ -371,7 +373,7 @@ class CredentialSecurityTest extends IntegrationTestBase {
         assertEquals("new-mailbox-" + canary, mailboxPassword(id));
 
         // Leaving Email OTP removes the mailbox and its sealed password.
-        ok(admin, put(base() + "/auth-profiles/" + id), Map.of("name", "OTP", "method", "PASSWORD", "successPath", "/account"));
+        ok(admin, put(base() + "/auth-profiles/" + id), Map.of("name", "OTP", "method", "PASSWORD", "successPath", "/account", "submitPath", "/session"));
         assertEquals(0L, db.sql("SELECT count(*) FROM otp_mailbox WHERE organization_id = ?").param(org).query(Long.class).single());
         assertEquals(201, run(env));
     }
@@ -414,6 +416,84 @@ class CredentialSecurityTest extends IntegrationTestBase {
         for (String table : List.of("target", "credential", "auth_profile")) {
             assertEquals(0L, db.sql("SELECT count(*) FROM " + table + " WHERE organization_id = ?").param(org).query(Long.class).single(), table);
         }
+    }
+
+    // ---- login flow and connection tests (Milestone 3)
+
+    static Map<String, Object> locator(String strategy, String value, String name) {
+        var m = new HashMap<String, Object>(Map.of("strategy", strategy, "value", value));
+        if (name != null) m.put("name", name);
+        return m;
+    }
+
+    Map<String, Object> flow(Map<String, Object> locators, Object timeout) {
+        var body = new HashMap<String, Object>(Map.of("name", "Flow", "method", "PASSWORD", "loginPath", "/app/login", "submitPath", "/app/session"));
+        if (locators != null) body.put("locators", locators);
+        if (timeout != null) body.put("timeoutSeconds", timeout);
+        return body;
+    }
+
+    @Test
+    void loginFlowLocatorsAreCheckedByTheRulesTheWorkerFollows() throws Exception {
+        UUID env = environment(FIXTURE, "QA");
+        UUID cred = credential(env, canary);
+        String url = base() + "/environments/" + env + "/auth-profiles";
+        java.util.function.Function<Map<String, Object>, Map<String, Object>> with = l -> { var b = flow(l, null); b.put("credentialId", cred.toString()); return b; };
+        assertEquals("Unsupported locator strategy", detail(admin, post(url), with.apply(Map.of("success", locator("XPATH", "//div", null)))));
+        assertEquals("Unsupported role for a locator", detail(admin, post(url), with.apply(Map.of("success", locator("ROLE", "banana", "x")))));
+        assertEquals("Set both the password field and the sign-in button, or neither", detail(admin, post(url), with.apply(Map.of("password", locator("LABEL", "Password", null)))));
+        var tooFast = flow(Map.of("success", locator("TEST_ID", "account-menu", null)), 2);
+        tooFast.put("credentialId", cred.toString());
+        assertEquals("The sign-in timeout must be between 5 and 60 seconds", detail(admin, post(url), tooFast));
+
+        var good = flow(Map.of("username", locator("LABEL", " Email ", null), "password", locator("LABEL", "Password", null), "submit", locator("ROLE", "BUTTON", "Sign in"),
+                "success", locator("TEST_ID", "account-menu", null), "failure", locator("ROLE", "alert", null)), 20);
+        good.put("credentialId", cred.toString());
+        JsonNode created = ok(admin, post(url), good);
+        assertTrue(created.get("loginFlowComplete").asBoolean(), "a signed-in marker is a success check");
+        assertEquals("Email", created.get("locators").get("username").get("value").asString());
+        assertEquals("button", created.get("locators").get("submit").get("value").asString());
+        assertEquals("Sign in", created.get("locators").get("submit").get("name").asString());
+        assertEquals(20, created.get("timeoutSeconds").asInt());
+        assertEquals(201, run(env));
+        // The original form keeps the locators it does not know about.
+        assertEquals(200, status(admin, put(base() + "/environments/" + env + "/login"), Map.of("method", "PASSWORD", "credentialId", cred.toString(), "submitPath", "/app/session", "successPath", "/app/home")));
+        assertEquals("account-menu", profile(UUID.fromString(created.get("id").asString())).get("locators").get("success").get("value").asString());
+    }
+
+    UUID authTest(UUID environment, UUID profile) throws Exception {
+        var body = new HashMap<String, Object>(Map.of("environmentId", environment.toString(), "kind", "AUTH_TEST"));
+        if (profile != null) body.put("authProfileId", profile.toString());
+        return UUID.fromString(ok(tester, post(base() + "/runs").header("Idempotency-Key", UUID.randomUUID().toString()), body).get("id").asString());
+    }
+
+    @Test
+    void aConnectionTestIsAOneAttemptRunThroughTheSameGates() throws Exception {
+        UUID env = environment(FIXTURE, "QA");
+        UUID connectOnly = authTest(env, null);
+        assertEquals("AUTH_TEST", db.sql("SELECT kind FROM test_run WHERE id = ?").param(connectOnly).query(String.class).single());
+        assertTrue(db.sql("SELECT auth_profile_id IS NULL FROM test_run WHERE id = ?").param(connectOnly).query(Boolean.class).single(), "no profile: connection only");
+        assertEquals(1, db.sql("SELECT max_attempts FROM run_job WHERE run_id = ?").param(connectOnly).query(Integer.class).single(), "a retry would spend another sign-in");
+        assertEquals("AUTH_TEST", ok(tester, get(base() + "/runs/" + connectOnly), null).get("kind").asString());
+
+        assertEquals(200, login(env, credential(env, canary)));
+        UUID profile = UUID.fromString(ok(admin, get(base() + "/auth-profiles"), null).get(0).get("id").asString());
+        UUID signIn = authTest(env, profile);
+        assertEquals(profile, db.sql("SELECT auth_profile_id FROM test_run WHERE id = ?").param(signIn).query(UUID.class).single());
+        JsonNode last = profile(profile).get("lastTest");
+        assertEquals(signIn.toString(), last.get("runId").asString());
+        assertEquals("QUEUED", last.get("runStatus").asString());
+        assertTrue(last.get("status").isNull(), "nothing to report until the worker has run it");
+
+        UUID otherEnv = environment("http://fixture.qa.internal:8090/other", "QA");
+        assertEquals(404, status(tester, post(base() + "/runs").header("Idempotency-Key", UUID.randomUUID().toString()),
+                Map.of("environmentId", otherEnv.toString(), "kind", "AUTH_TEST", "authProfileId", profile.toString())), "a profile from another environment");
+        assertEquals(409, status(tester, post(base() + "/runs").header("Idempotency-Key", UUID.randomUUID().toString()),
+                Map.of("environmentId", env.toString(), "kind", "EXPLORATION", "authProfileId", profile.toString())));
+        assertEquals(409, status(tester, post(base() + "/runs").header("Idempotency-Key", UUID.randomUUID().toString()), Map.of("environmentId", env.toString(), "kind", "SOMETHING")));
+        UUID real = environment("https://staging.shop.example/", "STAGING");
+        assertEquals("Real targets are locked until the pre-pilot security gate passes", detail(tester, post(base() + "/runs").header("Idempotency-Key", UUID.randomUUID().toString()),
+                Map.of("environmentId", real.toString(), "kind", "AUTH_TEST")));
     }
 
     // ---- access and leaks

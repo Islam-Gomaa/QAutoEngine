@@ -47,8 +47,9 @@ public class CredentialController {
                                  List<String> storedFields, OffsetDateTime createdAt, OffsetDateTime updatedAt, List<String> usedBy) {}
     /** Every field is optional. A blank or missing value keeps what is stored; nothing is erased by omission. */
     public record UpdateCredential(String name, String username, String password, String totpSeed, String cookieName, String cookieValue, String lowPrivilegeToken) {}
+    /** @param lastTest the environment's latest connection test, with or without a profile; null when never tested */
     public record LoginProfile(UUID environmentId, String environmentName, String applicationName, String channel, String method, UUID credentialId, String credentialName,
-                               String loginPath, String submitPath, String successPath) {}
+                               String loginPath, String submitPath, String successPath, AuthProfiles.LastTest lastTest) {}
     public record LoginConfig(String method, UUID credentialId, String loginPath, String submitPath, String successPath) {}
 
     private final JdbcClient db;
@@ -150,13 +151,21 @@ public class CredentialController {
     public List<LoginProfile> loginProfiles(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId) {
         access.require(p, projectId, Access.Level.PROJECT_ADMIN);
         return db.sql("""
-                SELECT e.id, e.name, t.name, e.channel, ap.method, ap.credential_id, c.name, ap.login_path, ap.submit_path, ap.success_path
+                SELECT e.id, e.name, t.name, e.channel, ap.method, ap.credential_id, c.name, ap.login_path, ap.submit_path, ap.success_path,
+                       lt.run_id, lt.run_status, lt.status, lt.failure, lt.stage, lt.detail, lt.at, lt.suggestions::text
                 FROM environment e JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id
                 LEFT JOIN auth_profile ap ON ap.organization_id = e.organization_id AND ap.environment_id = e.id AND ap.is_default
                 LEFT JOIN credential c ON c.organization_id = ap.organization_id AND c.id = ap.credential_id
+                LEFT JOIN LATERAL (
+                    SELECT r.id AS run_id, r.status AS run_status, aa.status, aa.failure, aa.stage, aa.detail, coalesce(aa.created_at, r.created_at) AS at, aa.suggestions
+                    FROM test_run r LEFT JOIN auth_attempt aa ON aa.organization_id = r.organization_id AND aa.run_id = r.id
+                    WHERE r.organization_id = e.organization_id AND r.environment_id = e.id AND r.kind = 'AUTH_TEST'
+                    ORDER BY r.created_at DESC, aa.attempt DESC NULLS LAST LIMIT 1) lt ON true
                 WHERE e.organization_id = ? AND t.project_id = ? AND e.archived_at IS NULL ORDER BY t.name, e.name
                 """).params(p.organizationId(), projectId).query((rs, n) -> new LoginProfile(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5),
-                rs.getObject(6, UUID.class), rs.getString(7), rs.getString(8), rs.getString(9), rs.getString(10))).list();
+                rs.getObject(6, UUID.class), rs.getString(7), rs.getString(8), rs.getString(9), rs.getString(10),
+                rs.getObject(11) == null ? null : new AuthProfiles.LastTest(rs.getObject(11, UUID.class), rs.getString(12), rs.getString(13), rs.getString(14), rs.getString(15),
+                        rs.getString(16), rs.getObject(17, java.time.OffsetDateTime.class), profiles.suggestions(rs.getString(18))))).list();
     }
 
     @DeleteMapping("/environments/{environmentId}/login")
@@ -178,7 +187,7 @@ public class CredentialController {
         if (channel.equals("WEB") && (body.successPath() == null || body.successPath().isBlank())) throw new ConflictException("A web login needs a success path");
         var current = profiles.defaultFor(p.organizationId(), environmentId);
         var settings = new AuthProfiles.Settings(current.map(AuthProfiles.View::name).orElse("Default"), body.method(), body.credentialId(),
-                body.loginPath(), body.submitPath(), body.successPath(), null, true, null);
+                body.loginPath(), body.submitPath(), body.successPath(), null, true, null, null, null);
         if (current.isPresent()) profiles.update(p, projectId, current.get().id(), settings);
         else profiles.create(p, projectId, environmentId, settings);
         audit.record(p.organizationId(), projectId, p.email(), "LOGIN_PROFILE_SET", environmentId.toString(), body.method());

@@ -13,7 +13,10 @@ public final class WorkerContracts {
     public record JobAssignment(UUID jobId, UUID runId, int attempt, String jobToken, String startUrl, long seed, String mode,
                                 String environmentClass, List<String> allowedOrigins, List<String> includePaths,
                                 List<String> excludePaths, RunLimits limits, List<String> maskSelectors, LoginProfile login,
-                                String channel, ApiProfile api, RunScope scope) {}
+                                String channel, ApiProfile api, RunScope scope, String kind) {}
+
+    /** EXPLORATION signs in when a profile is set, then explores. AUTH_TEST signs in, or only connects, and stops. */
+    public static final String AUTH_TEST = "AUTH_TEST";
 
     /** Null for a full exploration. Otherwise only these saved cases run. */
     public record RunScope(List<String> urls, List<String> labels) {}
@@ -21,8 +24,28 @@ public final class WorkerContracts {
     /** How to test an API. The spec path is relative to the environment's base URL. */
     public record ApiProfile(String specPath, long slowMillis, List<String> seedPaths) {}
 
-    /** How to sign in. Holds no secret: the worker fetches that once, after claiming the job. */
-    public record LoginProfile(String method, String loginPath, String submitPath, String successPath) {}
+    /** How to find one element on the target's page. See qaengine.core.auth.LocatorSpec. */
+    public record Locator(String strategy, String value, String name) {}
+
+    /**
+     * How to sign in. Holds no secret: the worker fetches that once, after claiming the job.
+     * Without field locators the first login form on the page is used; success is always checked.
+     */
+    public record LoginProfile(String method, String loginPath, String submitPath, String successPath,
+                               Locator usernameField, Locator passwordField, Locator submitButton, Locator successElement, Locator failureElement,
+                               int timeoutSeconds) {
+        public LoginProfile(String method, String loginPath, String submitPath, String successPath) {
+            this(method, loginPath, submitPath, successPath, null, null, null, null, null, 0);
+        }
+    }
+
+    /**
+     * One sign-in attempt or connection check, as the worker saw it. Holds no secret.
+     *
+     * @param status      a lifecycle state, or CONNECTED when only the connection was checked
+     * @param suggestions locators read from the login page without typing, by "username", "password" and "submit"
+     */
+    public record AuthReport(String status, String failure, String stage, String detail, long durationMs, Map<String, Locator> suggestions) {}
 
     /** Returned only to the running attempt, and never stored by the worker. */
     public record LoginSecret(String username, String password, String oneTimeCode, String sessionCookieName, String sessionCookieValue, String lowPrivilegeToken) {}

@@ -71,7 +71,7 @@ export interface CaseDetail {
   defects: { id: string; number: number; title: string; severity: string; status: string }[];
 }
 export interface Run {
-  id: string; environmentId: string; environmentName: string; applicationName: string; channel: 'WEB' | 'API'; suiteId: string | null; suiteName: string | null; status: string;
+  id: string; kind?: 'EXPLORATION' | 'AUTH_TEST'; environmentId: string; environmentName: string; applicationName: string; channel: 'WEB' | 'API'; suiteId: string | null; suiteName: string | null; status: string;
   createdAt: string; finishedAt: string | null; stopReason: string | null; startedBy: string; passed: number; failed: number; inconclusive: number; blocked: number;
 }
 export interface Progress { run: Run; attempt: number; jobState: string; currentOperation: string; steps: number; defects: number; durationSeconds: number }
@@ -95,14 +95,20 @@ export interface Mailbox {
   address: string; host: string; security: 'IMAPS' | 'STARTTLS'; port: number; folder: string; senderFilter: string; subjectFilter: string; codePattern: string;
   timeoutSeconds: number; pollSeconds: number; dedicatedConfirmedBy: string; dedicatedConfirmedAt: string;
 }
+export interface LocatorView { strategy: 'ROLE' | 'LABEL' | 'PLACEHOLDER' | 'TEST_ID' | 'CSS'; value: string; name?: string | null }
+export interface Locators { username?: LocatorView | null; password?: LocatorView | null; submit?: LocatorView | null; success?: LocatorView | null; failure?: LocatorView | null }
+/** The latest connection test. status and failure stay null until the worker reports. */
+export interface LastTest { runId: string; runStatus: string; status: string | null; failure: string | null; stage: string | null; detail: string | null; at: string; suggestions: Record<string, LocatorView> }
+export interface AuthAttempt { attempt: number; authProfileId: string | null; status: string; failure: string | null; stage: string; detail: string; durationMs: number; at: string }
 export interface AuthProfile {
   id: string; environmentId: string; environmentName: string; applicationName: string; channel: 'WEB' | 'API'; name: string; method: string;
   credentialId: string; credentialName: string; credentialEnabled: boolean; credentialShared: boolean; usernameHint: string; enabled: boolean; isDefault: boolean;
   loginPath: string | null; submitPath: string | null; successPath: string | null; loginFlowComplete: boolean; mailbox: Mailbox | null; updatedAt: string;
+  locators: Locators; timeoutSeconds: number; lastTest: LastTest | null;
 }
 export interface LoginProfile {
   environmentId: string; environmentName: string; applicationName: string; channel: string; method: string | null; credentialId: string | null; credentialName: string | null;
-  loginPath: string | null; submitPath: string | null; successPath: string | null;
+  loginPath: string | null; submitPath: string | null; successPath: string | null; lastTest: LastTest | null;
 }
 export interface User { id: string; email: string; role: string; disabled: boolean }
 export interface Activity { at: string; actor: string; action: string; object: string; detail: string; projectId: string | null; projectName: string | null }

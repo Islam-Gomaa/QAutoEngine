@@ -112,6 +112,10 @@ final class PlatformClient {
         postJson("/findings", finding);
     }
 
+    void auth(qaengine.contracts.WorkerContracts.AuthReport report) throws IOException, InterruptedException {
+        postJson("/auth", report);
+    }
+
     void complete(RunCompletion completion) throws IOException, InterruptedException {
         postJson("/complete", completion);
     }

@@ -269,6 +269,33 @@ class WorkerApiTest extends IntegrationTestBase {
         assertTrue(json.contains("\"successPath\":\"/account\""), json);
     }
 
+    @Test void aConnectionTestCarriesItsKindAndLoginFlowAndItsReportIsStoredWithoutJunk() throws Exception {
+        UUID profile = signInWith(credentials.store(org, project, env, "acct", new qaengine.platform.credentials.CredentialService.Material("u", "p", null, null, null, null)));
+        db.sql("UPDATE auth_profile SET locators = '{\"success\":{\"strategy\":\"TEST_ID\",\"value\":\"account-menu\"}}'::jsonb, login_timeout_seconds = 9 WHERE id = ?").param(profile).update();
+        db.sql("UPDATE test_run SET kind = 'AUTH_TEST' WHERE id = ?").param(run).update();
+        String json = mvc.perform(post("/internal/v1/jobs/claim").header("X-Worker-Key", KEY).contentType(MediaType.APPLICATION_JSON).content("{}")).andReturn().getResponse().getContentAsString();
+        assertTrue(json.contains("\"kind\":\"AUTH_TEST\""), json);
+        assertTrue(json.contains("\"successElement\":{\"strategy\":\"TEST_ID\",\"value\":\"account-menu\""), json);
+        assertTrue(json.contains("\"timeoutSeconds\":9"), json);
+        String token = json.replaceAll(".*\"jobToken\":\"([^\"]+)\".*", "$1");
+        String url = "/internal/v1/jobs/" + job + "/auth";
+
+        mvc.perform(post(url).header("Authorization", "Bearer " + token).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"status\":\"PWNED\",\"stage\":\"DONE\",\"detail\":\"x\",\"durationMs\":1}")).andExpect(status().isBadRequest());
+        mvc.perform(post(url).contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"FAILED\",\"failure\":\"TLS_ERROR\",\"stage\":\"DONE\",\"detail\":\"x\",\"durationMs\":1}"))
+                .andExpect(status().isUnauthorized());
+        String report = "{\"status\":\"FAILED\",\"failure\":\"INVALID_CREDENTIALS\",\"stage\":\"SUBMIT\",\"detail\":\"" + "d".repeat(900) + "\",\"durationMs\":1234,"
+                + "\"suggestions\":{\"username\":{\"strategy\":\"LABEL\",\"value\":\"Email\"},\"password\":{\"strategy\":\"XPATH\",\"value\":\"//x\"},\"cookie\":{\"strategy\":\"CSS\",\"value\":\"#c\"}}}";
+        mvc.perform(post(url).header("Authorization", "Bearer " + token).contentType(MediaType.APPLICATION_JSON).content(report)).andExpect(status().isNoContent());
+
+        String stored = db.sql("SELECT status || ' ' || failure || ' ' || stage || ' ' || length(detail) || ' ' || duration_ms || ' ' || suggestions::text FROM auth_attempt WHERE run_id = ?")
+                .param(run).query(String.class).single();
+        assertEquals("FAILED INVALID_CREDENTIALS SUBMIT 500 1234 {\"username\": {\"value\": \"Email\", \"strategy\": \"LABEL\"}}", stored, "unknown fields and unusable locators are dropped");
+        String view = mvc.perform(get("/api/v1/projects/" + project + "/runs/" + run + "/auth").with(as(admin))).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertTrue(view.contains("\"failure\":\"INVALID_CREDENTIALS\""), view);
+        mvc.perform(get("/api/v1/projects/" + project + "/runs/" + run + "/auth").with(as(outsider))).andExpect(status().isNotFound());
+    }
+
     @Test void tamperingIsDetected() throws Exception {
         UUID id = upload(claim(), 1, "SCREENSHOT", PNG);
         assertEquals(List.of(), evidence.verifySample(10));

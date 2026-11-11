@@ -10,6 +10,8 @@ import java.util.regex.PatternSyntaxException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Component;
+import qaengine.core.auth.LocatorSpec;
+import qaengine.core.auth.LoginForm;
 import qaengine.core.policy.BaseUrl;
 import qaengine.core.policy.PolicyException;
 import qaengine.platform.audit.AuditLog;
@@ -17,6 +19,7 @@ import qaengine.platform.identity.SecretStore;
 import qaengine.platform.shared.ConflictException;
 import qaengine.platform.shared.NotFoundException;
 import qaengine.platform.shared.Principal;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * How a run signs in to an environment. Each profile uses one credential, and that credential belongs
@@ -43,21 +46,38 @@ public class AuthProfiles {
     public record MailboxView(String address, String host, String security, int port, String folder, String senderFilter, String subjectFilter,
                               String codePattern, int timeoutSeconds, int pollSeconds, String dedicatedConfirmedBy, OffsetDateTime dedicatedConfirmedAt) {}
 
+    /** One locator as the API carries it: strategy ROLE, LABEL, PLACEHOLDER, TEST_ID or CSS; name only for ROLE. */
+    public record LocatorView(String strategy, String value, String name) {}
+
+    /** Where the login form's fields are, and what only a signed-in page, or a refused sign-in, shows. All optional. */
+    public record Locators(LocatorView username, LocatorView password, LocatorView submit, LocatorView success, LocatorView failure) {
+        static final Locators NONE = new Locators(null, null, null, null, null);
+    }
+
+    /** The latest connection test of a profile or environment. Status and failure are empty while it is queued or running. */
+    public record LastTest(UUID runId, String runStatus, String status, String failure, String stage, String detail, OffsetDateTime at,
+                           java.util.Map<String, LocatorView> suggestions) {}
+
     /**
      * @param isDefault true makes this the profile runs use; false is ignored, so an environment never
      *                  silently loses its default
+     * @param locators  null keeps the current ones on an update
      */
     public record Settings(String name, String method, UUID credentialId, String loginPath, String submitPath, String successPath,
-                           Boolean enabled, Boolean isDefault, MailboxSettings mailbox) {}
+                           Boolean enabled, Boolean isDefault, MailboxSettings mailbox, Locators locators, Integer timeoutSeconds) {}
 
     /** A new profile together with a new credential for it, as the setup wizard creates them. */
-    public record NewProfile(String name, String method, String username, String password, Boolean enabled, MailboxSettings mailbox) {}
+    public record NewProfile(String name, String method, String username, String password, Boolean enabled, MailboxSettings mailbox,
+                             String loginPath, String submitPath, String successPath, Locators locators, Integer timeoutSeconds) {}
 
-    /** @param loginFlowComplete false while a web profile has no success path: runs are refused until it does */
+    /**
+     * @param loginFlowComplete false while a web profile lacks a success check, or the form submit path the gate needs to
+     *                          let the sign-in through: runs are refused until it has them
+     */
     public record View(UUID id, UUID environmentId, String environmentName, String applicationName, String channel, String name, String method,
                        UUID credentialId, String credentialName, boolean credentialEnabled, boolean credentialShared, String usernameHint,
                        boolean enabled, boolean isDefault, String loginPath, String submitPath, String successPath, boolean loginFlowComplete,
-                       MailboxView mailbox, OffsetDateTime updatedAt) {}
+                       MailboxView mailbox, OffsetDateTime updatedAt, Locators locators, int timeoutSeconds, LastTest lastTest) {}
 
     /** The profile a new run will use, or why the run cannot start. Both null: the environment has no sign-in. */
     public record ForRun(UUID profileId, String refusal) {}
@@ -69,12 +89,14 @@ public class AuthProfiles {
     private final SecretStore box;
     private final CredentialService credentials;
     private final AuditLog audit;
+    private final ObjectMapper json;
 
-    public AuthProfiles(JdbcClient db, SecretStore box, CredentialService credentials, AuditLog audit) {
+    public AuthProfiles(JdbcClient db, SecretStore box, CredentialService credentials, AuditLog audit, ObjectMapper json) {
         this.db = db;
         this.box = box;
         this.credentials = credentials;
         this.audit = audit;
+        this.json = json;
     }
 
     // ---- reading
@@ -83,21 +105,50 @@ public class AuthProfiles {
             SELECT ap.id, ap.environment_id, e.name, t.name, e.channel, ap.name, ap.method, ap.credential_id, c.name, c.enabled, c.shared, c.username_hint,
                    ap.enabled, ap.is_default, ap.login_path, ap.submit_path, ap.success_path, ap.updated_at,
                    m.address, m.host, m.security, m.port, m.folder, m.sender_filter, m.subject_filter, m.code_pattern, m.timeout_seconds, m.poll_seconds,
-                   m.dedicated_confirmed_by, m.dedicated_confirmed_at
+                   m.dedicated_confirmed_by, m.dedicated_confirmed_at, ap.locators::text, ap.login_timeout_seconds,
+                   lt.run_id, lt.run_status, lt.status, lt.failure, lt.stage, lt.detail, lt.at, lt.suggestions::text
             FROM auth_profile ap
             JOIN environment e ON e.organization_id = ap.organization_id AND e.id = ap.environment_id
             JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id
             JOIN credential c ON c.organization_id = ap.organization_id AND c.id = ap.credential_id
             LEFT JOIN otp_mailbox m ON m.organization_id = ap.organization_id AND m.auth_profile_id = ap.id
+            LEFT JOIN LATERAL (
+                SELECT r.id AS run_id, r.status AS run_status, aa.status, aa.failure, aa.stage, aa.detail, coalesce(aa.created_at, r.created_at) AS at, aa.suggestions
+                FROM test_run r LEFT JOIN auth_attempt aa ON aa.organization_id = r.organization_id AND aa.run_id = r.id
+                WHERE r.organization_id = ap.organization_id AND r.kind = 'AUTH_TEST' AND r.auth_profile_id = ap.id
+                ORDER BY r.created_at DESC, aa.attempt DESC NULLS LAST LIMIT 1) lt ON true
             """;
 
-    private static View view(java.sql.ResultSet rs) throws java.sql.SQLException {
+    private View view(java.sql.ResultSet rs) throws java.sql.SQLException {
         String channel = rs.getString(5);
+        String method = rs.getString(7);
         MailboxView mailbox = rs.getString(19) == null ? null : new MailboxView(rs.getString(19), rs.getString(20), rs.getString(21), rs.getInt(22), rs.getString(23),
                 rs.getString(24), rs.getString(25), rs.getString(26), rs.getInt(27), rs.getInt(28), rs.getString(29), rs.getObject(30, OffsetDateTime.class));
-        return new View(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4), channel, rs.getString(6), rs.getString(7),
+        Locators locators = json.readValue(rs.getString(31), Locators.class);
+        LastTest last = rs.getObject(33) == null ? null : new LastTest(rs.getObject(33, UUID.class), rs.getString(34), rs.getString(35), rs.getString(36), rs.getString(37),
+                rs.getString(38), rs.getObject(39, OffsetDateTime.class), suggestions(rs.getString(40)));
+        return new View(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4), channel, rs.getString(6), method,
                 rs.getObject(8, UUID.class), rs.getString(9), rs.getBoolean(10), rs.getBoolean(11), rs.getString(12), rs.getBoolean(13), rs.getBoolean(14),
-                rs.getString(15), rs.getString(16), rs.getString(17), channel.equals("API") || rs.getString(17) != null, mailbox, rs.getObject(18, OffsetDateTime.class));
+                rs.getString(15), rs.getString(16), rs.getString(17), complete(channel, method, rs.getString(16), rs.getString(17), locators), mailbox,
+                rs.getObject(18, OffsetDateTime.class), locators, rs.getInt(32), last);
+    }
+
+    @SuppressWarnings("unchecked")
+    java.util.Map<String, LocatorView> suggestions(String text) {
+        if (text == null) return java.util.Map.of();
+        var out = new java.util.LinkedHashMap<String, LocatorView>();
+        json.readValue(text, java.util.Map.class).forEach((k, v) -> out.put((String) k, json.convertValue(v, LocatorView.class)));
+        return out;
+    }
+
+    /**
+     * A web sign-in needs a way to tell success (a success path, a signed-in marker, or both), and the form's
+     * submit path, which is what the gate lets through during sign-in. A session cookie submits no form.
+     */
+    static boolean complete(String channel, String method, String submitPath, String successPath, Locators locators) {
+        if (channel.equals("API")) return true;
+        boolean check = successPath != null || (locators != null && locators.success() != null);
+        return check && (method.equals("SESSION_IMPORT") || submitPath != null);
     }
 
     public List<View> list(UUID org, UUID projectId) {
@@ -118,8 +169,21 @@ public class AuthProfiles {
     /** Decides what a new run of this environment signs in with. Anything that would make the sign-in fail or be skipped refuses the run. */
     public ForRun forRun(UUID org, UUID environmentId) {
         Optional<View> found = defaultFor(org, environmentId);
-        if (found.isEmpty()) return new ForRun(null, null);
-        View v = found.get();
+        return found.isEmpty() ? new ForRun(null, null) : usable(found.get());
+    }
+
+    /**
+     * The profile a connection test signs in with: the one asked for, which must belong to the environment, or
+     * else the default. With neither, the test only checks the connection.
+     */
+    public ForRun forTest(UUID org, UUID projectId, UUID environmentId, UUID profileId) {
+        if (profileId == null) return forRun(org, environmentId);
+        View v = get(org, projectId, profileId);
+        if (!v.environmentId().equals(environmentId)) throw new NotFoundException("Sign-in profile");
+        return usable(v);
+    }
+
+    private static ForRun usable(View v) {
         if (!v.enabled()) return new ForRun(null, "The environment's sign-in profile is disabled");
         if (!v.credentialEnabled()) return new ForRun(null, "The sign-in profile's credential is disabled");
         if (v.method().equals("PASSWORD_EMAIL_OTP")) return new ForRun(null, "Email OTP sign-in is not available yet");
@@ -190,6 +254,7 @@ public class AuthProfiles {
         check(p, env, name, method);
         if (s.credentialId() == null) throw new ConflictException("Choose a credential");
         String login = path(s.loginPath()), submit = path(s.submitPath()), success = path(s.successPath());
+        Flow flow = flow(s.locators(), s.timeoutSeconds());
         if (method.equals("PASSWORD_EMAIL_OTP") && s.mailbox() == null) throw new ConflictException("Email OTP needs a mailbox");
         if (!method.equals("PASSWORD_EMAIL_OTP") && s.mailbox() != null) throw new ConflictException("A mailbox is only used with Email OTP");
         Mailbox mailbox = s.mailbox() == null ? null : mailbox(s.mailbox());
@@ -197,9 +262,10 @@ public class AuthProfiles {
 
         UUID id = UUID.randomUUID();
         db.sql("""
-                INSERT INTO auth_profile (organization_id, id, environment_id, name, method, credential_id, enabled, login_path, submit_path, success_path)
-                VALUES (?,?,?,?,?,?,?,?,?,?)
-                """).params(p.organizationId(), id, environmentId, name, method, s.credentialId(), s.enabled() == null || s.enabled(), login, submit, success).update();
+                INSERT INTO auth_profile (organization_id, id, environment_id, name, method, credential_id, enabled, login_path, submit_path, success_path, locators, login_timeout_seconds)
+                VALUES (?,?,?,?,?,?,?,?,?,?, ?::jsonb, ?)
+                """).params(p.organizationId(), id, environmentId, name, method, s.credentialId(), s.enabled() == null || s.enabled(), login, submit, success,
+                flow.json(), flow.timeout()).update();
         if (Boolean.TRUE.equals(s.isDefault()) || !hasDefault(p.organizationId(), environmentId)) makeDefault(p.organizationId(), environmentId, id);
         if (mailbox != null) saveMailbox(p, projectId, id, mailbox, s.mailbox(), null);
         audit.record(p.organizationId(), projectId, p.email(), "AUTH_PROFILE_CREATED", id.toString(), method + " " + name);
@@ -218,7 +284,8 @@ public class AuthProfiles {
         UUID credential = credentials.store(p.organizationId(), projectId, environmentId, unique, new CredentialService.Material(n.username(), n.password(), null, null, null, null));
         audit.record(p.organizationId(), projectId, p.email(), "CREDENTIAL_CREATED", credential.toString(), unique);
         String name = text(n.name()).isEmpty() ? "Default" : text(n.name());
-        return create(p, projectId, environmentId, new Settings(name, method, credential, null, null, null, n.enabled(), true, n.mailbox()));
+        return create(p, projectId, environmentId, new Settings(name, method, credential, n.loginPath(), n.submitPath(), n.successPath(), n.enabled(), true, n.mailbox(),
+                n.locators(), n.timeoutSeconds()));
     }
 
     public void update(Principal p, UUID projectId, UUID id, Settings s) {
@@ -229,6 +296,7 @@ public class AuthProfiles {
         check(p, env, name, method);
         UUID credential = s.credentialId() == null ? current.credentialId() : s.credentialId();
         String login = path(s.loginPath()), submit = path(s.submitPath()), success = path(s.successPath());
+        Flow flow = flow(s.locators() == null ? current.locators() : s.locators(), s.timeoutSeconds() == null ? current.timeoutSeconds() : s.timeoutSeconds());
         boolean otp = method.equals("PASSWORD_EMAIL_OTP");
         if (!otp && s.mailbox() != null) throw new ConflictException("A mailbox is only used with Email OTP");
         if (otp && s.mailbox() == null && current.mailbox() == null) throw new ConflictException("Email OTP needs a mailbox");
@@ -237,9 +305,9 @@ public class AuthProfiles {
 
         db.sql("""
                 UPDATE auth_profile SET name = ?, method = ?, credential_id = ?, login_path = ?, submit_path = ?, success_path = ?,
-                       enabled = coalesce(?, enabled), updated_at = now()
+                       enabled = coalesce(?, enabled), locators = ?::jsonb, login_timeout_seconds = ?, updated_at = now()
                 WHERE organization_id = ? AND id = ?
-                """).params(name, method, credential, login, submit, success, s.enabled(), p.organizationId(), id).update();
+                """).params(name, method, credential, login, submit, success, s.enabled(), flow.json(), flow.timeout(), p.organizationId(), id).update();
         if (Boolean.TRUE.equals(s.isDefault())) makeDefault(p.organizationId(), current.environmentId(), id);
         if (!otp) db.sql("DELETE FROM otp_mailbox WHERE organization_id = ? AND auth_profile_id = ?").params(p.organizationId(), id).update();
         else if (mailbox != null) saveMailbox(p, projectId, id, mailbox, s.mailbox(), current.mailbox());
@@ -266,6 +334,42 @@ public class AuthProfiles {
                     """).params(p.organizationId(), p.organizationId(), current.environmentId()).update();
         }
         audit.record(p.organizationId(), projectId, p.email(), "AUTH_PROFILE_DELETED", id.toString(), current.name());
+    }
+
+    // ---- login flow
+
+    private record Flow(String json, int timeout) {}
+
+    /** Checked by the same rules the worker applies, so a profile the platform accepts is one the worker can follow. */
+    private Flow flow(Locators given, Integer timeoutSeconds) {
+        Locators l = given == null ? Locators.NONE : given;
+        try {
+            var form = new LoginForm(spec(l.username()), spec(l.password()), spec(l.submit()), spec(l.success()), spec(l.failure()), timeoutSeconds == null ? 0 : timeoutSeconds);
+            var stored = new java.util.LinkedHashMap<String, LocatorView>();
+            put(stored, "username", form.username());
+            put(stored, "password", form.password());
+            put(stored, "submit", form.submit());
+            put(stored, "success", form.successElement());
+            put(stored, "failure", form.failureElement());
+            return new Flow(json.writeValueAsString(stored), form.timeoutSeconds());
+        } catch (PolicyException e) {
+            throw new ConflictException(e.getMessage());
+        }
+    }
+
+    private static LocatorSpec spec(LocatorView v) {
+        if (v == null || v.value() == null || v.value().isBlank()) return null;
+        LocatorSpec.Strategy strategy;
+        try {
+            strategy = LocatorSpec.Strategy.valueOf(String.valueOf(v.strategy()));
+        } catch (IllegalArgumentException e) {
+            throw new PolicyException("Unsupported locator strategy");
+        }
+        return new LocatorSpec(strategy, v.value(), v.name());
+    }
+
+    private static void put(java.util.Map<String, LocatorView> out, String key, LocatorSpec spec) {
+        if (spec != null) out.put(key, new LocatorView(spec.strategy().name(), spec.value(), spec.name()));
     }
 
     // ---- mailbox

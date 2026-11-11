@@ -16,6 +16,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import qaengine.contracts.WorkerContracts.ApiProfile;
+import qaengine.contracts.WorkerContracts.AuthReport;
+import qaengine.contracts.WorkerContracts.Locator;
 import qaengine.contracts.WorkerContracts.FindingReport;
 import qaengine.contracts.WorkerContracts.HeartbeatResponse;
 import qaengine.contracts.WorkerContracts.JobAssignment;
@@ -49,9 +51,16 @@ public class WorkerController {
     private final TestCaseService testCases;
     private final AuditLog audit;
     private final CredentialService credentials;
+    private final tools.jackson.databind.ObjectMapper json;
+
+    private static final java.util.Set<String> AUTH_STATUSES = java.util.Set.of("NOT_STARTED", "IN_PROGRESS", "WAITING_FOR_OTP", "AUTHENTICATED", "FAILED", "EXPIRED",
+            "REQUIRES_USER_ACTION", "CONNECTED");
+    private static final java.util.Set<String> AUTH_FAILURES = java.util.Set.of("NETWORK_UNREACHABLE", "TLS_ERROR", "POLICY_REFUSED", "LOGIN_PAGE_UNAVAILABLE",
+            "INVALID_CREDENTIALS", "VERIFICATION_FAILED", "SESSION_REJECTED", "ATTEMPT_LIMIT", "OTP_NOT_RECEIVED", "OTP_EXTRACTION_FAILED", "OTP_INVALID");
+    private static final java.util.Set<String> AUTH_STAGES = java.util.Set.of("LOGIN_PAGE", "CREDENTIALS", "SUBMIT", "VERIFY", "DONE");
 
     public WorkerController(JdbcClient db, JobTokens tokens, JobQueue queue, EvidenceService evidence, DefectService defects,
-                            TestCaseService testCases, AuditLog audit, CredentialService credentials) {
+                            TestCaseService testCases, AuditLog audit, CredentialService credentials, tools.jackson.databind.ObjectMapper json) {
         this.db = db;
         this.tokens = tokens;
         this.queue = queue;
@@ -60,6 +69,7 @@ public class WorkerController {
         this.testCases = testCases;
         this.audit = audit;
         this.credentials = credentials;
+        this.json = json;
     }
 
     private JobTokens.Scope scope(String authorization, UUID jobId) {
@@ -93,7 +103,7 @@ public class WorkerController {
         return ResponseEntity.ok(db.sql("""
                 SELECT e.base_url, r.seed, ep.mode, e.classification, ep.include_paths, ep.exclude_paths, ep.mask_selectors,
                        ep.max_actions, ep.max_pages, ep.max_depth, ep.max_minutes,
-                       ap.method, ap.login_path, ap.submit_path, ap.success_path,
+                       ap.method, ap.login_path, ap.submit_path, ap.success_path, ap.locators::text, ap.login_timeout_seconds, r.kind,
                        (SELECT array_agg(origin) FROM allowed_host h WHERE h.organization_id = e.organization_id AND h.environment_id = e.id),
                        e.channel, e.api_spec_path, e.api_slow_ms, e.api_seed_paths, r.suite_id, r.max_pages
                 FROM test_run r
@@ -102,10 +112,19 @@ public class WorkerController {
                 LEFT JOIN auth_profile ap ON ap.organization_id = r.organization_id AND ap.id = r.auth_profile_id
                 WHERE r.organization_id = ? AND r.id = ?
                 """).params(c.organizationId(), c.runId()).query((rs, n) -> new JobAssignment(c.jobId(), c.runId(), c.attempt(), token,
-                rs.getString(1), rs.getLong(2), rs.getString(3), rs.getString(4), array(rs, 16), array(rs, 5), array(rs, 6),
-                new RunLimits(rs.getInt(8), rs.getObject(22) == null ? rs.getInt(9) : Math.min(rs.getInt(9), rs.getInt(22)), rs.getInt(10), rs.getInt(11), rs.getString(4).equals("PRODUCTION") ? 1 : 2), array(rs, 7),
-                rs.getString(12) == null ? null : new LoginProfile(rs.getString(12), rs.getString(13), rs.getString(14), rs.getString(15)),
-                rs.getString(17), new ApiProfile(rs.getString(18), rs.getLong(19), array(rs, 20)), scope(c.organizationId(), rs.getObject(21, UUID.class), rs.getString(1)))).single());
+                rs.getString(1), rs.getLong(2), rs.getString(3), rs.getString(4), array(rs, 19), array(rs, 5), array(rs, 6),
+                new RunLimits(rs.getInt(8), rs.getObject(25) == null ? rs.getInt(9) : Math.min(rs.getInt(9), rs.getInt(25)), rs.getInt(10), rs.getInt(11), rs.getString(4).equals("PRODUCTION") ? 1 : 2), array(rs, 7),
+                rs.getString(12) == null ? null : login(rs.getString(12), rs.getString(13), rs.getString(14), rs.getString(15), rs.getString(16), rs.getInt(17)),
+                rs.getString(20), new ApiProfile(rs.getString(21), rs.getLong(22), array(rs, 23)), scope(c.organizationId(), rs.getObject(24, UUID.class), rs.getString(1)),
+                rs.getString(18))).single());
+    }
+
+    /** The profile as the worker needs it. The locators were validated when they were saved. */
+    @SuppressWarnings("unchecked")
+    private LoginProfile login(String method, String loginPath, String submitPath, String successPath, String locators, int timeout) {
+        Map<String, Map<String, String>> l = json.readValue(locators, Map.class);
+        java.util.function.Function<String, Locator> at = k -> l.get(k) == null ? null : new Locator(l.get(k).get("strategy"), l.get(k).get("value"), l.get(k).get("name"));
+        return new LoginProfile(method, loginPath, submitPath, successPath, at.apply("username"), at.apply("password"), at.apply("submit"), at.apply("success"), at.apply("failure"), timeout);
     }
 
     /** The last recorded step of each automated case in the suite says what to repeat. */
@@ -154,6 +173,46 @@ public class WorkerController {
         UUID credential = login.credential();
         audit.record(s.organizationId(), "worker", "CREDENTIAL_RELEASED", credential.toString(), "run " + run + " attempt " + s.attempt());
         return ResponseEntity.ok(credentials.release(s.organizationId(), credential));
+    }
+
+    /**
+     * The worker's account of one sign-in attempt or connection check. Values outside the known sets are
+     * refused, and the detail is capped: it came from a worker that handled hostile pages.
+     */
+    @PostMapping("/{jobId}/auth")
+    @Transactional
+    public ResponseEntity<Void> auth(@RequestHeader(value = "Authorization", required = false) String authorization, @PathVariable UUID jobId, @RequestBody AuthReport r) {
+        JobTokens.Scope s = scope(authorization, jobId);
+        if (!AUTH_STATUSES.contains(r.status()) || (r.failure() != null && !AUTH_FAILURES.contains(r.failure())) || !AUTH_STAGES.contains(r.stage())) {
+            return ResponseEntity.badRequest().build();
+        }
+        UUID run = runOf(s);
+        var suggestions = new java.util.LinkedHashMap<String, Map<String, String>>();
+        if (r.suggestions() != null) {
+            r.suggestions().forEach((field, l) -> {
+                if (!java.util.Set.of("username", "password", "submit").contains(field) || l == null) return;
+                try {
+                    var spec = new qaengine.core.auth.LocatorSpec(qaengine.core.auth.LocatorSpec.Strategy.valueOf(l.strategy()), l.value(), l.name());
+                    var m = new java.util.LinkedHashMap<String, String>();
+                    m.put("strategy", spec.strategy().name());
+                    m.put("value", spec.value());
+                    if (spec.name() != null) m.put("name", spec.name());
+                    suggestions.put(field, m);
+                } catch (RuntimeException ignored) {
+                    // A suggestion that would not be accepted as a locator is not offered.
+                }
+            });
+        }
+        String detail = r.detail() == null ? "" : r.detail().length() > 500 ? r.detail().substring(0, 500) : r.detail();
+        db.sql("""
+                INSERT INTO auth_attempt (organization_id, id, run_id, attempt, environment_id, auth_profile_id, status, failure, stage, detail, duration_ms, suggestions)
+                SELECT r.organization_id, ?, r.id, ?, r.environment_id, r.auth_profile_id, ?, ?, ?, ?, ?, ?::jsonb FROM test_run r WHERE r.organization_id = ? AND r.id = ?
+                ON CONFLICT (organization_id, run_id, attempt) DO UPDATE SET status = EXCLUDED.status, failure = EXCLUDED.failure, stage = EXCLUDED.stage,
+                    detail = EXCLUDED.detail, duration_ms = EXCLUDED.duration_ms, suggestions = EXCLUDED.suggestions
+                """).params(UUID.randomUUID(), s.attempt(), r.status(), r.failure(), r.stage(), detail, Math.max(0, r.durationMs()), json.writeValueAsString(suggestions),
+                s.organizationId(), run).update();
+        audit.record(s.organizationId(), "worker", "AUTH_ATTEMPT_RECORDED", run.toString(), r.status() + (r.failure() == null ? "" : " " + r.failure()));
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{jobId}/start")

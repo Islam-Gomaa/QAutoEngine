@@ -5,7 +5,7 @@ import { api, type AuthProfile, type Credential, type Environment, type LoginPro
 import { Async, Card, Confirm, DataTable, dateTime, Empty, Failure, FormDialog, KeyValue, PageHeader, Tag, words } from '../design/ui';
 import { useWorkspace } from '../shell/context';
 import { Choice, NeedsProject, useForm } from './shared';
-import { blankMailbox, MailboxFields, mailboxBody, mailboxDraft, mailboxProblems, METHOD_LABELS, type MailboxDraft } from './signin';
+import { blankMailbox, flowBody, flowDraft, flowProblems, LoginFlowFields, MailboxFields, mailboxBody, mailboxDraft, mailboxProblems, METHOD_LABELS, TestResult, type FlowDraft, type MailboxDraft } from './signin';
 
 /** Mirrors Access.Level and the checks in each controller. */
 const MATRIX: [string, boolean, boolean, boolean, boolean][] = [
@@ -155,25 +155,42 @@ function Credentials({ project }: { project: string }) {
   );
 }
 
-interface ProfileForm { method: string; credentialId: string; loginPath: string; submitPath: string; successPath: string }
+interface ProfileForm { method: string; credentialId: string }
+const testing = (r: LoginProfile) => !!r.lastTest && !r.lastTest.status && ['QUEUED', 'RUNNING'].includes(r.lastTest.runStatus);
 
 function Profiles({ project }: { project: string }) {
   const client = useQueryClient();
-  const q = useQuery({ queryKey: ['login-profiles', project], queryFn: () => api<LoginProfile[]>(`/projects/${project}/login-profiles`) });
+  // Polls only while a connection test is queued or running, so a result shows up without a reload.
+  const q = useQuery({ queryKey: ['login-profiles', project], queryFn: () => api<LoginProfile[]>(`/projects/${project}/login-profiles`),
+    refetchInterval: (query) => (query.state.data?.some(testing) ? 2000 : false) });
   const details = useQuery({ queryKey: ['auth-profiles', project], queryFn: () => api<AuthProfile[]>(`/projects/${project}/auth-profiles`) });
+  const envs = useQuery({ queryKey: ['environments', project], queryFn: () => api<Environment[]>(`/projects/${project}/environments`) });
+  const [testError, setTestError] = useState<unknown>();
+  const executable = (environmentId: string) => envs.data?.find((e) => e.id === environmentId)?.executable ?? false;
+  const startTest = async (r: LoginProfile) => {
+    setTestError(undefined);
+    try {
+      await api(`/projects/${project}/runs`, 'POST', { environmentId: r.environmentId, kind: 'AUTH_TEST' }, { 'Idempotency-Key': crypto.randomUUID() });
+      await Promise.all([client.invalidateQueries({ queryKey: ['login-profiles', project] }), client.invalidateQueries({ queryKey: ['auth-profiles', project] })]);
+    } catch (e) {
+      setTestError(e);
+    }
+  };
   const credentials = useQuery({ queryKey: ['credentials', project], queryFn: () => api<Credential[]>(`/projects/${project}/credentials`) });
   const [editing, setEditing] = useState<LoginProfile | null>(null);
-  const [v, set] = useState<ProfileForm>({ method: 'PASSWORD', credentialId: '', loginPath: '/login', submitPath: '/login', successPath: '/' });
+  const [v, set] = useState<ProfileForm>({ method: 'PASSWORD', credentialId: '' });
+  const [flow, setFlow] = useState<FlowDraft>(flowDraft({ loginPath: null, submitPath: null, successPath: null }));
   const [mailbox, setMailbox] = useState<MailboxDraft>(blankMailbox());
   const [errors, setErrors] = useState<Record<string, string>>({});
   const profileOf = (environmentId: string) => details.data?.find((d) => d.environmentId === environmentId && d.isDefault);
   const current = editing ? profileOf(editing.environmentId) : undefined;
   const otp = v.method === 'PASSWORD_EMAIL_OTP';
   const save = useForm<void>(async () => {
-    const found = otp ? mailboxProblems(mailbox, current?.mailbox) : {};
+    const web = editing?.channel !== 'API';
+    const found = { ...(otp ? mailboxProblems(mailbox, current?.mailbox) : {}), ...(web ? Object.fromEntries(Object.entries(flowProblems(flow, v.method)).map(([k, x]) => [`flow.${k}`, x])) : {}) };
     setErrors(found);
-    if (Object.keys(found).length) throw new Error('Check the highlighted mailbox fields.');
-    const body = { name: current?.name ?? 'Default', method: v.method, credentialId: v.credentialId || null, loginPath: v.loginPath, submitPath: v.submitPath, successPath: v.successPath,
+    if (Object.keys(found).length) throw new Error(otp && Object.keys(found).some((k) => !k.startsWith('flow.')) ? 'Check the highlighted mailbox fields.' : 'Check the highlighted fields.');
+    const body = { name: current?.name ?? 'Default', method: v.method, credentialId: v.credentialId || null, ...(web ? flowBody(flow) : {}),
       isDefault: true, mailbox: otp ? mailboxBody(mailbox) : null };
     if (current) await api(`/projects/${project}/auth-profiles/${current.id}`, 'PUT', body);
     else await api(`/projects/${project}/environments/${editing!.environmentId}/auth-profiles`, 'POST', body);
@@ -183,7 +200,8 @@ function Profiles({ project }: { project: string }) {
   const refresh = () => Promise.all([client.invalidateQueries({ queryKey: ['login-profiles', project] }), client.invalidateQueries({ queryKey: ['auth-profiles', project] })]);
   const open = (r: LoginProfile) => {
     const p = profileOf(r.environmentId);
-    set({ method: r.method ?? (r.channel === 'API' ? 'API_TOKEN' : 'PASSWORD'), credentialId: r.credentialId ?? '', loginPath: r.loginPath ?? '/login', submitPath: r.submitPath ?? '/login', successPath: r.successPath ?? '/' });
+    set({ method: r.method ?? (r.channel === 'API' ? 'API_TOKEN' : 'PASSWORD'), credentialId: r.credentialId ?? '' });
+    setFlow(p ? flowDraft(p) : flowDraft({ loginPath: r.loginPath, submitPath: r.submitPath, successPath: r.successPath }));
     setMailbox(p?.mailbox ? mailboxDraft(p.mailbox) : blankMailbox());
     setErrors({});
     save.show();
@@ -194,17 +212,23 @@ function Profiles({ project }: { project: string }) {
   return (
     <>
       <PageHeader title="Login Profiles" description="How a run signs in to each environment. MFA is never bypassed: a profile supplies a credential, and the run signs in like a user." />
+      {testError ? <Box sx={{ mb: 2 }}><Failure error={testError} /></Box> : null}
       <Card pad={false}>
         <Async q={q}>{(rows) => (rows.length === 0 ? <Empty title="No environments yet">Add an environment under Applications & Environments first.</Empty> : (
           <DataTable label="Login profiles" testId="profile-row" rows={rows} rowKey={(r) => r.environmentId} columns={[
             { key: 'e', label: 'Environment', render: (r) => `${r.applicationName} / ${r.environmentName}` }, { key: 't', label: 'Type', render: (r) => <Tag>{r.channel === 'WEB' ? 'Web' : 'API'}</Tag> },
             { key: 'm', label: 'Method', render: (r) => (r.method ? METHOD_LABELS[r.method] ?? words(r.method) : 'None') },
             { key: 'c', label: 'Credential', render: (r) => { const p = profileOf(r.environmentId); return r.credentialName ? `${r.credentialName}${p?.usernameHint ? ` (${p.usernameHint})` : ''}` : 'None'; } },
-            { key: 'f', label: 'Login flow', render: (r) => { const p = profileOf(r.environmentId); if (!p) return ''; return p.loginFlowComplete ? 'Ready' : <Tag title="Runs are refused until the path after signing in is set.">Needs a success path</Tag>; } },
+            { key: 'f', label: 'Login flow', render: (r) => { const p = profileOf(r.environmentId); if (!p) return ''; return p.loginFlowComplete ? 'Ready' : <Tag title="Runs are refused until it has a success check and a form submit path.">Not finished</Tag>; } },
+            { key: 'ct', label: 'Connection test', render: (r) => <TestResult test={r.lastTest} /> },
             { key: 's', label: 'Status', render: (r) => { const p = profileOf(r.environmentId); if (!p) return ''; if (!p.enabled) return <Tag>Disabled</Tag>; return p.credentialEnabled ? 'Enabled' : <Tag title="Its credential is disabled, so runs are refused.">Credential disabled</Tag>; } },
             { key: 'x', label: '', align: 'right', render: (r) => { const p = profileOf(r.environmentId); return (
               <Stack direction="row" justifyContent="flex-end">
                 <Button onClick={() => open(r)}>Configure</Button>
+                <Button disabled={testing(r) || !executable(r.environmentId) || (!!p && !p.loginFlowComplete)} onClick={() => void startTest(r)}
+                  title={!executable(r.environmentId) ? 'Real targets are locked until the pre-pilot security gate passes.' : p && !p.loginFlowComplete ? 'Finish the login flow first.' : undefined}>
+                  {p ? 'Test sign-in' : 'Test connection'}
+                </Button>
                 {p && <Confirm label={p.enabled ? 'Disable' : 'Enable'} title={`${p.enabled ? 'Disable' : 'Enable'} login profile`}
                   body={p.enabled ? `Disable sign-in for ${r.environmentName}? Its runs are refused until it is enabled again.` : `Enable sign-in for ${r.environmentName}?`}
                   onConfirm={async () => { await api(`/projects/${project}/auth-profiles/${p.id}/${p.enabled ? 'disable' : 'enable'}`, 'POST'); await refresh(); }} />}
@@ -212,16 +236,12 @@ function Profiles({ project }: { project: string }) {
               </Stack>); } },
           ]} />))}</Async>
       </Card>
-      <FormDialog open={!!editing} title={`Login for ${editing?.environmentName}`} submit="Save profile" busy={save.busy} error={save.error} onClose={() => setEditing(null)} onSubmit={() => save.submit()} width={otp ? 'md' : 'sm'}>
+      <FormDialog open={!!editing} title={`Login for ${editing?.environmentName}`} submit="Save profile" busy={save.busy} error={save.error} onClose={() => setEditing(null)} onSubmit={() => save.submit()} width={api2 ? 'sm' : 'md'}>
         <Choice label="Method" value={v.method} onChange={(x) => set({ ...v, method: x })} options={api2 ? [['API_TOKEN', 'API token']] : [['PASSWORD', 'Password'], ['PASSWORD_EMAIL_OTP', 'Password and email OTP'], ['TOTP', 'Password and TOTP'], ['SESSION_IMPORT', 'Session cookie']]} />
         <Choice label="Credential" required value={v.credentialId} onChange={(x) => set({ ...v, credentialId: x })}
           options={usable.map((c) => [c.id, `${c.name}${c.usernameHint ? ` (${c.usernameHint})` : ''}${c.enabled ? '' : ', disabled'}${c.shared ? ', shared' : ''}`] as [string, string])} />
         <Typography variant="caption" color="text.secondary">Only credentials for this environment, or not yet bound to one, are offered. Choosing an unbound one binds it here.</Typography>
-        {!api2 && <>
-          <TextField label="Login page path" value={v.loginPath} onChange={(e) => set({ ...v, loginPath: e.target.value })} />
-          <TextField label="Form submit path" value={v.submitPath} onChange={(e) => set({ ...v, submitPath: e.target.value })} />
-          <TextField label="Path after signing in" required value={v.successPath} onChange={(e) => set({ ...v, successPath: e.target.value })} />
-        </>}
+        {!api2 && <LoginFlowFields value={flow} set={setFlow} errors={errors} prefix="flow." suggestions={editing?.lastTest?.suggestions ?? current?.lastTest?.suggestions} />}
         {otp && <>
           <Alert severity="info">Email OTP sign-in is not available yet. The profile can be saved, and runs are refused until it is.</Alert>
           <MailboxFields value={mailbox} set={setMailbox} errors={errors} prefix="" existing={current?.mailbox} />

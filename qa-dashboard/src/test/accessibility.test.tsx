@@ -73,6 +73,7 @@ const routes = {
   ],
   'GET /projects/p1/runs/r1aaaaaa/findings': [{ defectId: 'd1', number: 12, type: 'SERVER_ERROR', severity: 'HIGH', title: 'Crash on cart', url: '/cart', detail: 'HTTP 500', step: 2 }],
   'GET /projects/p1/runs/r1aaaaaa/api-metrics': [],
+  'GET /projects/p1/runs/r1aaaaaa/auth': [{ attempt: 1, authProfileId: 'ap1', status: 'FAILED', failure: 'INVALID_CREDENTIALS', stage: 'SUBMIT', detail: 'The page showed its sign-in error', durationMs: 2300, at }],
   'GET /projects/p1/defects': page([defect]),
   'GET /projects/p1/defects/d1': {
     defect, testCases: [{ id: 'c1', title: 'Cart loads' }],
@@ -85,10 +86,12 @@ const routes = {
   ],
   'GET /projects/p1/auth-profiles': [{ id: 'ap1', environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', name: 'Default', method: 'PASSWORD', credentialId: 'k1',
     credentialName: 'login', credentialEnabled: true, credentialShared: false, usernameHint: 'f•••r', enabled: true, isDefault: true, loginPath: '/login', submitPath: '/login', successPath: null,
-    loginFlowComplete: false, mailbox: null, updatedAt: at }],
+    loginFlowComplete: false, mailbox: null, updatedAt: at, locators: {}, timeoutSeconds: 15, lastTest: null }],
   'GET /projects/p1/login-profiles': [
-    { environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', method: 'PASSWORD', credentialId: 'k1', credentialName: 'login', loginPath: '/login', submitPath: '/login', successPath: '/' },
-    { environmentId: 'e3', environmentName: 'API', applicationName: 'Shop API', channel: 'API', method: null, credentialId: null, credentialName: null, loginPath: null, submitPath: null, successPath: null },
+    { environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', method: 'PASSWORD', credentialId: 'k1', credentialName: 'login', loginPath: '/login', submitPath: '/login', successPath: '/',
+      lastTest: { runId: 'r1aaaaaa', runStatus: 'FAILED', status: 'FAILED', failure: 'INVALID_CREDENTIALS', stage: 'SUBMIT', detail: 'The sign-in form was shown again after submitting', at,
+        suggestions: { username: { strategy: 'LABEL', value: 'Email' }, password: { strategy: 'LABEL', value: 'Password' }, submit: { strategy: 'ROLE', value: 'button', name: 'Sign in' } } } },
+    { environmentId: 'e3', environmentName: 'API', applicationName: 'Shop API', channel: 'API', method: null, credentialId: null, credentialName: null, loginPath: null, submitPath: null, successPath: null, lastTest: null },
   ],
   'GET /organization': { name: 'Acme QA' },
   'POST /notifications/seen': undefined,
@@ -178,7 +181,7 @@ describe('accessibility, WCAG 2.2 A and AA', () => {
   });
 
   it('every step of application setup has no violations, with errors showing too', async () => {
-    server({ ...routes, 'POST /projects/p1/base-url-check': { baseUrl: 'http://fixture.qa.internal:8090/', origin: 'http://fixture.qa.internal:8090', executable: true } });
+    server({ ...routes, 'POST /projects/p1/targets': { id: 't1', name: 'Shop', type: 'WEB', description: '', active: true }, 'POST /projects/p1/base-url-check': { baseUrl: 'http://fixture.qa.internal:8090/', origin: 'http://fixture.qa.internal:8090', executable: true } });
     mount(<App />, '/applications/new');
     await screen.findByRole('heading', { level: 1, name: 'Set up application' });
     await loaded();
@@ -209,7 +212,19 @@ describe('accessibility, WCAG 2.2 A and AA', () => {
     await userEvent.type(screen.getByLabelText(/^Mailbox password/), 'mb');
     await userEvent.click(screen.getByLabelText('This is a dedicated test mailbox I am authorized to use'));
     await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await screen.findByRole('heading', { level: 2, name: 'Login flow' });
+    await userEvent.type(screen.getByRole('textbox', { name: 'Password field: label' }), 'Password');
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await screen.findByText('Set a page only a signed-in user can open, a signed-in marker, or both.');
+    expect(await violations()).toEqual([]);
+    await userEvent.clear(screen.getByRole('textbox', { name: 'Password field: label' }));
+    await userEvent.type(screen.getByLabelText(/^Page only a signed-in user can open/), '/account');
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
     await screen.findByRole('heading', { level: 2, name: 'Review and save' });
+    expect(await violations()).toEqual([]);
+    await userEvent.click(screen.getByRole('button', { name: 'Save application' }));
+    await screen.findByRole('heading', { level: 2, name: 'Connection test' });
+    await screen.findAllByTestId('connection-test');
     expect(await violations()).toEqual([]);
   });
 
@@ -225,6 +240,10 @@ describe('accessibility, WCAG 2.2 A and AA', () => {
     await userEvent.type(screen.getByLabelText(/^Mailbox password/), 'mb');
     await userEvent.click(screen.getByRole('button', { name: 'Save profile' }));
     await screen.findByText('Check the highlighted mailbox fields.');
+    expect(await violations()).toEqual([]);
+    // The login flow part of the form, with the last test's suggestions offered and a role locator showing its name field.
+    await userEvent.click(screen.getByRole('button', { name: 'Use the fields found by the last test' }));
+    await screen.findByRole('textbox', { name: 'Sign-in button: name' });
     expect(await violations()).toEqual([]);
   });
 

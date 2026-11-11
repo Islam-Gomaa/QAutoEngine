@@ -1,28 +1,31 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Box, Button, CircularProgress, FormControlLabel, Stack, Step, StepLabel, Stepper, Switch, TextField, Typography } from '@mui/material';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { api, ApiError, type BaseUrlCheck, type Target } from '../api';
+import { api, ApiError, type BaseUrlCheck, type Environment, type LoginProfile, type Target } from '../api';
 import { Card, DataTable, Failure, KeyValue, Mono, PageHeader, Tag } from '../design/ui';
 import { Choice, ENVIRONMENT_CLASSES, FIXTURE_URL, NeedsProject } from './shared';
-import { blankMailbox, MailboxFields, mailboxBody, mailboxProblems, METHOD_LABELS, type MailboxDraft } from './signin';
+import { blankFlow, blankMailbox, flowBody, flowProblems, LoginFlowFields, MailboxFields, mailboxBody, mailboxProblems, METHOD_LABELS, TestResult, type FlowDraft, type MailboxDraft } from './signin';
 
 /**
  * Guided setup for an application and its environments. Everything entered lives in this component's
  * state only, so moving between steps loses nothing and leaving the page keeps nothing. Passwords typed
- * on the sign-in step are sent once, with the save, and are never shown again. The login flow and the
- * connection test are later steps that belong to later milestones.
+ * on the sign-in step are sent once, with the save, and cleared from the page as soon as it succeeds.
+ * The connection test comes after saving, because it runs on the saved configuration through a worker.
  */
 
-const STEPS = ['Application details', 'Environments', 'Sign-in', 'Review and save'] as const;
-const REVIEW = STEPS.length - 1;
+const STEPS = ['Application details', 'Environments', 'Sign-in', 'Login flow', 'Review and save', 'Connection test'] as const;
+const FLOW = 3;
+const REVIEW = 4;
+/** Reached only by saving: a test runs against the saved configuration, through a worker. */
+const TEST = 5;
 
 type SignIn = 'NONE' | 'PASSWORD' | 'PASSWORD_EMAIL_OTP';
 
 interface Details { name: string; type: 'WEB' | 'API'; description: string; active: boolean }
 interface EnvironmentDraft {
   key: number; name: string; classification: string; baseUrl: string; description: string; active: boolean; apiSpecPath: string;
-  signIn: SignIn; profileName: string; username: string; password: string; signInEnabled: boolean; mailbox: MailboxDraft;
+  signIn: SignIn; profileName: string; username: string; password: string; signInEnabled: boolean; mailbox: MailboxDraft; flow: FlowDraft;
 }
 type Errors = Record<string, string>;
 
@@ -38,7 +41,7 @@ function localUrlProblem(url: string): string | null {
 
 function blankEnvironment(key: number, type: Details['type']): EnvironmentDraft {
   return { key, name: '', classification: 'QA', baseUrl: '', description: '', active: true, apiSpecPath: type === 'API' ? '/openapi.json' : '',
-    signIn: 'NONE', profileName: 'Default', username: '', password: '', signInEnabled: true, mailbox: blankMailbox() };
+    signIn: 'NONE', profileName: 'Default', username: '', password: '', signInEnabled: true, mailbox: blankMailbox(), flow: blankFlow() };
 }
 
 /** Masks a username the way the server does, so the review shows what the credential list will show. */
@@ -147,6 +150,63 @@ function signInSummary(e: EnvironmentDraft) {
   return `${METHOD_LABELS[e.signIn]}${who ? `, ${who}` : ''}${e.signInEnabled ? '' : ', disabled'}`;
 }
 
+function LoginFlowStep({ environments, set, errors }: { environments: EnvironmentDraft[]; set: (key: number, e: Partial<EnvironmentDraft>) => void; errors: Errors }) {
+  const signing = environments.filter((e) => e.signIn !== 'NONE');
+  if (signing.length === 0) return <Alert severity="info">No environment signs in, so there is no login flow to set.</Alert>;
+  return (
+    <Stack spacing={2}>
+      {signing.map((e) => (
+        <Box key={e.key} component="section" aria-labelledby={`flow-${e.key}`} sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5, p: 2 }}>
+          <Typography id={`flow-${e.key}`} variant="h3" component="h3" sx={{ fontSize: 15, fontWeight: 600, mb: 1.5 }}>{e.name.trim()}</Typography>
+          <LoginFlowFields value={e.flow} set={(f) => set(e.key, { flow: f })} errors={errors} prefix={`${e.key}.flow.`} />
+        </Box>
+      ))}
+    </Stack>
+  );
+}
+
+function flowSummary(e: EnvironmentDraft) {
+  if (e.signIn === 'NONE') return 'None';
+  const checks = [e.flow.successPath.trim() && `opens ${e.flow.successPath.trim()}`, e.flow.success.value.trim() && 'finds the signed-in marker'].filter(Boolean).join(' and ');
+  return `Posts to ${e.flow.submitPath.trim()}; ${checks}`;
+}
+
+/** After saving: runs a connection test per environment and shows what it established. Locked targets cannot be tested. */
+function TestStep({ project, targetId }: { project: string; targetId: string }) {
+  const client = useQueryClient();
+  const envs = useQuery({ queryKey: ['environments', project], queryFn: () => api<Environment[]>(`/projects/${project}/environments`) });
+  const tests = useQuery({ queryKey: ['login-profiles', project], queryFn: () => api<LoginProfile[]>(`/projects/${project}/login-profiles`),
+    refetchInterval: (q) => (q.state.data?.some((r) => r.lastTest && !r.lastTest.status && ['QUEUED', 'RUNNING'].includes(r.lastTest.runStatus)) ? 2000 : false) });
+  const [error, setError] = useState<unknown>();
+  const rows = (envs.data ?? []).filter((e) => e.targetId === targetId);
+  const start = async (environmentId: string) => {
+    setError(undefined);
+    try {
+      await api(`/projects/${project}/runs`, 'POST', { environmentId, kind: 'AUTH_TEST' }, { 'Idempotency-Key': crypto.randomUUID() });
+      await client.invalidateQueries({ queryKey: ['login-profiles', project] });
+    } catch (e) {
+      setError(e);
+    }
+  };
+  return (
+    <Stack spacing={2}>
+      <Alert severity="success">The application is saved. A connection test opens each environment through the same safety gate as a run, and signs in where a sign-in is set up.</Alert>
+      {error ? <Failure error={error} /> : null}
+      <DataTable label="Connection tests" testId="connection-test" rows={rows} rowKey={(e) => e.id} columns={[
+        { key: 'name', label: 'Environment', render: (e) => e.name },
+        { key: 'url', label: 'Base URL', render: (e) => <Mono>{e.baseUrl}</Mono> },
+        { key: 'signin', label: 'Sign-in', render: (e) => (e.loginMethod ? METHOD_LABELS[e.loginMethod] ?? e.loginMethod : 'None') },
+        { key: 'result', label: 'Result', render: (e) => (e.executable ? <TestResult test={tests.data?.find((t) => t.environmentId === e.id)?.lastTest} /> : <Tag title="Real targets stay locked until the pre-pilot security gate passes.">Real target, locked</Tag>) },
+        { key: 'x', label: '', align: 'right', render: (e) => {
+          const last = tests.data?.find((t) => t.environmentId === e.id)?.lastTest;
+          const running = !!last && !last.status && ['QUEUED', 'RUNNING'].includes(last.runStatus);
+          return e.executable ? <Button disabled={running} onClick={() => void start(e.id)}>{last ? 'Test again' : 'Run test'}</Button> : null;
+        } },
+      ]} />
+    </Stack>
+  );
+}
+
 function ReviewStep({ details, environments, checks }: { details: Details; environments: EnvironmentDraft[]; checks: Record<number, BaseUrlCheck> }) {
   return (
     <Stack spacing={2}>
@@ -160,6 +220,7 @@ function ReviewStep({ details, environments, checks }: { details: Details; envir
           { key: 'run', label: 'Execution', render: (e) => (checks[e.key]?.executable ? <Tag>Local fixture</Tag> : <Tag title="Execution stays locked until the pre-pilot security gate passes.">Real target, locked</Tag>) },
           { key: 'policy', label: 'Policy', render: () => <Tag title="Reads only. Mutation is disabled.">Read-only</Tag> },
           { key: 'signin', label: 'Sign-in', render: (e) => signInSummary(e) },
+          { key: 'flow', label: 'Login flow', render: (e) => flowSummary(e) },
           { key: 'status', label: 'Status', render: (e) => (e.active && details.active ? 'Active' : 'Inactive') },
         ]} />
       </Card>
@@ -178,6 +239,7 @@ function Wizard({ project }: { project: string }) {
   const [nextKey, setNextKey] = useState(2);
   const [checks, setChecks] = useState<Record<number, BaseUrlCheck>>({});
   const [errors, setErrors] = useState<Errors>({});
+  const [savedTarget, setSavedTarget] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [saveError, setSaveError] = useState<unknown>();
 
@@ -226,6 +288,16 @@ function Wizard({ project }: { project: string }) {
     if (step === 2) {
       const found = signInErrors();
       setErrors(found);
+      if (Object.keys(found).length === 0) go(FLOW);
+      return;
+    }
+    if (step === FLOW) {
+      const found: Errors = {};
+      for (const e of environments) {
+        if (details.type !== 'WEB' || e.signIn === 'NONE') continue;
+        for (const [k, v] of Object.entries(flowProblems(e.flow, e.signIn))) found[`${e.key}.flow.${k}`] = v;
+      }
+      setErrors(found);
       if (Object.keys(found).length === 0) go(REVIEW);
       return;
     }
@@ -263,19 +335,22 @@ function Wizard({ project }: { project: string }) {
     setBusy(true);
     setSaveError(undefined);
     try {
-      await api<Target>(`/projects/${project}/targets`, 'POST', {
+      const created = await api<Target>(`/projects/${project}/targets`, 'POST', {
         name: details.name.trim(), type: details.type, description: details.description.trim(), active: details.active,
         environments: environments.map((e) => ({
           name: e.name.trim(), classification: e.classification, baseUrl: checks[e.key]?.baseUrl ?? e.baseUrl.trim(), description: e.description.trim(),
           active: e.active, channel: details.type, apiSpecPath: details.type === 'API' && e.apiSpecPath.trim() ? e.apiSpecPath.trim() : null,
           ...(details.type === 'WEB' && e.signIn !== 'NONE' ? { authentication: {
             name: e.profileName.trim() || 'Default', method: e.signIn, username: e.username.trim(), password: e.password, enabled: e.signInEnabled,
-            mailbox: e.signIn === 'PASSWORD_EMAIL_OTP' ? mailboxBody(e.mailbox) : null,
+            mailbox: e.signIn === 'PASSWORD_EMAIL_OTP' ? mailboxBody(e.mailbox) : null, ...flowBody(e.flow),
           } } : {}),
         })),
       });
       await Promise.all([client.invalidateQueries({ queryKey: ['targets', project] }), client.invalidateQueries({ queryKey: ['environments', project] })]);
-      navigate('/applications');
+      // The passwords have done their job. They are not kept in the page any longer than the save.
+      setEnvironments((all) => all.map((e) => ({ ...e, password: '', mailbox: { ...e.mailbox, password: '' } })));
+      setSavedTarget(created.id);
+      go(TEST);
     } catch (error) {
       setSaveError(error);
     } finally {
@@ -285,12 +360,12 @@ function Wizard({ project }: { project: string }) {
 
   return (
     <>
-      <PageHeader title="Set up application" description="Describe the application, where it runs, and how runs sign in. The login flow and connection tests come in a later release." />
+      <PageHeader title="Set up application" description="Describe the application, where it runs and how runs sign in, then test the connection. Nothing reads as connected until a test has passed." />
       <Stepper activeStep={step} sx={{ mb: 3 }}>
         {STEPS.map((s, i) => <Step key={s} completed={i < step}><StepLabel>{s}</StepLabel></Step>)}
       </Stepper>
       <Card>
-        <form onSubmit={(e) => { e.preventDefault(); void (step === REVIEW ? save() : next()); }} noValidate>
+        <form onSubmit={(e) => { e.preventDefault(); if (step === TEST) navigate('/applications'); else void (step === REVIEW ? save() : next()); }} noValidate>
           <StepHeading index={step} focus={moved} />
           <ErrorSummary errors={errors} />
           {saveError ? <Box sx={{ mb: 2 }}><Failure error={saveError} /></Box> : null}
@@ -298,13 +373,15 @@ function Wizard({ project }: { project: string }) {
           {step === 1 && <EnvironmentsStep type={details.type} environments={environments} set={setEnvironment} errors={errors}
             add={() => { setEnvironments((all) => [...all, blankEnvironment(nextKey, details.type)]); setNextKey(nextKey + 1); }} />}
           {step === 2 && <SignInStep type={details.type} environments={environments} set={setEnvironment} errors={errors} />}
+          {step === FLOW && (details.type === 'WEB' ? <LoginFlowStep environments={environments} set={setEnvironment} errors={errors} /> : <Alert severity="info">API applications have no login form.</Alert>)}
           {step === REVIEW && <ReviewStep details={details} environments={environments} checks={checks} />}
+          {step === TEST && savedTarget && <TestStep project={project} targetId={savedTarget} />}
           <Stack direction="row" spacing={1} justifyContent="space-between" sx={{ mt: 3 }}>
-            <Button onClick={() => navigate('/applications')}>Cancel</Button>
+            {step === TEST ? <span /> : <Button onClick={() => navigate('/applications')}>Cancel</Button>}
             <Stack direction="row" spacing={1}>
-              {step > 0 && <Button variant="outlined" disabled={busy} onClick={() => go(step - 1)}>Back</Button>}
+              {step > 0 && step !== TEST && <Button variant="outlined" disabled={busy} onClick={() => go(step - 1)}>Back</Button>}
               <Button type="submit" variant="contained" disabled={busy} startIcon={busy ? <CircularProgress size={13} color="inherit" /> : undefined}>
-                {step === REVIEW ? 'Save application' : 'Next'}
+                {step === REVIEW ? 'Save application' : step === TEST ? 'Finish' : 'Next'}
               </Button>
             </Stack>
           </Stack>

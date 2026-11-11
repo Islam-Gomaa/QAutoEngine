@@ -50,7 +50,7 @@ class CredentialMigrationTest {
             db.sql("INSERT INTO test_run (organization_id, id, project_id, environment_id, seed, idempotency_key, created_by, finished_at, status) VALUES (?,?,?,?, 1, 'done', ?, now(), 'SUCCEEDED')")
                     .params(org, finishedRun, project, c, user).update();
 
-            Flyway.configure().dataSource(source).load().migrate();
+            Flyway.configure().dataSource(source).target("8").load().migrate();
 
             record Cred(UUID environment, boolean shared, boolean enabled, boolean updatedIsCreated) {}
             var creds = new java.util.HashMap<UUID, Cred>();

@@ -19,7 +19,11 @@ import java.util.concurrent.atomic.AtomicLong;
 import qaengine.api.ApiClient;
 import qaengine.api.ApiRunner;
 import qaengine.api.ApiVerdictEngine;
+import qaengine.contracts.WorkerContracts;
 import qaengine.contracts.WorkerContracts.JobAssignment;
+import qaengine.core.auth.AuthenticationResult;
+import qaengine.core.auth.LocatorSpec;
+import qaengine.core.auth.LoginForm;
 import qaengine.contracts.WorkerContracts.LoginSecret;
 import qaengine.contracts.WorkerContracts.RunCompletion;
 import qaengine.core.engine.ExplorationEngine;
@@ -53,6 +57,8 @@ public final class WorkerMain {
     private static final long RUN_CAP_BYTES = 1L << 30;
     static final int EXIT_SELF_STOPPED = 3;
     private static final String AUTH_EXCEPTION = "environment-login";
+    /** Exploration numbers its steps from 1 and roots them at 0, so sign-in sits apart and never joins a reproduction path. */
+    private static final int SIGN_IN_STEP = -1;
     private static final long PAUSE_MILLIS = 20;
 
     private WorkerMain() {}
@@ -108,13 +114,26 @@ public final class WorkerMain {
             ExplorationEngine engine = new ExplorationEngine(gate, browser, new VerdictEngine(policy.scope()), evidence, job.seed(), Clock.systemUTC(), job.maskSelectors())
                     .stopWhen(() -> cancelled.get() || lost.get())
                     .onProgress(step -> call(() -> platform.steps(List.of(sanitizer.step(step)))), o -> call(() -> platform.finding(sanitizer.finding(o))));
+            boolean test = WorkerContracts.AUTH_TEST.equals(job.kind());
             if (job.login() != null) {
-                LoginFlow.Outcome signedIn = signIn(gate, browser, job, secret);
-                if (signedIn != LoginFlow.Outcome.SIGNED_IN) {
-                    platform.complete(new RunCompletion("FAILED", signedIn == LoginFlow.Outcome.BLOCKED ? "AUTH_BLOCKED" : "AUTH_FAILED", 0, java.util.Map.of()));
+                LoginFlow.Attempt attempt = signIn(gate, browser, job, secret, new LoginFlow.Evidence(evidence, SIGN_IN_STEP));
+                record(platform, sanitizer, job, attempt.result(), false);
+                if (attempt.outcome() != LoginFlow.Outcome.SIGNED_IN) {
+                    String reason = test ? attempt.result().failure().name() : attempt.outcome() == LoginFlow.Outcome.BLOCKED ? "AUTH_BLOCKED" : "AUTH_FAILED";
+                    platform.complete(new RunCompletion("FAILED", reason, 1, java.util.Map.of()));
                     return;
                 }
-                engine.sessionEndsAt(job.login().loginPath()).seed(base(job) + job.login().successPath());
+                if (test) {
+                    platform.complete(new RunCompletion("SUCCEEDED", "AUTHENTICATED", 1, java.util.Map.of()));
+                    return;
+                }
+                engine.sessionEndsAt(job.login().loginPath());
+                if (job.login().successPath() != null) engine.seed(base(job) + job.login().successPath());
+            } else if (test) {
+                var connected = new LoginFlow(gate, browser).connect(job.startUrl(), new LoginFlow.Evidence(evidence, SIGN_IN_STEP));
+                record(platform, sanitizer, job, connected, true);
+                platform.complete(new RunCompletion(connected.failure() == null ? "SUCCEEDED" : "FAILED", connected.failure() == null ? "CONNECTED" : connected.failure().name(), 1, java.util.Map.of()));
+                return;
             }
             RunResult result = job.scope() == null ? engine.explore(job.startUrl()) : engine.visitOnly(job.scope().urls());
             if (lost.get()) return;
@@ -173,11 +192,35 @@ public final class WorkerMain {
         return job.startUrl().replaceAll("/+$", "");
     }
 
-    private static LoginFlow.Outcome signIn(ActionGate gate, PlaywrightBrowser browser, JobAssignment job, LoginSecret s) {
+    private static LoginFlow.Attempt signIn(ActionGate gate, PlaywrightBrowser browser, JobAssignment job, LoginSecret s, LoginFlow.Evidence evidence) {
         var profile = job.login();
-        var spec = new LoginFlow.Spec(LoginFlow.Method.valueOf(profile.method()), base(job), profile.loginPath(), profile.successPath(), AUTH_EXCEPTION);
+        LoginForm form;
+        try {
+            form = new LoginForm(locator(profile.usernameField()), locator(profile.passwordField()), locator(profile.submitButton()),
+                    locator(profile.successElement()), locator(profile.failureElement()), profile.timeoutSeconds());
+        } catch (RuntimeException e) {
+            // The platform validates these; a profile it let through but this cannot read is not guessed around.
+            form = LoginForm.automatic();
+        }
+        var spec = new LoginFlow.Spec(LoginFlow.Method.valueOf(profile.method()), base(job), profile.loginPath() == null ? "" : profile.loginPath(), profile.successPath(), AUTH_EXCEPTION, form);
         var credentials = new LoginFlow.Credentials(s.username(), s.password(), s.oneTimeCode(), s.sessionCookieName(), s.sessionCookieValue());
-        return new LoginFlow(gate, browser).signIn(spec, credentials);
+        return new LoginFlow(gate, browser).attempt(spec, credentials, evidence);
+    }
+
+    private static LocatorSpec locator(WorkerContracts.Locator l) {
+        return l == null ? null : new LocatorSpec(LocatorSpec.Strategy.valueOf(l.strategy()), l.value(), l.name());
+    }
+
+    /** Sign-in shows in the step log as its own step, before any exploration step, and its evidence hangs off it. */
+    private static void record(PlatformClient platform, Sanitizer sanitizer, JobAssignment job, AuthenticationResult r, boolean connectionOnly) {
+        var verdict = r.failure() == null ? qaengine.core.verdict.Verdict.PASS
+                : r.failure() == AuthenticationResult.Failure.POLICY_REFUSED || r.failure() == AuthenticationResult.Failure.ATTEMPT_LIMIT ? qaengine.core.verdict.Verdict.BLOCKED
+                : qaengine.core.verdict.Verdict.FAIL;
+        String url = connectionOnly || job.login() == null ? job.startUrl() : base(job) + (job.login().loginPath() == null ? "" : job.login().loginPath());
+        var step = new qaengine.core.engine.StepRecord(SIGN_IN_STEP, SIGN_IN_STEP, qaengine.core.policy.ActionRequest.Kind.FORM_SUBMIT, url,
+                connectionOnly ? "Connect" : "Sign in", List.of(), verdict, 0, "", r.detail(), r.duration().toMillis());
+        call(() -> platform.steps(List.of(sanitizer.step(step))));
+        call(() -> platform.auth(sanitizer.auth(r, connectionOnly)));
     }
 
     private static ExecutionPolicy policy(JobAssignment job) {

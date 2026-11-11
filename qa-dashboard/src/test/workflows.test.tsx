@@ -147,7 +147,7 @@ describe('application setup', () => {
     if (url.includes('@')) return new Response(JSON.stringify({ detail: 'Base URL must not contain user information' }), { status: 409 });
     return { baseUrl: url.toLowerCase().replace(/\/?$/, '/'), origin: '', executable: url.includes('fixture.qa.internal') };
   };
-  const routes = { ...signedIn(), 'GET /projects/p1/targets': [], 'GET /projects/p1/environments': [], 'POST /projects/p1/base-url-check': check };
+  const routes = { ...signedIn(), 'GET /projects/p1/targets': [], 'GET /projects/p1/environments': [], 'GET /projects/p1/login-profiles': [], 'POST /projects/p1/base-url-check': check };
   const next = () => userEvent.click(screen.getByRole('button', { name: 'Next' }));
 
   it('starts from Applications', async () => {
@@ -155,7 +155,7 @@ describe('application setup', () => {
     mount(<App />, '/applications');
     await userEvent.click(await screen.findByRole('link', { name: 'Set up application' }));
     expect(await screen.findByRole('heading', { level: 1, name: 'Set up application' })).toBeInTheDocument();
-    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Step 1 of 6')).toBeInTheDocument();
   });
 
   it('is only for project admins', async () => {
@@ -239,6 +239,8 @@ describe('application setup', () => {
     await next();
     await screen.findByRole('heading', { level: 2, name: 'Sign-in' });
     await next();
+    expect(await screen.findByText('No environment signs in, so there is no login flow to set.')).toBeInTheDocument();
+    await next();
 
     await screen.findByRole('heading', { level: 2, name: 'Review and save' });
     const rows = screen.getAllByTestId('review-environment');
@@ -250,7 +252,7 @@ describe('application setup', () => {
     expect(calls.some((c) => c.method === 'POST' && c.path === '/projects/p1/targets')).toBe(false);
 
     await userEvent.click(screen.getByRole('button', { name: 'Save application' }));
-    await screen.findByRole('heading', { level: 1, name: 'Applications & Environments' });
+    await screen.findByRole('heading', { level: 2, name: 'Connection test' });
     const saves = calls.filter((c) => c.method === 'POST' && c.path === '/projects/p1/targets');
     expect(saves).toHaveLength(1);
     expect(saves[0].body).toEqual({
@@ -271,6 +273,8 @@ describe('application setup', () => {
     await next();
     await screen.findByRole('heading', { level: 2, name: 'Sign-in' });
     await next();
+    await screen.findByRole('heading', { level: 2, name: 'Login flow' });
+    await next();
     await userEvent.click(await screen.findByRole('button', { name: 'Save application' }));
     expect(await screen.findByText(/Request conflicts with existing data/)).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 2, name: 'Review and save' })).toBeInTheDocument();
@@ -279,8 +283,15 @@ describe('application setup', () => {
 
 describe('application setup: sign-in', () => {
   const check = (c: Call) => ({ baseUrl: (c.body as { baseUrl: string }).baseUrl, origin: '', executable: false });
-  const routes = { ...signedIn(), 'GET /projects/p1/targets': [], 'GET /projects/p1/environments': [], 'POST /projects/p1/base-url-check': check };
+  const routes = { ...signedIn(), 'GET /projects/p1/targets': [], 'GET /projects/p1/environments': [], 'GET /projects/p1/login-profiles': [], 'POST /projects/p1/base-url-check': check };
   const next = () => userEvent.click(screen.getByRole('button', { name: 'Next' }));
+  /** Fills the login flow step with its one required choice, a success page, and moves to the review. */
+  async function toReview() {
+    await screen.findByRole('heading', { level: 2, name: 'Login flow' });
+    await userEvent.type(screen.getByLabelText(/^Page only a signed-in user can open/), '/account');
+    await next();
+    await screen.findByRole('heading', { level: 2, name: 'Review and save' });
+  }
   async function toSignIn() {
     await userEvent.type(await screen.findByLabelText(/Application name/), 'Shop');
     await next();
@@ -314,16 +325,18 @@ describe('application setup: sign-in', () => {
     await userEvent.type(screen.getByRole('textbox', { name: /^Username/ }), 'qa-bot@shop.example');
     await userEvent.type(screen.getByLabelText(/^Password/), 'pw-canary-1');
     await next();
+    await toReview();
     const row = (await screen.findAllByTestId('review-environment'))[0];
     expect(row).toHaveTextContent('Username and password, q•••e');
     expect(document.body.textContent).not.toContain('pw-canary-1');
     expect(document.body.textContent).not.toContain('qa-bot@shop.example');
     await userEvent.click(screen.getByRole('button', { name: 'Save application' }));
-    await screen.findByRole('heading', { level: 1, name: 'Applications & Environments' });
+    await screen.findByRole('heading', { level: 2, name: 'Connection test' });
     const saves = calls.filter((c) => c.method === 'POST' && c.path === '/projects/p1/targets');
     expect(saves).toHaveLength(1);
     expect((saves[0].body as { environments: unknown[] }).environments[0]).toMatchObject({
-      authentication: { name: 'Default', method: 'PASSWORD', username: 'qa-bot@shop.example', password: 'pw-canary-1', enabled: true, mailbox: null },
+      authentication: { name: 'Default', method: 'PASSWORD', username: 'qa-bot@shop.example', password: 'pw-canary-1', enabled: true, mailbox: null,
+        loginPath: '/login', submitPath: '/login', successPath: '/account', timeoutSeconds: 15 },
     });
     expect(calls.filter((c) => JSON.stringify(c.body ?? '').includes('pw-canary-1'))).toHaveLength(1);
   });
@@ -341,6 +354,7 @@ describe('application setup: sign-in', () => {
     await userEvent.type(screen.getByLabelText(/^Mailbox password/), 'mb');
     await userEvent.click(screen.getByLabelText('This is a dedicated test mailbox I am authorized to use'));
     await next();
+    await toReview();
     await userEvent.click(await screen.findByRole('button', { name: 'Save application' }));
     await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.path === '/projects/p1/targets')).toBe(true));
     const body = calls.find((c) => c.method === 'POST' && c.path === '/projects/p1/targets')!.body as { environments: { authentication: { mailbox: object } }[] };
@@ -499,10 +513,11 @@ describe('credentials', () => {
 });
 
 describe('login profiles', () => {
-  const row = { environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', method: 'PASSWORD', credentialId: 'c1', credentialName: 'login', loginPath: '/login', submitPath: '/session', successPath: null };
+  const row = { environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', method: 'PASSWORD', credentialId: 'c1', credentialName: 'login', loginPath: '/login', submitPath: '/session', successPath: null, lastTest: null };
   const profile = { id: 'ap1', environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', name: 'Default', method: 'PASSWORD', credentialId: 'c1', credentialName: 'login',
-    credentialEnabled: true, credentialShared: false, usernameHint: 'f•••r', enabled: true, isDefault: true, loginPath: '/login', submitPath: '/session', successPath: null, loginFlowComplete: false, mailbox: null, updatedAt: '2026-11-01T00:00:00Z' };
-  const routes = { ...signedIn(), 'GET /projects/p1/login-profiles': [row], 'GET /projects/p1/auth-profiles': [profile],
+    credentialEnabled: true, credentialShared: false, usernameHint: 'f•••r', enabled: true, isDefault: true, loginPath: '/login', submitPath: '/session', successPath: null, loginFlowComplete: false, mailbox: null, updatedAt: '2026-11-01T00:00:00Z',
+    locators: {}, timeoutSeconds: 15, lastTest: null };
+  const routes = { ...signedIn(), 'GET /projects/p1/login-profiles': [row], 'GET /projects/p1/auth-profiles': [profile], 'GET /projects/p1/environments': [env({})],
     'GET /projects/p1/credentials': [credential({}), credential({ id: 'c9', name: 'elsewhere', environmentId: 'e9', environmentName: 'Other' })] };
 
   it('says when a profile cannot run yet, and offers only this environment\'s credentials', async () => {
@@ -510,7 +525,9 @@ describe('login profiles', () => {
     mount(<App />, '/login-profiles');
     const r = await screen.findByTestId('profile-row');
     expect(r).toHaveTextContent('login (f•••r)');
-    expect(r).toHaveTextContent('Needs a success path');
+    expect(r).toHaveTextContent('Not finished');
+    expect(r).toHaveTextContent('Not tested');
+    expect(within(r).getByRole('button', { name: 'Test sign-in' })).toBeDisabled();
     await userEvent.click(within(r).getByRole('button', { name: 'Configure' }));
     await userEvent.click(await screen.findByRole('combobox', { name: /^Credential/ }));
     expect(await screen.findByRole('option', { name: /login/ })).toBeInTheDocument();
@@ -533,7 +550,7 @@ describe('login profiles', () => {
     expect(within(dialog).getByText('Confirm the mailbox is dedicated to testing.')).toBeInTheDocument();
     expect(calls.some((c) => c.method === 'PUT')).toBe(false);
     await userEvent.click(within(dialog).getByLabelText('This is a dedicated test mailbox I am authorized to use'));
-    await userEvent.type(within(dialog).getByLabelText(/^Path after signing in/), 'account');
+    await userEvent.type(within(dialog).getByLabelText(/^Page only a signed-in user can open/), '/account');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save profile' }));
     await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ name: 'Default', method: 'PASSWORD_EMAIL_OTP', credentialId: 'c1', isDefault: true,
       mailbox: { address: 'otp@mail.example', host: 'imap.mail.example', password: 'mb', dedicatedMailboxConfirmed: true } }));
@@ -562,5 +579,130 @@ describe('reports', () => {
     expect(await screen.findByRole('link', { name: 'Export Excel' })).toHaveAttribute('href', expect.stringContaining('/api/v1/reports/export.xlsx'));
     expect(await screen.findByTestId('stat-Pass rate')).toHaveTextContent('No results');
     expect(screen.getByText('No results in this period')).toBeInTheDocument();
+  });
+});
+
+describe('connection tests', () => {
+  const row = (lastTest: object | null, over: object = {}) => ({ environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', method: 'PASSWORD', credentialId: 'c1',
+    credentialName: 'login', loginPath: '/app/login', submitPath: '/app/session', successPath: '/app/home', lastTest, ...over });
+  const profile = (lastTest: object | null) => ({ id: 'ap1', environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', name: 'Default', method: 'PASSWORD',
+    credentialId: 'c1', credentialName: 'login', credentialEnabled: true, credentialShared: false, usernameHint: 'f•••r', enabled: true, isDefault: true, loginPath: '/app/login',
+    submitPath: '/app/session', successPath: '/app/home', loginFlowComplete: true, mailbox: null, updatedAt: '2026-11-01T00:00:00Z', locators: {}, timeoutSeconds: 15, lastTest });
+  const test = (status: string | null, failure: string | null = null, extra: object = {}) => ({ runId: 'r9', runStatus: status ? 'SUCCEEDED' : 'RUNNING', status, failure, stage: 'DONE',
+    detail: failure ? 'The target refused the credentials (HTTP 401)' : null, at: '2026-11-01T00:00:00Z', suggestions: {}, ...extra });
+  const routes = (t: object | null) => ({ ...signedIn(), 'GET /projects/p1/login-profiles': [row(t)], 'GET /projects/p1/auth-profiles': [profile(t)],
+    'GET /projects/p1/environments': [env({})], 'GET /projects/p1/credentials': [credential({})] });
+
+  it('starts a connection test as a run of its own kind', async () => {
+    const calls = server({ ...routes(null), 'POST /projects/p1/runs': { id: 'r9' } });
+    mount(<App />, '/login-profiles');
+    await userEvent.click(within(await screen.findByTestId('profile-row')).getByRole('button', { name: 'Test sign-in' }));
+    await waitFor(() => expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ environmentId: 'e1', kind: 'AUTH_TEST' }));
+  });
+
+  it.each([
+    [null, null, 'Testing', 'running'],
+    ['AUTHENTICATED', null, 'Authentication successful', 'ok'],
+    ['CONNECTED', null, 'Connected', 'ok'],
+    ['FAILED', 'INVALID_CREDENTIALS', 'Authentication failed', 'Invalid username or password'],
+    ['FAILED', 'VERIFICATION_FAILED', 'Authentication failed', 'Sign-in could not be verified'],
+    ['FAILED', 'POLICY_REFUSED', 'Access blocked', 'Refused by the target policy'],
+    ['FAILED', 'NETWORK_UNREACHABLE', 'Connection failed', 'Network or DNS failure'],
+    ['FAILED', 'TLS_ERROR', 'Connection failed', 'TLS or certificate error'],
+    ['FAILED', 'LOGIN_PAGE_UNAVAILABLE', 'Connection failed', 'Login page unavailable'],
+  ])('shows %s %s as "%s"', async (status, failure, label, detail) => {
+    server(routes(test(status, failure)));
+    mount(<App />, '/login-profiles');
+    const r = await screen.findByTestId('profile-row');
+    expect(within(r).getByTestId('test-outcome')).toHaveTextContent(label);
+    if (failure) expect(r).toHaveTextContent(detail);
+    expect(within(r).getByRole('button', { name: 'Test sign-in' })).toHaveProperty('disabled', status === null);
+  });
+
+  it('cannot test a locked real target', async () => {
+    server({ ...routes(null), 'GET /projects/p1/environments': [env({ executable: false })] });
+    mount(<App />, '/login-profiles');
+    expect(within(await screen.findByTestId('profile-row')).getByRole('button', { name: 'Test sign-in' })).toBeDisabled();
+  });
+
+  it('fills the form fields from what the last test found, and saves them as locators', async () => {
+    const suggestions = { username: { strategy: 'LABEL', value: 'Email' }, password: { strategy: 'LABEL', value: 'Password' }, submit: { strategy: 'TEST_ID', value: 'sign-in' } };
+    const t = test('FAILED', 'INVALID_CREDENTIALS', { suggestions });
+    const calls = server({ ...routes(t), 'PUT /projects/p1/auth-profiles/ap1': profile(t) });
+    mount(<App />, '/login-profiles');
+    await userEvent.click(within(await screen.findByTestId('profile-row')).getByRole('button', { name: 'Configure' }));
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Use the fields found by the last test' }));
+    expect(within(dialog).getByRole('textbox', { name: 'Username field: label' })).toHaveValue('Email');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save profile' }));
+    await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({
+      submitPath: '/app/session', successPath: '/app/home',
+      locators: { username: { strategy: 'LABEL', value: 'Email', name: null }, password: { strategy: 'LABEL', value: 'Password', name: null }, submit: { strategy: 'TEST_ID', value: 'sign-in', name: null }, success: null, failure: null },
+    }));
+  });
+
+  it('checks the login flow before sending it', async () => {
+    const calls = server(routes(null));
+    mount(<App />, '/login-profiles');
+    await userEvent.click(within(await screen.findByTestId('profile-row')).getByRole('button', { name: 'Configure' }));
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.clear(within(dialog).getByLabelText(/^Page only a signed-in user can open/));
+    await userEvent.type(within(dialog).getByRole('textbox', { name: 'Password field: label' }), 'Password');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save profile' }));
+    expect(await within(dialog).findByText('Set a page only a signed-in user can open, a signed-in marker, or both.')).toBeInTheDocument();
+    expect(within(dialog).getByText('Set both the password field and the sign-in button, or leave all three fields empty.')).toBeInTheDocument();
+    expect(calls.some((c) => c.method === 'PUT' || c.method === 'POST')).toBe(false);
+  });
+
+  it('shows what a run\'s sign-in established on the run page', async () => {
+    const run = { id: 'r9', kind: 'AUTH_TEST', environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', suiteId: null, suiteName: null, status: 'FAILED',
+      createdAt: '2026-11-01T00:00:00Z', finishedAt: '2026-11-01T00:00:10Z', stopReason: 'INVALID_CREDENTIALS', startedBy: 'admin@qa.local', passed: 0, failed: 1, inconclusive: 0, blocked: 0 };
+    server({ ...signedIn(), 'GET /projects/p1/runs/r9/progress': { run, attempt: 1, jobState: 'FAILED', currentOperation: '', steps: 1, defects: 0, durationSeconds: 10 },
+      'GET /projects/p1/runs/r9/steps': [], 'GET /projects/p1/runs/r9/findings': [],
+      'GET /projects/p1/runs/r9/auth': [{ attempt: 1, authProfileId: 'ap1', status: 'FAILED', failure: 'INVALID_CREDENTIALS', stage: 'SUBMIT', detail: 'The page showed its sign-in error', durationMs: 2300, at: '2026-11-01T00:00:10Z' }] });
+    mount(<App />, '/execution/r9');
+    const card = await screen.findByTestId('run-auth');
+    expect(card).toHaveTextContent('Connection test');
+    expect(card).toHaveTextContent('Authentication failed');
+    expect(card).toHaveTextContent('Invalid username or password');
+    expect(card).toHaveTextContent('2.3 s');
+  });
+});
+
+describe('application setup: connection test', () => {
+  it('saves, then tests each environment it can, and says which it cannot', async () => {
+    let tested = false;
+    const fixture = env({ id: 'e5', targetId: 't9', name: 'Fixture', loginMethod: null });
+    const locked = env({ id: 'e6', targetId: 't9', name: 'Acceptance', baseUrl: 'https://uat.shop.example/', executable: false });
+    const calls = server({ ...signedIn(), 'GET /projects/p1/targets': [], 'POST /projects/p1/base-url-check': (c: Call) => ({ baseUrl: (c.body as { baseUrl: string }).baseUrl, origin: '', executable: true }),
+      'POST /projects/p1/targets': { id: 't9', name: 'Shop', type: 'WEB', description: '', active: true },
+      'GET /projects/p1/environments': [fixture, locked],
+      'GET /projects/p1/login-profiles': () => [{ environmentId: 'e5', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', method: null, credentialId: null, credentialName: null,
+        loginPath: null, submitPath: null, successPath: null, lastTest: tested ? { runId: 'r1', runStatus: 'SUCCEEDED', status: 'CONNECTED', failure: null, stage: 'DONE', detail: null, at: '2026-11-01T00:00:00Z', suggestions: {} } : null }],
+      'POST /projects/p1/runs': () => { tested = true; return { id: 'r1' }; } });
+    mount(<App />, '/applications/new');
+    const next = () => userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await userEvent.type(await screen.findByLabelText(/Application name/), 'Shop');
+    await next();
+    await userEvent.type(await screen.findByLabelText(/Environment name/), 'Fixture');
+    await userEvent.click(screen.getByRole('button', { name: 'Use local fixture' }));
+    await next();
+    await screen.findByRole('heading', { level: 2, name: 'Sign-in' });
+    await next();
+    await screen.findByRole('heading', { level: 2, name: 'Login flow' });
+    await next();
+    await userEvent.click(await screen.findByRole('button', { name: 'Save application' }));
+
+    await screen.findByRole('heading', { level: 2, name: 'Connection test' });
+    expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
+    const rows = await screen.findAllByTestId('connection-test');
+    expect(rows[1]).toHaveTextContent('Real target, locked');
+    expect(within(rows[1]).queryByRole('button')).toBeNull();
+    expect(rows[0]).toHaveTextContent('Not tested');
+    await userEvent.click(within(rows[0]).getByRole('button', { name: 'Run test' }));
+    await waitFor(() => expect(calls.find((c) => c.method === 'POST' && c.path === '/projects/p1/runs')?.body).toEqual({ environmentId: 'e5', kind: 'AUTH_TEST' }));
+    expect(await within((await screen.findAllByTestId('connection-test'))[0]).findByText('Connected')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Finish' }));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Applications & Environments' })).toBeInTheDocument();
   });
 });

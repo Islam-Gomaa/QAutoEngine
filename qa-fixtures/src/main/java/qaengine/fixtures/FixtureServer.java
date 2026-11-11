@@ -93,6 +93,7 @@ public final class FixtureServer implements AutoCloseable {
 
     private void route(HttpExchange x, String path, String body) throws IOException {
         if (ApiRoutes.handles(path)) { ApiRoutes.route(x, path); return; }
+        if (path.startsWith("/app/")) { app(x, path, body); return; }
         if (path.equals("/crash") || path.equals("/api/fail")) { send(x, 500, "text/html", "<h1>Server error</h1>"); return; }
         if (path.startsWith("/m/") || path.equals("/graphql")) { send(x, 200, "application/json", "{}"); return; }
         if (path.equals("/redirect-internal")) { redirect(x, "/m/redirect-target"); return; }
@@ -127,6 +128,92 @@ public final class FixtureServer implements AutoCloseable {
         String page = Pages.ALL.get(path);
         if (page == null) { send(x, 404, "text/html", "<h1>Not found</h1>"); return; }
         send(x, 200, "text/html; charset=utf-8", page);
+    }
+
+    // An application area that behaves like a modern product: labelled fields, a re-rendered form with an
+    // alert on a wrong password, pages behind sign-in, and variants that are hard to classify on purpose.
+
+    /** The session cookie of the application area. Separate from the older /account pages. */
+    public static final String APP_COOKIE = "app_session=fixture-app";
+
+    private static String loginPage(String action, String error) {
+        return "<!doctype html><title>Sign in</title><main><h1>Sign in to Fixture</h1>"
+                + (error == null ? "" : "<p role=\"alert\" data-testid=\"sign-in-error\">" + error + "</p>")
+                + "<form method=\"post\" action=\"" + action + "\">"
+                + "<label for=\"email\">Email</label> <input id=\"email\" name=\"email\" type=\"text\" autocomplete=\"username\">"
+                + "<label for=\"pw\">Password</label> <input id=\"pw\" name=\"password\" type=\"password\" autocomplete=\"current-password\">"
+                + "<button type=\"submit\" data-testid=\"sign-in\">Sign in</button></form></main>";
+    }
+
+    private static final String SPA_LOGIN = "<!doctype html><title>Sign in</title><main><h1>Sign in</h1>"
+            + "<p id=\"err\" role=\"alert\" hidden>Incorrect email or password.</p>"
+            + "<form><label for=\"email\">Email</label> <input id=\"email\" name=\"email\">"
+            + "<label for=\"pw\">Password</label> <input id=\"pw\" name=\"password\" type=\"password\">"
+            + "<button type=\"submit\">Sign in</button></form></main><script>"
+            + "document.querySelector('form').addEventListener('submit', async e => { e.preventDefault();"
+            + " const r = await fetch('/app/api/session', {method: 'POST', body: new URLSearchParams(new FormData(e.target))});"
+            + " if (r.ok) location.href = '/app/home'; else document.getElementById('err').hidden = false; });</script>";
+
+    /** Exact field values: a password that merely starts with the right one is wrong. */
+    private static boolean validAppLogin(String body) {
+        java.util.Map<String, String> form = new java.util.HashMap<>();
+        for (String pair : body.split("&")) {
+            String[] kv = pair.split("=", 2);
+            if (kv.length == 2) form.put(java.net.URLDecoder.decode(kv[0], StandardCharsets.UTF_8), java.net.URLDecoder.decode(kv[1], StandardCharsets.UTF_8));
+        }
+        return TEST_USER.equals(form.get("email")) && TEST_PASSWORD.equals(form.get("password"));
+    }
+
+    private static String signedIn(String title, String content) {
+        return "<!doctype html><title>" + title + "</title><header><nav aria-label=\"Account\">"
+                + "<button type=\"button\" data-testid=\"account-menu\" aria-label=\"Account menu\">Fixture User</button> <a href=\"/app/logout\">Sign out</a></nav></header>"
+                + "<main><h1>" + title + "</h1>" + content + "</main>";
+    }
+
+    private void app(HttpExchange x, String path, String body) throws IOException {
+        String cookie = x.getRequestHeaders().getFirst("Cookie");
+        boolean session = cookie != null && cookie.contains(APP_COOKIE);
+        switch (path) {
+            case "/app/login" -> send(x, 200, "text/html; charset=utf-8", loginPage("/app/session", null));
+            case "/app/login-limbo" -> send(x, 200, "text/html; charset=utf-8", loginPage("/app/session-limbo", null));
+            case "/app/login-spa" -> send(x, 200, "text/html; charset=utf-8", SPA_LOGIN);
+            case "/app/login-offsite" -> redirect(x, "http://login.elsewhere.invalid/sign-in");
+            case "/app/login-moved" -> redirect(x, "/app/login");
+            case "/app/login-broken" -> send(x, 500, "text/html", "<h1>Server error</h1>");
+            case "/app/session" -> {
+                if (validAppLogin(body)) {
+                    x.getResponseHeaders().add("Set-Cookie", APP_COOKIE + "; HttpOnly; Path=/app");
+                    redirect(x, "/app/home");
+                } else {
+                    send(x, 200, "text/html; charset=utf-8", loginPage("/app/session", "Incorrect email or password."));
+                }
+            }
+            // Accepts the password but never starts a session: only the success checks can tell.
+            case "/app/session-limbo" -> redirect(x, "/app/limbo");
+            case "/app/limbo" -> send(x, 200, "text/html", "<!doctype html><title>Almost there</title><main><h1>Something went wrong</h1><a href=\"/app/login\">Sign in</a></main>");
+            case "/app/api/session" -> {
+                if (validAppLogin(body)) {
+                    x.getResponseHeaders().add("Set-Cookie", APP_COOKIE + "; HttpOnly; Path=/app");
+                    x.sendResponseHeaders(204, -1);
+                } else {
+                    send(x, 401, "application/json", "{\"error\":\"invalid\"}");
+                }
+            }
+            case "/app/logout" -> {
+                x.getResponseHeaders().add("Set-Cookie", "app_session=gone; Max-Age=0; Path=/app");
+                redirect(x, "/app/login");
+            }
+            case "/app/home", "/app/orders", "/app/settings" -> {
+                if (!session) { redirect(x, "/app/login"); return; }
+                String content = switch (path) {
+                    case "/app/orders" -> "<table><caption>Recent orders</caption><tr><th>Order</th><th>Total</th></tr><tr><td>1001</td><td>12.00</td></tr></table><a href=\"/app/home\">Home</a>";
+                    case "/app/settings" -> "<form><label for=\"n\">Display name</label> <input id=\"n\" name=\"name\" required></form><a href=\"/app/home\">Home</a>";
+                    default -> "<p>Welcome back.</p><a href=\"/app/orders\">Orders</a> <a href=\"/app/settings\">Settings</a>";
+                };
+                send(x, 200, "text/html; charset=utf-8", signedIn(path.equals("/app/home") ? "Welcome back" : path.equals("/app/orders") ? "Orders" : "Settings", content));
+            }
+            default -> send(x, 404, "text/html", "<h1>Not found</h1>");
+        }
     }
 
     private void calendar(HttpExchange x) throws IOException {

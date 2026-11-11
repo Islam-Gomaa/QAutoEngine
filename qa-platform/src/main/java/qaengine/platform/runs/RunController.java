@@ -29,8 +29,14 @@ import qaengine.platform.shared.Principal;
 @RequestMapping("/api/v1/projects/{projectId}/runs")
 public class RunController {
 
-    public record CreateRun(UUID environmentId, UUID suiteId, Integer maxPages) {}
-    public record RunView(UUID id, UUID environmentId, String environmentName, String applicationName, String channel, UUID suiteId, String suiteName, String status,
+    /**
+     * @param kind          EXPLORATION (the default) or AUTH_TEST, which signs in, or only connects, and stops
+     * @param authProfileId for AUTH_TEST only: the profile to test; the environment's default when omitted
+     */
+    public record CreateRun(UUID environmentId, UUID suiteId, Integer maxPages, String kind, UUID authProfileId) {}
+    /** One sign-in attempt or connection check of a run. Holds no secret. */
+    public record AuthAttemptView(int attempt, UUID authProfileId, String status, String failure, String stage, String detail, long durationMs, OffsetDateTime at) {}
+    public record RunView(UUID id, String kind, UUID environmentId, String environmentName, String applicationName, String channel, UUID suiteId, String suiteName, String status,
                           OffsetDateTime createdAt, OffsetDateTime finishedAt, String stopReason, String startedBy, long passed, long failed, long inconclusive, long blocked) {}
     public record RunPage(List<RunView> items, long total) {}
     public record Progress(RunView run, int attempt, String jobState, String currentOperation, long steps, long defects, long durationSeconds) {}
@@ -55,7 +61,7 @@ public class RunController {
     }
 
     private static final String SELECT = """
-            SELECT r.id, r.environment_id, e.name, t.name, e.channel, r.suite_id, s.name, r.status, r.created_at, r.finished_at, r.stop_reason, u.email,
+            SELECT r.id, r.environment_id, e.name, t.name, e.channel, r.suite_id, s.name, r.status, r.created_at, r.finished_at, r.stop_reason, u.email, r.kind,
                    count(st.*) FILTER (WHERE st.verdict = 'PASS'), count(st.*) FILTER (WHERE st.verdict = 'FAIL'),
                    count(st.*) FILTER (WHERE st.verdict = 'INCONCLUSIVE'), count(st.*) FILTER (WHERE st.verdict = 'BLOCKED')
             FROM test_run r
@@ -66,11 +72,11 @@ public class RunController {
             LEFT JOIN run_step st ON st.organization_id = r.organization_id AND st.run_id = r.id
                  AND st.attempt = (SELECT max(x.attempt) FROM run_step x WHERE x.organization_id = r.organization_id AND x.run_id = r.id)
             """;
-    private static final String GROUP = " GROUP BY r.organization_id, r.id, e.name, t.name, e.channel, s.name, u.email ";
+    private static final String GROUP = " GROUP BY r.organization_id, r.id, e.name, t.name, e.channel, s.name, u.email, r.kind ";
 
     private static RunView map(java.sql.ResultSet rs) throws java.sql.SQLException {
-        return new RunView(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4), rs.getString(5), rs.getObject(6, UUID.class), rs.getString(7), rs.getString(8),
-                rs.getObject(9, OffsetDateTime.class), rs.getObject(10, OffsetDateTime.class), rs.getString(11), rs.getString(12), rs.getLong(13), rs.getLong(14), rs.getLong(15), rs.getLong(16));
+        return new RunView(rs.getObject(1, UUID.class), rs.getString(13), rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4), rs.getString(5), rs.getObject(6, UUID.class), rs.getString(7), rs.getString(8),
+                rs.getObject(9, OffsetDateTime.class), rs.getObject(10, OffsetDateTime.class), rs.getString(11), rs.getString(12), rs.getLong(14), rs.getLong(15), rs.getLong(16), rs.getLong(17));
     }
 
     @PostMapping
@@ -96,8 +102,14 @@ public class RunController {
         if (!policy.environmentActive()) throw new ConflictException("This environment is inactive");
         // The worker would refuse too. Saying so here keeps a real target from ever being queued.
         if (!qaengine.core.policy.ExecutionLock.isLocal(policy.baseUrl())) throw new ConflictException("Real targets are locked until the pre-pilot security gate passes");
+        String kind = body.kind() == null ? "EXPLORATION" : body.kind();
+        if (!kind.equals("EXPLORATION") && !kind.equals("AUTH_TEST")) throw new ConflictException("Unknown run kind");
+        boolean test = kind.equals("AUTH_TEST");
+        if (test && body.suiteId() != null) throw new ConflictException("A connection test does not run a suite");
+        if (!test && body.authProfileId() != null) throw new ConflictException("Only a connection test can choose a sign-in profile");
         // A run signs in with the environment's default profile as it is now. Anything that would make that sign-in fail, or be skipped, refuses the run.
-        AuthProfiles.ForRun signIn = profiles.forRun(p.organizationId(), body.environmentId());
+        AuthProfiles.ForRun signIn = test ? profiles.forTest(p.organizationId(), projectId, body.environmentId(), body.authProfileId())
+                : profiles.forRun(p.organizationId(), body.environmentId());
         if (signIn.refusal() != null) throw new ConflictException(signIn.refusal());
         if (body.maxPages() != null && (body.maxPages() < 1 || body.maxPages() > policy.maxPages())) throw new ConflictException("Page limit is outside the policy");
         if (body.suiteId() != null) {
@@ -112,10 +124,11 @@ public class RunController {
 
         UUID id = UUID.randomUUID();
         db.sql("""
-                INSERT INTO test_run (organization_id, id, project_id, environment_id, seed, idempotency_key, created_by, suite_id, max_pages, auth_profile_id)
-                VALUES (?,?,?,?,?,?,?,?,?,?)
-                """).params(p.organizationId(), id, projectId, body.environmentId(), RANDOM.nextLong(), key, p.userId(), body.suiteId(), body.maxPages(), signIn.profileId()).update();
-        queue.enqueue(p.organizationId(), id, 2, policy.minutes());
+                INSERT INTO test_run (organization_id, id, project_id, environment_id, seed, idempotency_key, created_by, suite_id, max_pages, auth_profile_id, kind)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                """).params(p.organizationId(), id, projectId, body.environmentId(), RANDOM.nextLong(), key, p.userId(), body.suiteId(), body.maxPages(), signIn.profileId(), kind).update();
+        // A connection test gets one attempt: a retry would spend another sign-in on the account.
+        queue.enqueue(p.organizationId(), id, test ? 1 : 2, test ? Math.min(policy.minutes(), 10) : policy.minutes());
         audit.record(p.organizationId(), projectId, p.email(), "RUN_CREATED", id.toString(), policy.channel());
         return ResponseEntity.status(HttpStatus.CREATED).body(view(p, projectId, id));
     }
@@ -162,6 +175,17 @@ public class RunController {
         long defects = db.sql("SELECT count(DISTINCT defect_id) FROM finding WHERE organization_id = ? AND run_id = ?").params(p.organizationId(), runId).query(Long.class).single();
         OffsetDateTime end = run.finishedAt() == null ? OffsetDateTime.now() : run.finishedAt();
         return new Progress(run, job.attempt(), job.state(), current, steps, defects, java.time.Duration.between(run.createdAt(), end).toSeconds());
+    }
+
+    @GetMapping("/{runId}/auth")
+    public List<AuthAttemptView> auth(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID runId) {
+        access.require(p, projectId, Access.Level.VIEWER);
+        view(p, projectId, runId);
+        return db.sql("""
+                SELECT attempt, auth_profile_id, status, failure, stage, detail, duration_ms, created_at FROM auth_attempt
+                WHERE organization_id = ? AND run_id = ? ORDER BY attempt
+                """).params(p.organizationId(), runId).query((rs, n) -> new AuthAttemptView(rs.getInt(1), rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4),
+                rs.getString(5), rs.getString(6), rs.getLong(7), rs.getObject(8, OffsetDateTime.class))).list();
     }
 
     @GetMapping("/{runId}/findings")

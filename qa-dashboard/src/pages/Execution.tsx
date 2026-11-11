@@ -3,12 +3,13 @@ import { Alert, Box, Button, Link, MenuItem, Stack, Tab, Tabs, TextField, Toolti
 import { useTheme } from '@mui/material/styles';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link as RouterLink, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { api, query, type ApiMetric, type Environment, type EvidenceItem, type Page, type Progress, type Run, type RunFinding, type Step, type Suite } from '../api';
+import { api, query, type ApiMetric, type AuthAttempt, type Environment, type EvidenceItem, type Page, type Progress, type Run, type RunFinding, type Step, type Suite } from '../api';
 import { SegmentBar } from '../design/charts';
 import { Async, Card, Confirm, DataTable, dateTime, duration, Empty, Failure, KeyValue, Mono, PageHeader, ScrollRegion, Stat, StatusChip, Tag, words } from '../design/ui';
 import { useWorkspace } from '../shell/context';
 import { EvidenceViewer } from './EvidenceViewer';
 import { Choice, NeedsProject } from './shared';
+import { TestResult } from './signin';
 
 function Starter({ project }: { project: string }) {
   const navigate = useNavigate();
@@ -102,10 +103,11 @@ function Detail({ project, id }: { project: string; id: string }) {
   const steps = useQuery({ queryKey: ['steps', id], queryFn: () => api<Step[]>(`/projects/${project}/runs/${id}/steps`), refetchInterval: live });
   const findings = useQuery({ queryKey: ['findings', id], queryFn: () => api<RunFinding[]>(`/projects/${project}/runs/${id}/findings`), refetchInterval: live });
   const evidence = useQuery({ queryKey: ['run-evidence', id], queryFn: () => api<Page<EvidenceItem>>(`/projects/${project}/evidence${query({ runId: id, size: 100 })}`), enabled: tab === 'evidence', refetchInterval: live });
+  const auth = useQuery({ queryKey: ['run-auth', id], queryFn: () => api<AuthAttempt[]>(`/projects/${project}/runs/${id}/auth`), refetchInterval: live });
   const metrics = useQuery({ queryKey: ['metrics', id], queryFn: () => api<ApiMetric[]>(`/projects/${project}/runs/${id}/api-metrics`), enabled: tab === 'api', refetchInterval: live });
   // Polling stops when the run ends, so read everything once more to catch the last results.
   useEffect(() => {
-    if (finished) ['steps', 'findings', 'run-evidence', 'metrics'].forEach((k) => void client.invalidateQueries({ queryKey: [k, id] }));
+    if (finished) ['steps', 'findings', 'run-evidence', 'metrics', 'run-auth'].forEach((k) => void client.invalidateQueries({ queryKey: [k, id] }));
   }, [finished, client, id]);
   return (
     <Async q={progress}>{(p) => {
@@ -115,7 +117,7 @@ function Detail({ project, id }: { project: string; id: string }) {
       const f = findings.data ?? [];
       return (
         <>
-          <PageHeader title={`${r.applicationName} / ${r.environmentName}`} description={r.suiteName ? `Suite: ${r.suiteName}` : r.channel === 'API' ? 'Full API contract run' : 'Full exploration run'} actions={<>
+          <PageHeader title={`${r.applicationName} / ${r.environmentName}`} description={r.kind === 'AUTH_TEST' ? 'Connection test: opens the environment and signs in if a sign-in is set up' : r.suiteName ? `Suite: ${r.suiteName}` : r.channel === 'API' ? 'Full API contract run' : 'Full exploration run'} actions={<>
             <StatusChip value={r.status} testId="run-status" />
             {finished && <Button variant="outlined" component="a" href={`/api/v1/projects/${project}/runs/${id}/report.html`} target="_blank" rel="noopener noreferrer">HTML report</Button>}
             {finished && <Button variant="outlined" component="a" href={`/api/v1/projects/${project}/runs/${id}/report.xlsx`} download>Excel report</Button>}
@@ -132,6 +134,17 @@ function Detail({ project, id }: { project: string; id: string }) {
               <SegmentBar parts={[{ label: 'Passed', value: r.passed, color: s.good.mark }, { label: 'Failed', value: r.failed, color: s.critical.mark }, { label: 'Blocked', value: r.blocked, color: s.warning.mark }, { label: 'Inconclusive', value: r.inconclusive, color: s.neutral.mark }]} />
               {!finished && <Typography variant="caption" component="div" sx={{ mt: 1 }}>There is no percentage: the size of an exploration is not known until it ends.</Typography>}
             </Card>
+            {(auth.data ?? []).length > 0 && (() => {
+              const a = auth.data![auth.data!.length - 1];
+              return (
+                <Card title={r.kind === 'AUTH_TEST' ? 'Connection test' : 'Sign-in'} testId="run-auth">
+                  <Stack direction={{ xs: 'column', md: 'row' }} spacing={3}>
+                    <TestResult test={{ status: a.status, failure: a.failure, detail: a.detail }} />
+                    <KeyValue items={[['Stage reached', words(a.stage)], ['Took', `${(a.durationMs / 1000).toFixed(1)} s`], ['Attempt', String(a.attempt)]]} />
+                  </Stack>
+                </Card>
+              );
+            })()}
             <Box>
               <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2 }} variant="scrollable">
                 <Tab value="steps" label={`Steps (${steps.data?.length ?? 0})`} /><Tab value="defects" label={`Defects (${f.length})`} />
