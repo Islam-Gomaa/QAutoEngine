@@ -160,7 +160,7 @@ public class CredentialController {
                     SELECT r.id AS run_id, r.status AS run_status, aa.status, aa.failure, aa.stage, aa.detail, coalesce(aa.created_at, r.created_at) AS at, aa.suggestions
                     FROM test_run r LEFT JOIN auth_attempt aa ON aa.organization_id = r.organization_id AND aa.run_id = r.id
                     WHERE r.organization_id = e.organization_id AND r.environment_id = e.id AND r.kind = 'AUTH_TEST'
-                    ORDER BY r.created_at DESC, aa.attempt DESC NULLS LAST LIMIT 1) lt ON true
+                    ORDER BY r.created_at DESC, aa.attempt DESC NULLS LAST, aa.sign_in DESC NULLS LAST LIMIT 1) lt ON true
                 WHERE e.organization_id = ? AND t.project_id = ? AND e.archived_at IS NULL ORDER BY t.name, e.name
                 """).params(p.organizationId(), projectId).query((rs, n) -> new LoginProfile(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5),
                 rs.getObject(6, UUID.class), rs.getString(7), rs.getString(8), rs.getString(9), rs.getString(10),

@@ -18,11 +18,14 @@ final class PlatformCodes implements OtpSource {
 
     private final PlatformClient platform;
     private final Redactor redactor;
+    private final int signIn;
     private boolean announced;
 
-    PlatformCodes(PlatformClient platform, Redactor redactor) {
+    /** @param signIn which sign-in of the run this is, so the dashboard asks for the right one */
+    PlatformCodes(PlatformClient platform, Redactor redactor, int signIn) {
         this.platform = platform;
         this.redactor = redactor;
+        this.signIn = signIn;
     }
 
     @Override
@@ -35,7 +38,7 @@ final class PlatformCodes implements OtpSource {
     public void waiting() {
         if (announced) return;
         announced = true;
-        call(() -> platform.auth(new AuthReport("WAITING_FOR_OTP", null, "OTP", "Waiting for the one-time code", 0, java.util.Map.of())));
+        call(() -> platform.auth(new AuthReport("WAITING_FOR_OTP", null, "OTP", "Waiting for the one-time code", 0, java.util.Map.of(), signIn)));
     }
 
     @Override

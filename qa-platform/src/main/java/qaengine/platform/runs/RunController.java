@@ -35,7 +35,8 @@ public class RunController {
      */
     public record CreateRun(UUID environmentId, UUID suiteId, Integer maxPages, String kind, UUID authProfileId) {}
     /** One sign-in attempt or connection check of a run. Holds no secret. */
-    public record AuthAttemptView(int attempt, UUID authProfileId, String status, String failure, String stage, String detail, long durationMs, OffsetDateTime at) {}
+    /** @param signIn 1 for the run's sign-in, 2 for signing in again after its session ended */
+    public record AuthAttemptView(int attempt, int signIn, UUID authProfileId, String status, String failure, String stage, String detail, long durationMs, OffsetDateTime at) {}
     public record RunView(UUID id, String kind, UUID environmentId, String environmentName, String applicationName, String channel, UUID suiteId, String suiteName, String status,
                           OffsetDateTime createdAt, OffsetDateTime finishedAt, String stopReason, String startedBy, long passed, long failed, long inconclusive, long blocked) {}
     public record RunPage(List<RunView> items, long total) {}
@@ -184,10 +185,10 @@ public class RunController {
         access.require(p, projectId, Access.Level.VIEWER);
         view(p, projectId, runId);
         return db.sql("""
-                SELECT attempt, auth_profile_id, status, failure, stage, detail, duration_ms, created_at FROM auth_attempt
-                WHERE organization_id = ? AND run_id = ? ORDER BY attempt
-                """).params(p.organizationId(), runId).query((rs, n) -> new AuthAttemptView(rs.getInt(1), rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4),
-                rs.getString(5), rs.getString(6), rs.getLong(7), rs.getObject(8, OffsetDateTime.class))).list();
+                SELECT attempt, sign_in, auth_profile_id, status, failure, stage, detail, duration_ms, created_at FROM auth_attempt
+                WHERE organization_id = ? AND run_id = ? ORDER BY attempt, sign_in
+                """).params(p.organizationId(), runId).query((rs, n) -> new AuthAttemptView(rs.getInt(1), rs.getInt(2), rs.getObject(3, UUID.class), rs.getString(4), rs.getString(5),
+                rs.getString(6), rs.getString(7), rs.getLong(8), rs.getObject(9, OffsetDateTime.class))).list();
     }
 
     public record TypedCode(String code) {}

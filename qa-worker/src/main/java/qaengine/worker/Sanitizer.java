@@ -29,11 +29,11 @@ final class Sanitizer {
     }
 
     /** Detail and suggested locators come from the target's page, so they are redacted like everything else. */
-    AuthReport auth(AuthenticationResult r, boolean connectionOnly) {
+    AuthReport auth(AuthenticationResult r, boolean connectionOnly, int signIn) {
         String status = connectionOnly && r.failure() == null ? "CONNECTED" : r.status().name();
         java.util.Map<String, Locator> suggestions = new java.util.LinkedHashMap<>();
         r.suggestions().forEach((k, v) -> suggestions.put(k, new Locator(v.strategy().name(), redactor.redact(v.value()), v.name() == null ? null : redactor.redact(v.name()))));
-        return new AuthReport(status, r.failure() == null ? null : r.failure().name(), r.stage().name(), redactor.redact(r.detail()), r.duration().toMillis(), suggestions);
+        return new AuthReport(status, r.failure() == null ? null : r.failure().name(), r.stage().name(), redactor.redact(r.detail()), r.duration().toMillis(), suggestions, signIn);
     }
 
     FindingReport finding(Observation o) {

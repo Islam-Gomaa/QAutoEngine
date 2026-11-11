@@ -201,7 +201,8 @@ public class WorkerController {
     @Transactional
     public ResponseEntity<Void> auth(@RequestHeader(value = "Authorization", required = false) String authorization, @PathVariable UUID jobId, @RequestBody AuthReport r) {
         JobTokens.Scope s = scope(authorization, jobId);
-        if (!AUTH_STATUSES.contains(r.status()) || (r.failure() != null && !AUTH_FAILURES.contains(r.failure())) || !AUTH_STAGES.contains(r.stage())) {
+        int signIn = r.signIn() == null || r.signIn() <= 0 ? 1 : r.signIn(); // workers from before signing in again send no number
+        if (!AUTH_STATUSES.contains(r.status()) || (r.failure() != null && !AUTH_FAILURES.contains(r.failure())) || !AUTH_STAGES.contains(r.stage()) || signIn > 2) {
             return ResponseEntity.badRequest().build();
         }
         UUID run = runOf(s);
@@ -223,13 +224,13 @@ public class WorkerController {
         }
         String detail = r.detail() == null ? "" : r.detail().length() > 500 ? r.detail().substring(0, 500) : r.detail();
         db.sql("""
-                INSERT INTO auth_attempt (organization_id, id, run_id, attempt, environment_id, auth_profile_id, status, failure, stage, detail, duration_ms, suggestions)
-                SELECT r.organization_id, ?, r.id, ?, r.environment_id, r.auth_profile_id, ?, ?, ?, ?, ?, ?::jsonb FROM test_run r WHERE r.organization_id = ? AND r.id = ?
-                ON CONFLICT (organization_id, run_id, attempt) DO UPDATE SET status = EXCLUDED.status, failure = EXCLUDED.failure, stage = EXCLUDED.stage,
+                INSERT INTO auth_attempt (organization_id, id, run_id, attempt, sign_in, environment_id, auth_profile_id, status, failure, stage, detail, duration_ms, suggestions)
+                SELECT r.organization_id, ?, r.id, ?, ?, r.environment_id, r.auth_profile_id, ?, ?, ?, ?, ?, ?::jsonb FROM test_run r WHERE r.organization_id = ? AND r.id = ?
+                ON CONFLICT (organization_id, run_id, attempt, sign_in) DO UPDATE SET status = EXCLUDED.status, failure = EXCLUDED.failure, stage = EXCLUDED.stage,
                     detail = EXCLUDED.detail, duration_ms = EXCLUDED.duration_ms, suggestions = EXCLUDED.suggestions
-                """).params(UUID.randomUUID(), s.attempt(), r.status(), r.failure(), r.stage(), detail, Math.max(0, r.durationMs()), json.writeValueAsString(suggestions),
+                """).params(UUID.randomUUID(), s.attempt(), signIn, r.status(), r.failure(), r.stage(), detail, Math.max(0, r.durationMs()), json.writeValueAsString(suggestions),
                 s.organizationId(), run).update();
-        audit.record(s.organizationId(), "worker", "AUTH_ATTEMPT_RECORDED", run.toString(), r.status() + (r.failure() == null ? "" : " " + r.failure()));
+        audit.record(s.organizationId(), "worker", "AUTH_ATTEMPT_RECORDED", run.toString(), (signIn == 2 ? "signed in again: " : "") + r.status() + (r.failure() == null ? "" : " " + r.failure()));
         return ResponseEntity.noContent().build();
     }
 

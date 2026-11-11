@@ -9,7 +9,7 @@ import { Async, Card, Confirm, DataTable, dateTime, duration, Empty, Failure, Ke
 import { useWorkspace } from '../shell/context';
 import { EvidenceViewer } from './EvidenceViewer';
 import { Choice, NeedsProject } from './shared';
-import { TestResult } from './signin';
+import { FAILURE_LABELS, TestResult, testOutcome } from './signin';
 
 function Starter({ project }: { project: string }) {
   const navigate = useNavigate();
@@ -142,6 +142,16 @@ function Detail({ project, id }: { project: string; id: string }) {
                     <TestResult test={{ status: a.status, failure: a.failure, detail: a.detail }} />
                     <KeyValue items={[['Stage reached', STAGES[a.stage] ?? words(a.stage)], ['Took', `${(a.durationMs / 1000).toFixed(1)} s`], ['Attempt', String(a.attempt)]]} />
                   </Stack>
+                  {auth.data!.length > 1 && (
+                    <Box component="ul" sx={{ m: 0, mt: 2, pl: 2.5 }} aria-label="Sign-ins in this run">
+                      {auth.data!.map((x) => (
+                        <Typography component="li" variant="body2" key={`${x.attempt}-${x.signIn ?? 1}`}>
+                          {(x.signIn ?? 1) === 2 ? 'Signed in again after the session ended' : 'Sign-in'}{auth.data!.some((y) => y.attempt !== x.attempt) ? ` (attempt ${x.attempt})` : ''}: {testOutcome(x).label}
+                          {x.failure ? `, ${FAILURE_LABELS[x.failure] ?? x.failure}` : ''}
+                        </Typography>
+                      ))}
+                    </Box>
+                  )}
                   {a.status === 'WAITING_FOR_OTP' && !finished && <OtpPrompt project={project} run={id} />}
                 </Card>
               );

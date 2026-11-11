@@ -148,7 +148,7 @@ public class OtpService {
         record Current(int attempt, String status) {}
         List<Current> current = db.sql("""
                 SELECT a.attempt, a.status FROM auth_attempt a JOIN test_run r ON r.organization_id = a.organization_id AND r.id = a.run_id
-                WHERE a.organization_id = ? AND a.run_id = ? AND r.project_id = ? AND r.finished_at IS NULL ORDER BY a.attempt DESC LIMIT 1
+                WHERE a.organization_id = ? AND a.run_id = ? AND r.project_id = ? AND r.finished_at IS NULL ORDER BY a.attempt DESC, a.sign_in DESC LIMIT 1
                 """).params(org, run, projectId).query((rs, n) -> new Current(rs.getInt(1), rs.getString(2))).list();
         if (current.isEmpty() || !current.getFirst().status().equals("WAITING_FOR_OTP")) throw new ConflictException("This run is not waiting for a code");
         String value = code == null ? "" : code.strip();

@@ -99,7 +99,7 @@ export interface LocatorView { strategy: 'ROLE' | 'LABEL' | 'PLACEHOLDER' | 'TES
 export interface Locators { username?: LocatorView | null; password?: LocatorView | null; submit?: LocatorView | null; success?: LocatorView | null; failure?: LocatorView | null }
 /** The latest connection test. status and failure stay null until the worker reports. */
 export interface LastTest { runId: string; runStatus: string; status: string | null; failure: string | null; stage: string | null; detail: string | null; at: string; suggestions: Record<string, LocatorView> }
-export interface AuthAttempt { attempt: number; authProfileId: string | null; status: string; failure: string | null; stage: string; detail: string; durationMs: number; at: string }
+export interface AuthAttempt { attempt: number; signIn?: number; authProfileId: string | null; status: string; failure: string | null; stage: string; detail: string; durationMs: number; at: string }
 export interface AuthProfile {
   id: string; environmentId: string; environmentName: string; applicationName: string; channel: 'WEB' | 'API'; name: string; method: string;
   credentialId: string; credentialName: string; credentialEnabled: boolean; credentialShared: boolean; usernameHint: string; enabled: boolean; isDefault: boolean;

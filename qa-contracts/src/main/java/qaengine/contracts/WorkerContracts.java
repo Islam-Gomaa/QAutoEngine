@@ -55,8 +55,9 @@ public final class WorkerContracts {
      *
      * @param status      a lifecycle state, or CONNECTED when only the connection was checked
      * @param suggestions locators read from the login page without typing, by "username", "password" and "submit"
+     * @param signIn      1 for the run's sign-in, 2 when it signed in again after its session ended; null from older workers means 1
      */
-    public record AuthReport(String status, String failure, String stage, String detail, long durationMs, Map<String, Locator> suggestions) {}
+    public record AuthReport(String status, String failure, String stage, String detail, long durationMs, Map<String, Locator> suggestions, Integer signIn) {}
 
     /** Returned only to the running attempt, and never stored by the worker. */
     public record LoginSecret(String username, String password, String oneTimeCode, String sessionCookieName, String sessionCookieValue, String lowPrivilegeToken) {}

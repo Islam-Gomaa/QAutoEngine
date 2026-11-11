@@ -53,6 +53,26 @@ public final class ExplorationEngine {
     private java.util.function.BooleanSupplier stopRequested = () -> false;
     private String loginPath;
     private boolean sessionLost;
+    private SessionKeeper keeper;
+    private int restores;
+    /** One fresh sign-in per run: a session that keeps ending is a finding about the target, not something to fight. */
+    static final int MAX_RESTORES = 1;
+
+    /** What a {@link SessionKeeper} found when asked to restore the session. */
+    public enum Restore {
+        /** The session had ended, and signing in again worked. */
+        SIGNED_IN_AGAIN,
+        /** The success check still passes: the session never ended, and nothing was signed in. */
+        STILL_SIGNED_IN,
+        /** The session has ended and could not be restored. */
+        FAILED
+    }
+
+    /** Restores a lost session within the run, in the same browser. Called at most {@value #MAX_RESTORES} time per run. */
+    @FunctionalInterface
+    public interface SessionKeeper {
+        Restore restore();
+    }
     private boolean listedOnly;
     private java.util.function.Consumer<StepRecord> stepListener = s -> { };
     private java.util.function.Consumer<Observation> findingListener = o -> { };
@@ -76,10 +96,39 @@ public final class ExplorationEngine {
         return this;
     }
 
-    /** A redirect to this path during a run means the session ended, so the run stops honestly. */
+    /**
+     * The login page's path. Being sent there, by the server or by the page itself, or a page answering 401,
+     * means the session ended. Paths are compared whole: "/login" does not match "/login-help".
+     */
     public ExplorationEngine sessionEndsAt(String path) {
-        this.loginPath = path;
+        this.loginPath = path == null || path.isBlank() ? null : pathOf(path);
         return this;
+    }
+
+    /** Lets the run sign in again once when the session ends, instead of stopping at once. */
+    public ExplorationEngine keepSessionWith(SessionKeeper keeper) {
+        this.keeper = keeper;
+        return this;
+    }
+
+    private static String pathOf(String url) {
+        try {
+            String p = url.startsWith("/") ? URI.create("http://x" + url).getPath() : new URI(url).getPath();
+            if (p == null || p.isEmpty()) return "/";
+            return p.length() > 1 && p.endsWith("/") ? p.substring(0, p.length() - 1) : p;
+        } catch (Exception e) {
+            return url;
+        }
+    }
+
+    /** Whether this navigation shows the session has ended. Only meaningful for a signed-in run. */
+    private boolean endsSession(Candidate c, Navigation nav) {
+        if (loginPath == null) return false;
+        return switch (nav.outcome()) {
+            case REDIRECTED -> loginPath.equals(pathOf(nav.redirectTarget()));
+            case LOADED -> nav.status() == 401 || (loginPath.equals(pathOf(nav.url())) && !loginPath.equals(pathOf(c.url())));
+            default -> false;
+        };
     }
 
     /** Repeats exactly these pages and follows nothing, for running saved test cases. */
@@ -125,6 +174,11 @@ public final class ExplorationEngine {
     }
 
     private void visit(Candidate c) {
+        visit(c, false);
+    }
+
+    /** @param retry true for the one repeat after signing in again; ending the session a second time stops the run */
+    private void visit(Candidate c, boolean retry) {
         Control via = c.via();
         ActionRequest action = via != null ? via.toAction() : new ActionRequest(ActionRequest.Kind.NAVIGATE_LINK, c.url(), Map.of());
         Decision decision = gate.decideAction(action);
@@ -139,12 +193,36 @@ public final class ExplorationEngine {
         List<Signal> signals = browser.drainSignals();
         StepEvaluation eval = verdicts.evaluate(nav, ExpectedOutcome.PAGE_LOADS, true, signals);
 
-        if (nav.outcome() == Navigation.Outcome.REDIRECTED) {
-            if (loginPath != null && nav.redirectTarget().contains(loginPath)) {
-                record(c, via, Verdict.INCONCLUSIVE, 0, "", "session ended");
-                sessionLost = true;
-                return;
+        if (endsSession(c, nav)) {
+            Restore restored = keeper == null || retry || restores >= MAX_RESTORES ? Restore.FAILED : keeper.restore();
+            if (restored != Restore.STILL_SIGNED_IN) restores++;
+            switch (restored) {
+                case SIGNED_IN_AGAIN -> {
+                    record(c, via, Verdict.INCONCLUSIVE, nav.status(), "", "session ended; signed in again");
+                    visit(c, true);
+                    return;
+                }
+                case FAILED -> {
+                    record(c, via, Verdict.INCONCLUSIVE, nav.status(), "", retry ? "visiting this page ends the session" : "session ended");
+                    sessionLost = true;
+                    return;
+                }
+                case STILL_SIGNED_IN -> {
+                    // A false alarm. A link to the login page is recorded, never followed; anything else is judged as usual.
+                    if (nav.outcome() == Navigation.Outcome.REDIRECTED) {
+                        record(c, via, Verdict.INCONCLUSIVE, 0, "", "leads to the login page");
+                        return;
+                    }
+                    // Checking the session moved the browser, so the page is opened again before it is judged.
+                    browser.drainSignals();
+                    nav = browser.open(c.url());
+                    signals = browser.drainSignals();
+                    eval = verdicts.evaluate(nav, ExpectedOutcome.PAGE_LOADS, true, signals);
+                }
             }
+        }
+
+        if (nav.outcome() == Navigation.Outcome.REDIRECTED) {
             int seq = record(c, via, eval.verdict(), 0, "", eval.note());
             frontier.add(new Candidate(nav.redirectTarget(), c.depth(), null, seq));
             return;

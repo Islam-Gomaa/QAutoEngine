@@ -132,7 +132,7 @@ public class AuthProfiles {
                 SELECT r.id AS run_id, r.status AS run_status, aa.status, aa.failure, aa.stage, aa.detail, coalesce(aa.created_at, r.created_at) AS at, aa.suggestions
                 FROM test_run r LEFT JOIN auth_attempt aa ON aa.organization_id = r.organization_id AND aa.run_id = r.id
                 WHERE r.organization_id = ap.organization_id AND r.kind = 'AUTH_TEST' AND r.auth_profile_id = ap.id
-                ORDER BY r.created_at DESC, aa.attempt DESC NULLS LAST LIMIT 1) lt ON true
+                ORDER BY r.created_at DESC, aa.attempt DESC NULLS LAST, aa.sign_in DESC NULLS LAST LIMIT 1) lt ON true
             """;
 
     private View view(java.sql.ResultSet rs) throws java.sql.SQLException {

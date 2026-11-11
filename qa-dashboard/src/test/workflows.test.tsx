@@ -830,3 +830,20 @@ describe('one-time codes', () => {
     expect(body.environments[0].authentication).toMatchObject({ method: 'PASSWORD_EMAIL_OTP', mailbox: null, otp: { submitPath: '/app/otp-verify', typedByPerson: true, maxResends: 0 } });
   });
 });
+
+describe('session lifecycle', () => {
+  it('shows that a run signed in again after its session ended, and why it stopped', async () => {
+    const run = { id: 'r7', kind: 'EXPLORATION', environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', suiteId: null, suiteName: null, status: 'SUCCEEDED',
+      createdAt: '2026-11-01T00:00:00Z', finishedAt: '2026-11-01T00:05:00Z', stopReason: 'SESSION_EXPIRED', startedBy: 'admin@qa.local', passed: 9, failed: 0, inconclusive: 2, blocked: 1 };
+    const attempt = (signIn: number) => ({ attempt: 1, signIn, authProfileId: 'ap1', status: 'AUTHENTICATED', failure: null, stage: 'DONE', detail: 'Signed in, and the success checks passed', durationMs: 1800, at: '2026-11-01T00:00:00Z' });
+    server({ ...signedIn(), 'GET /projects/p1/runs/r7/progress': { run, attempt: 1, jobState: 'SUCCEEDED', currentOperation: '', steps: 12, defects: 0, durationSeconds: 300 },
+      'GET /projects/p1/runs/r7/steps': [], 'GET /projects/p1/runs/r7/findings': [], 'GET /projects/p1/runs/r7/auth': [attempt(1), attempt(2)] });
+    mount(<App />, '/execution/r7');
+    const card = await screen.findByTestId('run-auth');
+    const list = within(card).getByRole('list', { name: 'Sign-ins in this run' });
+    const items = within(list).getAllByRole('listitem');
+    expect(items[0]).toHaveTextContent('Sign-in: Authentication successful');
+    expect(items[1]).toHaveTextContent('Signed in again after the session ended: Authentication successful');
+    expect(screen.getByText(/Stopped because: Session expired/)).toBeInTheDocument();
+  });
+});

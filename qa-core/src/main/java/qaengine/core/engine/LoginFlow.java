@@ -107,6 +107,19 @@ public final class LoginFlow {
     }
 
     /**
+     * Whether the session is still accepted, by the same success checks as signing in: the success page loads
+     * without a redirect, and the signed-in marker shows. Types nothing. Without a success check it never claims so.
+     */
+    public boolean stillSignedIn(Spec spec) {
+        if (spec.successPath() == null && spec.form().successElement() == null) return false;
+        try {
+            return verify(spec, false) == null;
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
      * Checks only that the application answers through the gate, for an environment with no sign-in.
      * Success is NOT_STARTED with no failure: connected, and nothing was signed in.
      */

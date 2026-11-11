@@ -133,8 +133,47 @@ public final class FixtureServer implements AutoCloseable {
     // An application area that behaves like a modern product: labelled fields, a re-rendered form with an
     // alert on a wrong password, pages behind sign-in, and variants that are hard to classify on purpose.
 
-    /** The session cookie of the application area. Separate from the older /account pages. */
-    public static final String APP_COOKIE = "app_session=fixture-app";
+    /** The session cookie of the application area. Separate from the older /account pages. Each sign-in gets its own token. */
+    public static final String APP_COOKIE = "app_session";
+
+    /** Live sessions of the application area, by token, with how many signed-in pages each has served. */
+    private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger> appSessions = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicInteger appSignIns = new java.util.concurrent.atomic.AtomicInteger();
+    private volatile int appSessionPageLimit = Integer.MAX_VALUE;
+
+    /** Ends each application session after it has served this many signed-in pages, as a session timeout would. */
+    public void appSessionPageLimit(int pages) {
+        appSessionPageLimit = pages;
+    }
+
+    /** How many times anyone has signed in to the application area. */
+    public int appSignIns() {
+        return appSignIns.get();
+    }
+
+    /** The tokens of the sessions that are still alive. */
+    public java.util.Set<String> liveAppSessions() {
+        return java.util.Set.copyOf(appSessions.keySet());
+    }
+
+    private void startAppSession(HttpExchange x) {
+        String token = Long.toHexString(RANDOM.nextLong()) + Long.toHexString(RANDOM.nextLong());
+        appSessions.put(token, new java.util.concurrent.atomic.AtomicInteger());
+        appSignIns.incrementAndGet();
+        x.getResponseHeaders().add("Set-Cookie", APP_COOKIE + "=" + token + "; HttpOnly; Path=/app");
+    }
+
+    /** Counts a signed-in page view; a session past its limit is forgotten, as it would be on a real server. */
+    private boolean appSession(HttpExchange x) {
+        String token = cookieValue(x, APP_COOKIE);
+        var views = token == null ? null : appSessions.get(token);
+        if (views == null) return false;
+        if (views.incrementAndGet() > appSessionPageLimit) {
+            appSessions.remove(token);
+            return false;
+        }
+        return true;
+    }
 
     private static String loginPage(String action, String error) {
         return "<!doctype html><title>Sign in</title><main><h1>Sign in to Fixture</h1>"
@@ -257,7 +296,7 @@ public final class FixtureServer implements AutoCloseable {
                     return;
                 }
                 pendingOtp.remove(pending); // single use
-                x.getResponseHeaders().add("Set-Cookie", APP_COOKIE + "; HttpOnly; Path=/app");
+                startAppSession(x);
                 redirect(x, "/app/home");
             }
             default -> send(x, 404, "text/html", "<h1>Not found</h1>");
@@ -266,8 +305,6 @@ public final class FixtureServer implements AutoCloseable {
 
     private void app(HttpExchange x, String path, String body) throws IOException {
         if (path.startsWith("/app/login-otp") || path.equals("/app/session-otp") || path.startsWith("/app/otp")) { otp(x, path, body); return; }
-        String cookie = x.getRequestHeaders().getFirst("Cookie");
-        boolean session = cookie != null && cookie.contains(APP_COOKIE);
         switch (path) {
             case "/app/login" -> send(x, 200, "text/html; charset=utf-8", loginPage("/app/session", null));
             case "/app/login-limbo" -> send(x, 200, "text/html; charset=utf-8", loginPage("/app/session-limbo", null));
@@ -277,7 +314,7 @@ public final class FixtureServer implements AutoCloseable {
             case "/app/login-broken" -> send(x, 500, "text/html", "<h1>Server error</h1>");
             case "/app/session" -> {
                 if (validAppLogin(body)) {
-                    x.getResponseHeaders().add("Set-Cookie", APP_COOKIE + "; HttpOnly; Path=/app");
+                    startAppSession(x);
                     redirect(x, "/app/home");
                 } else {
                     send(x, 200, "text/html; charset=utf-8", loginPage("/app/session", "Incorrect email or password."));
@@ -288,22 +325,33 @@ public final class FixtureServer implements AutoCloseable {
             case "/app/limbo" -> send(x, 200, "text/html", "<!doctype html><title>Almost there</title><main><h1>Something went wrong</h1><a href=\"/app/login\">Sign in</a></main>");
             case "/app/api/session" -> {
                 if (validAppLogin(body)) {
-                    x.getResponseHeaders().add("Set-Cookie", APP_COOKIE + "; HttpOnly; Path=/app");
+                    startAppSession(x);
                     x.sendResponseHeaders(204, -1);
                 } else {
                     send(x, 401, "application/json", "{\"error\":\"invalid\"}");
                 }
             }
             case "/app/logout" -> {
+                String token = cookieValue(x, APP_COOKIE);
+                if (token != null) appSessions.remove(token);
                 x.getResponseHeaders().add("Set-Cookie", "app_session=gone; Max-Age=0; Path=/app");
                 redirect(x, "/app/login");
             }
+            // A single-page app that notices the session is gone and sends the browser to its login page itself.
+            case "/app/reports" -> send(x, 200, "text/html; charset=utf-8", appSession(x)
+                    ? signedIn("Reports", "<p>Monthly reports.</p><a href=\"/app/home\">Home</a>")
+                    : "<!doctype html><title>Reports</title><script>location.replace('/app/login')</script>");
+            // An API-style page that answers 401 once the session is gone.
+            case "/app/team" -> {
+                if (appSession(x)) send(x, 200, "text/html; charset=utf-8", signedIn("Team", "<p>Three members.</p><a href=\"/app/home\">Home</a>"));
+                else send(x, 401, "text/html", "<title>Sign in required</title><p>Sign in required.</p>");
+            }
             case "/app/home", "/app/orders", "/app/settings" -> {
-                if (!session) { redirect(x, "/app/login"); return; }
+                if (!appSession(x)) { redirect(x, "/app/login"); return; }
                 String content = switch (path) {
                     case "/app/orders" -> "<table><caption>Recent orders</caption><tr><th>Order</th><th>Total</th></tr><tr><td>1001</td><td>12.00</td></tr></table><a href=\"/app/home\">Home</a>";
                     case "/app/settings" -> "<form><label for=\"n\">Display name</label> <input id=\"n\" name=\"name\" required></form><a href=\"/app/home\">Home</a>";
-                    default -> "<p>Welcome back.</p><a href=\"/app/orders\">Orders</a> <a href=\"/app/settings\">Settings</a>";
+                    default -> "<p>Welcome back.</p><a href=\"/app/orders\">Orders</a> <a href=\"/app/settings\">Settings</a> <a href=\"/app/reports\">Reports</a> <a href=\"/app/team\">Team</a>";
                 };
                 send(x, 200, "text/html; charset=utf-8", signedIn(path.equals("/app/home") ? "Welcome back" : path.equals("/app/orders") ? "Orders" : "Settings", content));
             }

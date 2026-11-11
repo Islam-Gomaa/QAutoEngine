@@ -73,7 +73,9 @@ const routes = {
   ],
   'GET /projects/p1/runs/r1aaaaaa/findings': [{ defectId: 'd1', number: 12, type: 'SERVER_ERROR', severity: 'HIGH', title: 'Crash on cart', url: '/cart', detail: 'HTTP 500', step: 2 }],
   'GET /projects/p1/runs/r1aaaaaa/api-metrics': [],
-  'GET /projects/p1/runs/r1aaaaaa/auth': [{ attempt: 1, authProfileId: 'ap1', status: 'FAILED', failure: 'INVALID_CREDENTIALS', stage: 'SUBMIT', detail: 'The page showed its sign-in error', durationMs: 2300, at }],
+  'GET /projects/p1/runs/r1aaaaaa/auth': [
+    { attempt: 1, signIn: 1, authProfileId: 'ap1', status: 'AUTHENTICATED', failure: null, stage: 'DONE', detail: 'Signed in, and the success checks passed', durationMs: 2300, at },
+    { attempt: 1, signIn: 2, authProfileId: 'ap1', status: 'FAILED', failure: 'INVALID_CREDENTIALS', stage: 'SUBMIT', detail: 'The page showed its sign-in error', durationMs: 2100, at }],
   'GET /projects/p1/defects': page([defect]),
   'GET /projects/p1/defects/d1': {
     defect, testCases: [{ id: 'c1', title: 'Cart loads' }],

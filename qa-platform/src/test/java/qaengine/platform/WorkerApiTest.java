@@ -318,6 +318,23 @@ class WorkerApiTest extends IntegrationTestBase {
         mvc.perform(post("/internal/v1/jobs/" + job + "/otp").header("Authorization", "Bearer " + token)).andExpect(status().isConflict());
     }
 
+    @Test void signingInAgainAfterTheSessionEndedIsKeptBesideTheFirstSignInAndNeverMore() throws Exception {
+        signInWith(credentials.store(org, project, env, "acct", new qaengine.platform.credentials.CredentialService.Material("u", "p", null, null, null, null)));
+        String token = claim();
+        String url = "/internal/v1/jobs/" + job + "/auth";
+        // A worker from before signing in again sends no number: that is the run's one sign-in.
+        mvc.perform(post(url).header("Authorization", "Bearer " + token).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"status\":\"AUTHENTICATED\",\"stage\":\"DONE\",\"detail\":\"ok\",\"durationMs\":5}")).andExpect(status().isNoContent());
+        mvc.perform(post(url).header("Authorization", "Bearer " + token).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"status\":\"AUTHENTICATED\",\"stage\":\"DONE\",\"detail\":\"ok\",\"durationMs\":7,\"signIn\":2}")).andExpect(status().isNoContent());
+        mvc.perform(post(url).header("Authorization", "Bearer " + token).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"status\":\"AUTHENTICATED\",\"stage\":\"DONE\",\"detail\":\"ok\",\"durationMs\":7,\"signIn\":3}")).andExpect(status().isBadRequest());
+        assertEquals(List.of(1, 2), db.sql("SELECT sign_in FROM auth_attempt WHERE run_id = ? ORDER BY sign_in").param(run).query(Integer.class).list());
+        String view = mvc.perform(get("/api/v1/projects/" + project + "/runs/" + run + "/auth").with(as(admin))).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertTrue(view.indexOf("\"signIn\":1") < view.indexOf("\"signIn\":2"), view);
+        assertEquals(1L, db.sql("SELECT count(*) FROM audit_event WHERE action = 'AUTH_ATTEMPT_RECORDED' AND detail LIKE 'signed in again:%'").query(Long.class).single());
+    }
+
     @Test void tamperingIsDetected() throws Exception {
         UUID id = upload(claim(), 1, "SCREENSHOT", PNG);
         assertEquals(List.of(), evidence.verifySample(10));
