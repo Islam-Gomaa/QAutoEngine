@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Phase 8 acceptance: real failures against the running stack, then the fixture's own request log."""
-import json, ssl, subprocess, sys, time, urllib.request, uuid, http.cookiejar
+import os, json, ssl, subprocess, sys, time, urllib.request, uuid, http.cookiejar
 
-BASE = "https://localhost:8443"
+BASE = os.environ.get("QA_BASE", "https://localhost:8443")
 ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
 jar = http.cookiejar.CookieJar()
 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar), urllib.request.HTTPSHandler(context=ctx))
@@ -19,7 +19,7 @@ def call(method, path, body=None, headers=None):
 def login():
     jar.clear()
     call("GET", "/api/v1/auth/csrf")
-    call("POST", "/api/v1/auth/login", {"email": "admin@qa.local", "password": open("deploy/secrets/admin_password").read().strip()})
+    call("POST", "/api/v1/auth/login", {"email": "admin@qa.local", "password": open(os.environ.get("QA_ADMIN_PASSWORD_FILE", "deploy/secrets/admin_password")).read().strip()})
     call("GET", "/api/v1/auth/csrf")
 
 def sh(*args):
@@ -97,12 +97,13 @@ final = wait(project, run, {"SUCCEEDED", "FAILED", "INTERRUPTED", "TIMED_OUT"}, 
 check("run survives a platform restart", final == "SUCCEEDED", f"status={final}")
 
 print("== Fixture request log across all runs")
-log = sh("docker", "run", "--rm", "--network", "qa-engine_egress", "curlimages/curl:latest", "-s", "http://fixture.qa.internal:8090/__requests").splitlines()
+log = sh("docker", "run", "--rm", "--network", os.environ.get("COMPOSE_PROJECT_NAME", "qa-engine") + "_egress", "curlimages/curl:latest", "-s", "http://fixture.qa.internal:8090/__requests").splitlines()
 traps = ["/m/", "/items/5/delete", "action=remove", "/logout", "/items/9", "/items/7/reset", "/verify/", "/download/", "/submitted", "/graphql"]
 hits = [l for l in log if any(t in l for t in traps)]
 check("no trap reached the server", not hits, f"requests={len(log)} hits={hits[:3]}")
-# The only other method allowed is the login POST inside an authentication window.
-unsafe = sorted({l for l in log if l and l.split()[0] not in ("GET", "HEAD", "OPTIONS") and l != "POST /session"})
+# The only other method allowed is a login POST inside an authentication window: the fixture's older login form,
+# or the one sign-in profiles use. The log covers every run since the fixture started, not only these.
+unsafe = sorted({l for l in log if l and l.split()[0] not in ("GET", "HEAD", "OPTIONS") and l not in ("POST /session", "POST /app/session")})
 check("only safe methods and the approved login reached the server", not unsafe, f"unexpected={unsafe[:5]}")
 print(f"\npassed={sum(results)} failed={len(results)-sum(results)}")
 sys.exit(0 if all(results) else 1)

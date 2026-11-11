@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Phase 10 acceptance: authenticated run through the stack, then a search for the canary everywhere it could leak."""
-import json, ssl, subprocess, sys, time, urllib.request, urllib.error, uuid, http.cookiejar
+import os, json, ssl, subprocess, sys, time, urllib.request, urllib.error, uuid, http.cookiejar
 
-BASE = "https://localhost:8443"
+BASE = os.environ.get("QA_BASE", "https://localhost:8443")
 CANARY = "fixture-canary-password-7Q2x"
 ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
 jar = http.cookiejar.CookieJar()
@@ -24,7 +24,7 @@ def sh(cmd):
     return subprocess.run(cmd, shell=True, capture_output=True).stdout
 
 call("GET", "/api/v1/auth/csrf")
-call("POST", "/api/v1/auth/login", {"email": "admin@qa.local", "password": open("deploy/secrets/admin_password").read().strip()})
+call("POST", "/api/v1/auth/login", {"email": "admin@qa.local", "password": open(os.environ.get("QA_ADMIN_PASSWORD_FILE", "deploy/secrets/admin_password")).read().strip()})
 call("GET", "/api/v1/auth/csrf")
 name = "auth-" + uuid.uuid4().hex[:8]
 project = call("POST", "/api/v1/projects", {"name": name})["id"]

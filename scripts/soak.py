@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Repeated runs against the stack: every run must find the same defects, and nothing may accumulate."""
-import json, re, ssl, subprocess, sys, time, urllib.request, uuid, http.cookiejar
+import os, json, re, ssl, subprocess, sys, time, urllib.request, uuid, http.cookiejar
 
 RUNS = int(sys.argv[1]) if len(sys.argv) > 1 else 6
-BASE = "https://localhost:8443"
+BASE = os.environ.get("QA_BASE", "https://localhost:8443")
 ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
 jar = http.cookiejar.CookieJar()
 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar), urllib.request.HTTPSHandler(context=ctx))
@@ -21,7 +21,7 @@ def stats():
     return {l.split()[0].replace("qa-engine-", "").replace("-1", ""): l.split()[1] + " pids=" + l.split()[-1] for l in out.splitlines()}
 
 call("GET", "/api/v1/auth/csrf")
-call("POST", "/api/v1/auth/login", {"email": "admin@qa.local", "password": open("deploy/secrets/admin_password").read().strip()})
+call("POST", "/api/v1/auth/login", {"email": "admin@qa.local", "password": open(os.environ.get("QA_ADMIN_PASSWORD_FILE", "deploy/secrets/admin_password")).read().strip()})
 call("GET", "/api/v1/auth/csrf")
 name = "soak-" + uuid.uuid4().hex[:8]
 project = call("POST", "/api/v1/projects", {"name": name})["id"]

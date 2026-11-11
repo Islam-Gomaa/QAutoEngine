@@ -7,7 +7,7 @@ set -u
 mode="${1:-after}"
 work=$(mktemp -d); trap 'docker rm -f qa-sniff-gw qa-sniff-edge > /dev/null 2>&1; rm -rf "$work"' EXIT
 canary=fixture-canary-password-7Q2x
-admin=$(cat deploy/secrets/admin_password)
+admin=$(cat "${QA_ADMIN_PASSWORD_FILE:-deploy/secrets/admin_password}")
 workerkey=$(cat deploy/secrets/worker_key)
 gw=$(docker compose ps -q gateway); edge=$(docker compose ps -q caddy)
 sniff() { docker run -d --name "$1" --network "container:$2" --cap-add NET_RAW --cap-add NET_ADMIN -v "$work:/cap" nicolaka/netshoot tcpdump -i any -U -s 0 -w "/cap/$1.pcap" tcp > /dev/null; }

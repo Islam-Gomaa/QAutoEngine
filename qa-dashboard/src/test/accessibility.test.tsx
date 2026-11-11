@@ -29,7 +29,7 @@ const overview = {
   days: 30,
   execution: { runs: 3, succeeded: 2, failed: 1, cancelled: 0, active: 0, passed: 13, failedSteps: 3, blocked: 1, inconclusive: 1, passRate: 81 },
   projects: [{ project: 'Shop', runs: 3, passRate: 81, openDefects: 2, criticalDefects: 0, fixedDefects: 1, testCases: 2 }],
-  coverage: [{ project: 'Shop', total: 2, automated: 1, manual: 1, ready: 1, draft: 1, deprecated: 0, inSuite: 2, executed: 1 }],
+  coverage: [{ project: 'Shop', total: 2, automated: 1, manual: 1, ready: 1, draft: 1, deprecated: 0, inSuite: 2, executed: 1, generated: 0, awaitingReview: 0 }],
   defects: { bySeverity: counts, byStatus: [{ name: 'OPEN', count: 2 }], byType: [{ name: 'SERVER_ERROR', count: 2 }] },
   channels: [{ channel: 'WEB', runs: 2, passed: 9, failed: 2, blocked: 1, passRate: 82, defects: 2 }, { channel: 'API', runs: 1, passed: 4, failed: 1, blocked: 0, passRate: 80, defects: 0 }],
   trend,

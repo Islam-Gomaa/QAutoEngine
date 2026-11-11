@@ -183,6 +183,25 @@ class TestDesignApiTest extends IntegrationTestBase {
         call(post("/api/v1/projects/" + project + "/runs/" + UUID.randomUUID() + "/discovery/test-cases"), admin, null).andExpect(status().isNotFound());
     }
 
+    @Test void suggestionsCountAsTestCasesOnlyOnceApproved() throws Exception {
+        int created = generate().get("created").asInt();
+        JsonNode coverage = json.readTree(call(get("/api/v1/reports/overview?projectId=" + project), admin, null).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).get("coverage").get(0);
+        assertEquals(0, coverage.get("total").asInt(), "pending suggestions are not test cases yet");
+        assertEquals(created, coverage.get("awaitingReview").asInt());
+        JsonNode projects = json.readTree(call(get("/api/v1/projects"), admin, null).andReturn().getResponse().getContentAsString());
+        assertEquals(0, projects.get(0).get("testCases").asInt());
+
+        call(post(cases("/" + caseWithRule("REQUIRED_FIELD") + "/approve")), admin, null).andExpect(status().isOk());
+        call(post(cases("/" + caseWithRule("PAGE_OPENS") + "/reject")), admin, null).andExpect(status().isOk());
+        coverage = json.readTree(call(get("/api/v1/reports/overview?projectId=" + project), admin, null).andReturn().getResponse().getContentAsString()).get("coverage").get(0);
+        assertEquals(1, coverage.get("total").asInt(), "approved counts; rejected never does");
+        assertEquals(1, coverage.get("generated").asInt());
+        assertEquals(created - 2, coverage.get("awaitingReview").asInt());
+        String csv = call(get("/api/v1/reports/export.csv?section=coverage&projectId=" + project), admin, null).andReturn().getResponse().getContentAsString();
+        assertTrue(csv.startsWith("\"Project\",\"Total\",\"Automated\",\"Manual\""), "existing columns keep their order: " + csv.lines().findFirst().orElse(""));
+        assertTrue(csv.lines().findFirst().orElse("").endsWith("\"Generated\",\"Awaiting review\""));
+    }
+
     @Test void theDatabaseRefusesAReviewStateOutsideGeneratedCases() {
         UUID id = UUID.randomUUID();
         var bad = assertThrows(Exception.class, () -> db.sql("INSERT INTO test_case (organization_id, id, project_id, title, natural_key, source, status) VALUES (?,?,?, 't', 'k', 'MANUAL', 'PENDING_REVIEW')")

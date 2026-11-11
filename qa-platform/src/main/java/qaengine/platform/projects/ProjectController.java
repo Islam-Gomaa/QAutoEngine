@@ -38,7 +38,7 @@ public class ProjectController {
 
     private static final String SELECT = """
             SELECT pr.id, pr.name, pr.description, pr.archived_at,
-                   (SELECT count(*) FROM test_case c WHERE c.organization_id = pr.organization_id AND c.project_id = pr.id AND c.archived_at IS NULL),
+                   (SELECT count(*) FROM test_case c WHERE c.organization_id = pr.organization_id AND c.project_id = pr.id AND c.archived_at IS NULL AND c.status NOT IN ('PENDING_REVIEW','REJECTED')),
                    (SELECT count(*) FROM test_run r WHERE r.organization_id = pr.organization_id AND r.project_id = pr.id),
                    (SELECT count(*) FROM defect d WHERE d.organization_id = pr.organization_id AND d.project_id = pr.id AND d.status IN ('OPEN','TRIAGED'))
             FROM project pr

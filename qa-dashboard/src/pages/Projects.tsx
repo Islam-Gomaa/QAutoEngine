@@ -107,7 +107,8 @@ export function ProjectDetailPage() {
           {tab === 'members' && <Members project={p} canManage={manage} />}
           {tab === 'coverage' && (
             <Card title="Test coverage">
-              {!c || c.total === 0 ? <Empty title="No test cases yet" /> : <KeyValue items={[['Total cases', c.total], ['Automated', c.automated], ['Manual', c.manual], ['In a suite', c.inSuite], ['Executed at least once', c.executed], ['Ready / Draft / Deprecated', `${c.ready} / ${c.draft} / ${c.deprecated}`]]} />}
+              {!c || (c.total === 0 && !c.awaitingReview) ? <Empty title="No test cases yet" /> : <KeyValue items={[['Total cases', c.total], ['Automated', c.automated], ['Manual', c.manual],
+                ['Generated and approved', c.generated], ['Suggestions awaiting review', c.awaitingReview], ['In a suite', c.inSuite], ['Executed at least once', c.executed], ['Ready / Draft / Deprecated', `${c.ready} / ${c.draft} / ${c.deprecated}`]]} />}
             </Card>
           )}
           {tab === 'executions' && (

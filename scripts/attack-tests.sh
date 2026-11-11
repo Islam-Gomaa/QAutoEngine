@@ -4,7 +4,7 @@
 set -u
 pass=0; fail=0
 check() { if [ "$2" = "$3" ]; then echo "PASS  $1 ($3)"; pass=$((pass+1)); else echo "FAIL  $1: expected $2, got $3"; fail=$((fail+1)); fi; }
-execnet() { docker run --rm --network qa-engine_exec curlimages/curl:latest "$@"; }
+execnet() { docker run --rm --network ${COMPOSE_PROJECT_NAME:-qa-engine}_exec curlimages/curl:latest "$@"; }
 via() { execnet -s -o /dev/null -m 8 -w '%{http_code}' -x http://egress:3128 "$1"; }
 direct() { execnet -s -o /dev/null -m 5 -w '%{http_code}' "$1"; }
 
@@ -30,7 +30,7 @@ check "no direct internet route"                  000 "$(direct http://1.1.1.1/)
 echo "== Mutual TLS on the worker path"
 pki="$PWD/deploy/secrets/pki"
 rogue=$(mktemp -d); openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$rogue/r.key" -out "$rogue/r.crt" -subj /CN=worker -days 1 2> /dev/null; chmod 644 "$rogue"/*
-tlsnet() { docker run --rm --network qa-engine_exec -v "$pki/worker:/w:ro" -v "$pki/edge:/e:ro" -v "$rogue:/r:ro" curlimages/curl:latest "$@"; }
+tlsnet() { docker run --rm --network ${COMPOSE_PROJECT_NAME:-qa-engine}_exec -v "$pki/worker:/w:ro" -v "$pki/edge:/e:ro" -v "$rogue:/r:ro" curlimages/curl:latest "$@"; }
 code() { tlsnet -s -o /dev/null -m 6 -w '%{http_code}' "$@"; }
 claim='-X POST -H Content-Type:application/json -d {} https://gateway:8081/internal/v1/jobs/claim'
 # The TLS connector answers plain HTTP with its own fixed error. Anything else means the app saw the request.

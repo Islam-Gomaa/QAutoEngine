@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Phase 11 acceptance on the running stack: an API run through the worker and proxy, then the fixture's log."""
-import json, ssl, subprocess, sys, time, urllib.request, uuid, http.cookiejar
+import os, json, ssl, subprocess, sys, time, urllib.request, uuid, http.cookiejar
 
-BASE = "https://localhost:8443"
+BASE = os.environ.get("QA_BASE", "https://localhost:8443")
+NET = os.environ.get("COMPOSE_PROJECT_NAME", "qa-engine") + "_egress"
 ADMIN_TOKEN, USER_TOKEN = "fixture-admin-token-canary-K9", "fixture-user-token-canary-M3"
 FIX = "http://fixture.qa.internal:8090"
 ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
@@ -25,7 +26,7 @@ def sh(cmd):
     return subprocess.run(cmd, shell=True, capture_output=True).stdout
 
 call("GET", "/api/v1/auth/csrf")
-call("POST", "/api/v1/auth/login", {"email": "admin@qa.local", "password": open("deploy/secrets/admin_password").read().strip()})
+call("POST", "/api/v1/auth/login", {"email": "admin@qa.local", "password": open(os.environ.get("QA_ADMIN_PASSWORD_FILE", "deploy/secrets/admin_password")).read().strip()})
 call("GET", "/api/v1/auth/csrf")
 name = "api-" + uuid.uuid4().hex[:8]
 project = call("POST", "/api/v1/projects", {"name": name})["id"]
@@ -36,7 +37,7 @@ check("environment is API and READ_ONLY", env["channel"] == "API" and env["mode"
 cred = call("POST", f"/api/v1/projects/{project}/credentials", {"name": "tokens", "password": ADMIN_TOKEN, "lowPrivilegeToken": USER_TOKEN})
 check("tokens are not returned", ADMIN_TOKEN not in json.dumps(cred))
 call("PUT", f"/api/v1/projects/{project}/environments/{env['id']}/login", {"method": "API_TOKEN", "credentialId": cred["id"]})
-log_before = len(sh(f"docker run --rm --network qa-engine_egress curlimages/curl:latest -s {FIX}/__requests").splitlines())
+log_before = len(sh(f"docker run --rm --network {NET} curlimages/curl:latest -s {FIX}/__requests").splitlines())
 run = call("POST", f"/api/v1/projects/{project}/runs", {"environmentId": env["id"]}, {"Idempotency-Key": name})["id"]
 end = time.time() + 240
 while time.time() < end:
@@ -69,7 +70,7 @@ cases = call("GET", f"/api/v1/projects/{project}/test-cases?size=200")["items"]
 check("API test cases saved", sum(1 for c in cases if c["title"].startswith("API: ")) > 20, f"cases={len(cases)}")
 
 print("== The fixture's own request log")
-log = sh(f"docker run --rm --network qa-engine_egress curlimages/curl:latest -s {FIX}/__requests").decode().splitlines()[log_before:]
+log = sh(f"docker run --rm --network {NET} curlimages/curl:latest -s {FIX}/__requests").decode().splitlines()[log_before:]
 check("only GET, HEAD and OPTIONS reached the API", not [l for l in log if l and l.split()[0] not in ("GET", "HEAD", "OPTIONS")], f"requests={len(log)}")
 check("documented destructive GET never reached it", not [l for l in log if "/purge" in l])
 print("== Searching for the tokens")

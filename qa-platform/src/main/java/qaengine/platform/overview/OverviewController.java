@@ -85,7 +85,7 @@ public class OverviewController {
         Stats stats = bind("""
                 SELECT (SELECT count(*) FROM %1$s v),
                        (SELECT count(*) FROM target t WHERE t.organization_id = :org AND t.archived_at IS NULL AND t.project_id IN %1$s),
-                       (SELECT count(*) FROM test_case c WHERE c.organization_id = :org AND c.archived_at IS NULL AND c.project_id IN %1$s),
+                       (SELECT count(*) FROM test_case c WHERE c.organization_id = :org AND c.archived_at IS NULL AND c.project_id IN %1$s AND c.status NOT IN ('PENDING_REVIEW','REJECTED')),
                        (SELECT count(*) FROM test_run r WHERE r.organization_id = :org AND r.project_id IN %1$s),
                        (SELECT count(*) FROM defect x WHERE x.organization_id = :org AND x.status IN ('OPEN','TRIAGED') AND x.project_id IN %1$s)
                 """.formatted(visible), p, projectId)

@@ -53,6 +53,7 @@ export function ReportsPage() {
           <Card pad={false} title="Test coverage" action={<Csv section="coverage" />}>
             <DataTable label="Coverage" rows={o.coverage} rowKey={(r) => r.project} columns={[
               { key: 'p', label: 'Project', render: (r) => r.project }, { key: 't', label: 'Cases', align: 'right', render: (r) => r.total }, { key: 'a', label: 'Automated', align: 'right', render: (r) => r.automated }, { key: 'm', label: 'Manual', align: 'right', render: (r) => r.manual },
+              { key: 'g', label: 'Generated', align: 'right', render: (r) => r.generated }, { key: 'w', label: 'Awaiting review', align: 'right', render: (r) => r.awaitingReview },
               { key: 's', label: 'In a suite', align: 'right', render: (r) => r.inSuite }, { key: 'e', label: 'Executed', align: 'right', render: (r) => r.executed }, { key: 'pc', label: 'Executed %', align: 'right', render: (r) => (r.total ? `${((r.executed / r.total) * 100).toFixed(0)}%` : 'No cases') },
             ]} />
           </Card>

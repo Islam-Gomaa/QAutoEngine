@@ -32,7 +32,12 @@ public class InsightsController {
 
     public record Execution(long runs, long succeeded, long failed, long cancelled, long active, long passed, long failedSteps, long blocked, long inconclusive, Double passRate) {}
     public record ProjectQuality(String project, long runs, Double passRate, long openDefects, long criticalDefects, long fixedDefects, long testCases) {}
-    public record Coverage(String project, long total, long automated, long manual, long ready, long draft, long deprecated, long inSuite, long executed) {}
+    /**
+     * Suggested cases count once a person approves them, as generated; until then they are only awaiting review,
+     * and rejected ones not at all.
+     */
+    public record Coverage(String project, long total, long automated, long manual, long ready, long draft, long deprecated, long inSuite, long executed,
+                           long generated, long awaitingReview) {}
     public record Count(String name, long count) {}
     public record Defects(List<Count> bySeverity, List<Count> byStatus, List<Count> byType) {}
     public record Channel(String channel, long runs, long passed, long failed, long blocked, Double passRate, long defects) {}
@@ -120,7 +125,8 @@ public class InsightsController {
                        (SELECT count(*) FROM defect d WHERE d.organization_id = pr.organization_id AND d.project_id = pr.id AND d.status IN ('OPEN','TRIAGED')),
                        (SELECT count(*) FROM defect d WHERE d.organization_id = pr.organization_id AND d.project_id = pr.id AND d.status IN ('OPEN','TRIAGED') AND d.severity = 'CRITICAL'),
                        (SELECT count(*) FROM defect d WHERE d.organization_id = pr.organization_id AND d.project_id = pr.id AND d.status = 'FIXED'),
-                       (SELECT count(*) FROM test_case c WHERE c.organization_id = pr.organization_id AND c.project_id = pr.id AND c.archived_at IS NULL)
+                       (SELECT count(*) FROM test_case c WHERE c.organization_id = pr.organization_id AND c.project_id = pr.id AND c.archived_at IS NULL
+                        AND c.status NOT IN ('PENDING_REVIEW','REJECTED'))
                 FROM project pr WHERE pr.organization_id = :org AND pr.id IN %s ORDER BY pr.name
                 """.formatted(visible), p, project, days).query((rs, n) -> new ProjectQuality(rs.getString(1), rs.getLong(2), rate(rs.getLong(3), rs.getLong(4)), rs.getLong(5), rs.getLong(6), rs.getLong(7), rs.getLong(8))).list();
         List<Coverage> coverage = bind("""
@@ -129,10 +135,14 @@ public class InsightsController {
                        count(c.id) FILTER (WHERE c.suite_id IS NOT NULL),
                        count(c.id) FILTER (WHERE EXISTS (SELECT 1 FROM test_result r JOIN test_case_version v ON v.organization_id = r.organization_id AND v.id = r.test_case_version_id
                                                          WHERE v.organization_id = c.organization_id AND v.test_case_id = c.id)
-                                              OR EXISTS (SELECT 1 FROM manual_result m WHERE m.organization_id = c.organization_id AND m.test_case_id = c.id))
+                                              OR EXISTS (SELECT 1 FROM manual_result m WHERE m.organization_id = c.organization_id AND m.test_case_id = c.id)),
+                       count(c.id) FILTER (WHERE c.source = 'GENERATED'),
+                       (SELECT count(*) FROM test_case w WHERE w.organization_id = pr.organization_id AND w.project_id = pr.id AND w.archived_at IS NULL AND w.status = 'PENDING_REVIEW')
                 FROM project pr LEFT JOIN test_case c ON c.organization_id = pr.organization_id AND c.project_id = pr.id AND c.archived_at IS NULL
-                WHERE pr.organization_id = :org AND pr.id IN %s GROUP BY pr.id, pr.name ORDER BY pr.name
-                """.formatted(visible), p, project, days).query((rs, n) -> new Coverage(rs.getString(1), rs.getLong(2), rs.getLong(3), rs.getLong(4), rs.getLong(5), rs.getLong(6), rs.getLong(7), rs.getLong(8), rs.getLong(9))).list();
+                                                       AND c.status NOT IN ('PENDING_REVIEW','REJECTED')
+                WHERE pr.organization_id = :org AND pr.id IN %s GROUP BY pr.organization_id, pr.id, pr.name ORDER BY pr.name
+                """.formatted(visible), p, project, days).query((rs, n) -> new Coverage(rs.getString(1), rs.getLong(2), rs.getLong(3), rs.getLong(4), rs.getLong(5), rs.getLong(6), rs.getLong(7), rs.getLong(8), rs.getLong(9),
+                rs.getLong(10), rs.getLong(11))).list();
         Defects defects = new Defects(counts(p, project, "d.severity"), counts(p, project, "d.status"), counts(p, project, "d.type"));
         List<Channel> channels = bind(RUNS + """
                 SELECT c.channel, (SELECT count(*) FROM runs r WHERE r.channel = c.channel),
@@ -174,8 +184,9 @@ public class InsightsController {
                 o.projects().forEach(q -> rows.add(List.of(q.project(), s(q.runs()), pct(q.passRate()), s(q.openDefects()), s(q.criticalDefects()), s(q.fixedDefects()), s(q.testCases()))));
             }
             case "coverage" -> {
-                rows.add(List.of("Project", "Total", "Automated", "Manual", "Ready", "Draft", "Deprecated", "In a suite", "Executed"));
-                o.coverage().forEach(c -> rows.add(List.of(c.project(), s(c.total()), s(c.automated()), s(c.manual()), s(c.ready()), s(c.draft()), s(c.deprecated()), s(c.inSuite()), s(c.executed()))));
+                rows.add(List.of("Project", "Total", "Automated", "Manual", "Ready", "Draft", "Deprecated", "In a suite", "Executed", "Generated", "Awaiting review"));
+                o.coverage().forEach(c -> rows.add(List.of(c.project(), s(c.total()), s(c.automated()), s(c.manual()), s(c.ready()), s(c.draft()), s(c.deprecated()), s(c.inSuite()), s(c.executed()),
+                        s(c.generated()), s(c.awaitingReview()))));
             }
             case "defects" -> {
                 rows.add(List.of("Dimension", "Value", "Count"));

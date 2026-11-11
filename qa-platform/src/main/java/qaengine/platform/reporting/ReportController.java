@@ -55,7 +55,7 @@ public class ReportController {
         UUID org = p.organizationId();
         long runs = db.sql("SELECT count(*) FROM test_run WHERE organization_id = ? AND project_id = ?").params(org, projectId).query(Long.class).single();
         long open = db.sql("SELECT count(*) FROM defect WHERE organization_id = ? AND project_id = ? AND status IN ('OPEN','TRIAGED')").params(org, projectId).query(Long.class).single();
-        long cases = db.sql("SELECT count(*) FROM test_case WHERE organization_id = ? AND project_id = ?").params(org, projectId).query(Long.class).single();
+        long cases = db.sql("SELECT count(*) FROM test_case WHERE organization_id = ? AND project_id = ? AND status NOT IN ('PENDING_REVIEW','REJECTED')").params(org, projectId).query(Long.class).single();
         var severities = grouped("SELECT severity, count(*) FROM defect WHERE organization_id = ? AND project_id = ? AND status IN ('OPEN','TRIAGED') GROUP BY severity", org, projectId);
         var statuses = grouped("SELECT status, count(*) FROM defect WHERE organization_id = ? AND project_id = ? GROUP BY status", org, projectId);
         UUID latest = db.sql("SELECT id FROM test_run WHERE organization_id = ? AND project_id = ? AND status = 'SUCCEEDED' ORDER BY created_at DESC LIMIT 1")

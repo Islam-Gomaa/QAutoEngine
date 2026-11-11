@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """End-to-end check against the running Compose stack: uses only the public API, then the fixture log."""
-import json, ssl, subprocess, sys, time, urllib.request, uuid, http.cookiejar
+import os, json, ssl, subprocess, sys, time, urllib.request, uuid, http.cookiejar
 
-BASE = sys.argv[1] if len(sys.argv) > 1 else "https://localhost:8443"
-PASSWORD = open("deploy/secrets/admin_password").read().strip()
+BASE = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("QA_BASE", "https://localhost:8443")
+PASSWORD = open(os.environ.get("QA_ADMIN_PASSWORD_FILE", "deploy/secrets/admin_password")).read().strip()
 ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
 jar = http.cookiejar.CookieJar()
 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar), urllib.request.HTTPSHandler(context=ctx))

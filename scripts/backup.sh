@@ -9,7 +9,7 @@ stamp=$(date -u +%Y%m%dT%H%M%SZ)
 dir="$out/$stamp"; mkdir -p "$dir"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 docker compose exec -T postgres pg_dump -U qaengine -Fc qaengine > "$work/db.dump"
-docker run --rm -v qa-engine_evidence:/evidence:ro -v "$work":/out alpine tar -czf /out/evidence.tar.gz -C /evidence .
+docker run --rm -v ${COMPOSE_PROJECT_NAME:-qa-engine}_evidence:/evidence:ro -v "$work":/out alpine tar -czf /out/evidence.tar.gz -C /evidence .
 for f in db.dump evidence.tar.gz; do
   openssl enc -aes-256-cbc -pbkdf2 -salt -pass "file:$key" -in "$work/$f" -out "$dir/$f.enc"
 done

@@ -153,7 +153,8 @@ export interface Overview {
   days: number;
   execution: { runs: number; succeeded: number; failed: number; cancelled: number; active: number; passed: number; failedSteps: number; blocked: number; inconclusive: number; passRate: number | null };
   projects: { project: string; runs: number; passRate: number | null; openDefects: number; criticalDefects: number; fixedDefects: number; testCases: number }[];
-  coverage: { project: string; total: number; automated: number; manual: number; ready: number; draft: number; deprecated: number; inSuite: number; executed: number }[];
+  /** Pending and rejected suggestions are not counted as cases: awaitingReview says how many wait. */
+  coverage: { project: string; total: number; automated: number; manual: number; ready: number; draft: number; deprecated: number; inSuite: number; executed: number; generated: number; awaitingReview: number }[];
   defects: { bySeverity: Count[]; byStatus: Count[]; byType: Count[] };
   channels: { channel: string; runs: number; passed: number; failed: number; blocked: number; passRate: number | null; defects: number }[];
   trend: Trend[];
