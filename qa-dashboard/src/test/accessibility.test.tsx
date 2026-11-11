@@ -1,6 +1,6 @@
 import axe from 'axe-core';
 import { describe, expect, it } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { App } from '../App';
 import { admin, mount, project, server } from './harness';
@@ -219,6 +219,7 @@ describe('accessibility, WCAG 2.2 A and AA', () => {
     expect(await violations()).toEqual([]);
     await userEvent.clear(screen.getByRole('textbox', { name: 'Password field: label' }));
     await userEvent.type(screen.getByLabelText(/^Page only a signed-in user can open/), '/account');
+    await userEvent.type(screen.getByLabelText(/^Code form submit path/), '/otp');
     await userEvent.click(screen.getByRole('button', { name: 'Next' }));
     await screen.findByRole('heading', { level: 2, name: 'Review and save' });
     expect(await violations()).toEqual([]);
@@ -238,12 +239,29 @@ describe('accessibility, WCAG 2.2 A and AA', () => {
     await userEvent.type(screen.getByLabelText(/^Mailbox address/), 'otp@mail.example');
     await userEvent.type(screen.getByLabelText(/^IMAP server/), 'imap.mail.example');
     await userEvent.type(screen.getByLabelText(/^Mailbox password/), 'mb');
+    await userEvent.type(screen.getByLabelText(/^Code form submit path/), '/otp');
     await userEvent.click(screen.getByRole('button', { name: 'Save profile' }));
     await screen.findByText('Check the highlighted mailbox fields.');
     expect(await violations()).toEqual([]);
     // The login flow part of the form, with the last test's suggestions offered and a role locator showing its name field.
     await userEvent.click(screen.getByRole('button', { name: 'Use the fields found by the last test' }));
     await screen.findByRole('textbox', { name: 'Sign-in button: name' });
+    expect(await violations()).toEqual([]);
+  });
+
+  it('the one-time code prompt has no violations, before and after sending', async () => {
+    const run = { id: 'r9', kind: 'AUTH_TEST', environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', suiteId: null, suiteName: null, status: 'RUNNING',
+      createdAt: at, finishedAt: null, stopReason: null, startedBy: 'admin@qa.local', passed: 0, failed: 0, inconclusive: 0, blocked: 0 };
+    server({ ...routes, 'GET /projects/p1/runs/r9/progress': { run, attempt: 1, jobState: 'RUNNING', currentOperation: '', steps: 1, defects: 0, durationSeconds: 10 },
+      'GET /projects/p1/runs/r9/steps': [], 'GET /projects/p1/runs/r9/findings': [],
+      'GET /projects/p1/runs/r9/auth': [{ attempt: 1, authProfileId: 'ap1', status: 'WAITING_FOR_OTP', failure: null, stage: 'OTP', detail: 'Waiting for someone to enter the code', durationMs: 0, at }],
+      'POST /projects/p1/runs/r9/otp': () => new Response(null, { status: 202 }) });
+    mount(<App />, '/execution/r9');
+    const prompt = await screen.findByTestId('otp-prompt');
+    expect(await violations()).toEqual([]);
+    await userEvent.type(within(prompt).getByLabelText(/^One-time code/), '482913');
+    await userEvent.click(within(prompt).getByRole('button', { name: 'Continue sign-in' }));
+    await within(prompt).findByText('Code sent. The run continues in the same browser session.');
     expect(await violations()).toEqual([]);
   });
 

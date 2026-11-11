@@ -46,6 +46,8 @@
         <dependency><groupId>org.flywaydb</groupId><artifactId>flyway-database-postgresql</artifactId></dependency>
         <dependency><groupId>org.postgresql</groupId><artifactId>postgresql</artifactId></dependency>
         <dependency><groupId>org.springframework.modulith</groupId><artifactId>spring-modulith-starter-core</artifactId></dependency>
+        <!-- Reads one-time codes from a dedicated test mailbox over IMAPS or STARTTLS. Version from the Spring Boot BOM. -->
+        <dependency><groupId>org.eclipse.angus</groupId><artifactId>angus-mail</artifactId></dependency>
 
         <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webmvc-test</artifactId><scope>test</scope></dependency>
         <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-security-test</artifactId><scope>test</scope></dependency>
@@ -53,6 +55,8 @@
         <dependency><groupId>org.testcontainers</groupId><artifactId>testcontainers-postgresql</artifactId><scope>test</scope></dependency>
         <dependency><groupId>org.testcontainers</groupId><artifactId>testcontainers-junit-jupiter</artifactId><scope>test</scope></dependency>
         <dependency><groupId>org.springframework.modulith</groupId><artifactId>spring-modulith-starter-test</artifactId><scope>test</scope></dependency>
+        <!-- A real IMAP server in tests, so mailbox reading is tested without any real account. -->
+        <dependency><groupId>com.icegreen</groupId><artifactId>greenmail</artifactId><version>2.1.3</version><scope>test</scope></dependency>
     </dependencies>
     <build>
         <resources>

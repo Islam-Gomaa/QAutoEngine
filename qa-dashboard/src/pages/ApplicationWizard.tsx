@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { api, ApiError, type BaseUrlCheck, type Environment, type LoginProfile, type Target } from '../api';
 import { Card, DataTable, Failure, KeyValue, Mono, PageHeader, Tag } from '../design/ui';
 import { Choice, ENVIRONMENT_CLASSES, FIXTURE_URL, NeedsProject } from './shared';
-import { blankFlow, blankMailbox, flowBody, flowProblems, LoginFlowFields, MailboxFields, mailboxBody, mailboxProblems, METHOD_LABELS, TestResult, type FlowDraft, type MailboxDraft } from './signin';
+import { blankFlow, blankMailbox, flowBody, flowProblems, LoginFlowFields, MailboxFields, mailboxBody, mailboxProblems, METHOD_LABELS, otpBody, TestResult, type FlowDraft, type MailboxDraft } from './signin';
 
 /**
  * Guided setup for an application and its environments. Everything entered lives in this component's
@@ -25,7 +25,7 @@ type SignIn = 'NONE' | 'PASSWORD' | 'PASSWORD_EMAIL_OTP';
 interface Details { name: string; type: 'WEB' | 'API'; description: string; active: boolean }
 interface EnvironmentDraft {
   key: number; name: string; classification: string; baseUrl: string; description: string; active: boolean; apiSpecPath: string;
-  signIn: SignIn; profileName: string; username: string; password: string; signInEnabled: boolean; mailbox: MailboxDraft; flow: FlowDraft;
+  signIn: SignIn; profileName: string; username: string; password: string; signInEnabled: boolean; mailbox: MailboxDraft; flow: FlowDraft; codeFrom: 'MAILBOX' | 'PERSON';
 }
 type Errors = Record<string, string>;
 
@@ -41,7 +41,7 @@ function localUrlProblem(url: string): string | null {
 
 function blankEnvironment(key: number, type: Details['type']): EnvironmentDraft {
   return { key, name: '', classification: 'QA', baseUrl: '', description: '', active: true, apiSpecPath: type === 'API' ? '/openapi.json' : '',
-    signIn: 'NONE', profileName: 'Default', username: '', password: '', signInEnabled: true, mailbox: blankMailbox(), flow: blankFlow() };
+    signIn: 'NONE', profileName: 'Default', username: '', password: '', signInEnabled: true, mailbox: blankMailbox(), flow: blankFlow(), codeFrom: 'MAILBOX' };
 }
 
 /** Masks a username the way the server does, so the review shows what the credential list will show. */
@@ -132,8 +132,11 @@ function SignInStep({ type, environments, set, errors }: { type: Details['type']
                 error={!!errors[`${e.key}.password`]} helperText={errors[`${e.key}.password`]} />
               <FormControlLabel control={<Switch checked={e.signInEnabled} onChange={(x) => set(e.key, { signInEnabled: x.target.checked })} />} label="Sign-in enabled" />
               {e.signIn === 'PASSWORD_EMAIL_OTP' && <>
-                <Alert severity="info">Email OTP sign-in is not available yet. These settings are saved, and runs are refused until it is.</Alert>
-                <MailboxFields value={e.mailbox} set={(m) => set(e.key, { mailbox: m })} errors={errors} prefix={`${e.key}.mailbox.`} />
+                <Choice label={`Where the code comes from for ${e.name.trim()}`} value={e.codeFrom} onChange={(x) => set(e.key, { codeFrom: x as 'MAILBOX' | 'PERSON' })}
+                  options={[['MAILBOX', 'A dedicated test mailbox'], ['PERSON', 'A person types it in while the run waits']]} />
+                {e.codeFrom === 'MAILBOX'
+                  ? <MailboxFields value={e.mailbox} set={(m) => set(e.key, { mailbox: m })} errors={errors} prefix={`${e.key}.mailbox.`} />
+                  : <Alert severity="info">The run keeps its browser session open and asks for the code on its page, for up to 5 minutes.</Alert>}
               </>}
             </>}
           </Stack>
@@ -158,7 +161,7 @@ function LoginFlowStep({ environments, set, errors }: { environments: Environmen
       {signing.map((e) => (
         <Box key={e.key} component="section" aria-labelledby={`flow-${e.key}`} sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5, p: 2 }}>
           <Typography id={`flow-${e.key}`} variant="h3" component="h3" sx={{ fontSize: 15, fontWeight: 600, mb: 1.5 }}>{e.name.trim()}</Typography>
-          <LoginFlowFields value={e.flow} set={(f) => set(e.key, { flow: f })} errors={errors} prefix={`${e.key}.flow.`} />
+          <LoginFlowFields value={e.flow} set={(f) => set(e.key, { flow: f })} errors={errors} prefix={`${e.key}.flow.`} otp={e.signIn === 'PASSWORD_EMAIL_OTP'} />
         </Box>
       ))}
     </Stack>
@@ -176,7 +179,7 @@ function TestStep({ project, targetId }: { project: string; targetId: string }) 
   const client = useQueryClient();
   const envs = useQuery({ queryKey: ['environments', project], queryFn: () => api<Environment[]>(`/projects/${project}/environments`) });
   const tests = useQuery({ queryKey: ['login-profiles', project], queryFn: () => api<LoginProfile[]>(`/projects/${project}/login-profiles`),
-    refetchInterval: (q) => (q.state.data?.some((r) => r.lastTest && !r.lastTest.status && ['QUEUED', 'RUNNING'].includes(r.lastTest.runStatus)) ? 2000 : false) });
+    refetchInterval: (q) => (q.state.data?.some((r) => r.lastTest && (r.lastTest.status === 'WAITING_FOR_OTP' || (!r.lastTest.status && ['QUEUED', 'RUNNING'].includes(r.lastTest.runStatus)))) ? 2000 : false) });
   const [error, setError] = useState<unknown>();
   const rows = (envs.data ?? []).filter((e) => e.targetId === targetId);
   const start = async (environmentId: string) => {
@@ -199,7 +202,7 @@ function TestStep({ project, targetId }: { project: string; targetId: string }) 
         { key: 'result', label: 'Result', render: (e) => (e.executable ? <TestResult test={tests.data?.find((t) => t.environmentId === e.id)?.lastTest} /> : <Tag title="Real targets stay locked until the pre-pilot security gate passes.">Real target, locked</Tag>) },
         { key: 'x', label: '', align: 'right', render: (e) => {
           const last = tests.data?.find((t) => t.environmentId === e.id)?.lastTest;
-          const running = !!last && !last.status && ['QUEUED', 'RUNNING'].includes(last.runStatus);
+          const running = !!last && (last.status === 'WAITING_FOR_OTP' || (!last.status && ['QUEUED', 'RUNNING'].includes(last.runStatus)));
           return e.executable ? <Button disabled={running} onClick={() => void start(e.id)}>{last ? 'Test again' : 'Run test'}</Button> : null;
         } },
       ]} />
@@ -279,7 +282,7 @@ function Wizard({ project }: { project: string }) {
       if (e.signIn === 'NONE') continue;
       if (!e.username.trim()) found[`${e.key}.username`] = 'Enter the username.';
       if (!e.password) found[`${e.key}.password`] = 'Enter the password.';
-      if (e.signIn === 'PASSWORD_EMAIL_OTP') for (const [k, v] of Object.entries(mailboxProblems(e.mailbox))) found[`${e.key}.mailbox.${k}`] = v;
+      if (e.signIn === 'PASSWORD_EMAIL_OTP' && e.codeFrom === 'MAILBOX') for (const [k, v] of Object.entries(mailboxProblems(e.mailbox))) found[`${e.key}.mailbox.${k}`] = v;
     }
     return found;
   };
@@ -342,7 +345,8 @@ function Wizard({ project }: { project: string }) {
           active: e.active, channel: details.type, apiSpecPath: details.type === 'API' && e.apiSpecPath.trim() ? e.apiSpecPath.trim() : null,
           ...(details.type === 'WEB' && e.signIn !== 'NONE' ? { authentication: {
             name: e.profileName.trim() || 'Default', method: e.signIn, username: e.username.trim(), password: e.password, enabled: e.signInEnabled,
-            mailbox: e.signIn === 'PASSWORD_EMAIL_OTP' ? mailboxBody(e.mailbox) : null, ...flowBody(e.flow),
+            mailbox: e.signIn === 'PASSWORD_EMAIL_OTP' && e.codeFrom === 'MAILBOX' ? mailboxBody(e.mailbox) : null, ...flowBody(e.flow),
+            otp: e.signIn === 'PASSWORD_EMAIL_OTP' ? { ...otpBody(e.flow), typedByPerson: e.codeFrom === 'PERSON' } : null,
           } } : {}),
         })),
       });

@@ -18,6 +18,8 @@ import org.springframework.web.bind.annotation.RestController;
 import qaengine.contracts.WorkerContracts.ApiProfile;
 import qaengine.contracts.WorkerContracts.AuthReport;
 import qaengine.contracts.WorkerContracts.Locator;
+import qaengine.contracts.WorkerContracts.OtpProfile;
+import qaengine.contracts.WorkerContracts.OtpReply;
 import qaengine.contracts.WorkerContracts.FindingReport;
 import qaengine.contracts.WorkerContracts.HeartbeatResponse;
 import qaengine.contracts.WorkerContracts.JobAssignment;
@@ -52,15 +54,17 @@ public class WorkerController {
     private final AuditLog audit;
     private final CredentialService credentials;
     private final tools.jackson.databind.ObjectMapper json;
+    private final qaengine.platform.otp.OtpService otps;
 
     private static final java.util.Set<String> AUTH_STATUSES = java.util.Set.of("NOT_STARTED", "IN_PROGRESS", "WAITING_FOR_OTP", "AUTHENTICATED", "FAILED", "EXPIRED",
             "REQUIRES_USER_ACTION", "CONNECTED");
     private static final java.util.Set<String> AUTH_FAILURES = java.util.Set.of("NETWORK_UNREACHABLE", "TLS_ERROR", "POLICY_REFUSED", "LOGIN_PAGE_UNAVAILABLE",
             "INVALID_CREDENTIALS", "VERIFICATION_FAILED", "SESSION_REJECTED", "ATTEMPT_LIMIT", "OTP_NOT_RECEIVED", "OTP_EXTRACTION_FAILED", "OTP_INVALID");
-    private static final java.util.Set<String> AUTH_STAGES = java.util.Set.of("LOGIN_PAGE", "CREDENTIALS", "SUBMIT", "VERIFY", "DONE");
+    private static final java.util.Set<String> AUTH_STAGES = java.util.Set.of("LOGIN_PAGE", "CREDENTIALS", "SUBMIT", "OTP", "VERIFY", "DONE");
 
     public WorkerController(JdbcClient db, JobTokens tokens, JobQueue queue, EvidenceService evidence, DefectService defects,
-                            TestCaseService testCases, AuditLog audit, CredentialService credentials, tools.jackson.databind.ObjectMapper json) {
+                            TestCaseService testCases, AuditLog audit, CredentialService credentials, tools.jackson.databind.ObjectMapper json,
+                            qaengine.platform.otp.OtpService otps) {
         this.db = db;
         this.tokens = tokens;
         this.queue = queue;
@@ -70,6 +74,7 @@ public class WorkerController {
         this.audit = audit;
         this.credentials = credentials;
         this.json = json;
+        this.otps = otps;
     }
 
     private JobTokens.Scope scope(String authorization, UUID jobId) {
@@ -105,7 +110,9 @@ public class WorkerController {
                        ep.max_actions, ep.max_pages, ep.max_depth, ep.max_minutes,
                        ap.method, ap.login_path, ap.submit_path, ap.success_path, ap.locators::text, ap.login_timeout_seconds, r.kind,
                        (SELECT array_agg(origin) FROM allowed_host h WHERE h.organization_id = e.organization_id AND h.environment_id = e.id),
-                       e.channel, e.api_spec_path, e.api_slow_ms, e.api_seed_paths, r.suite_id, r.max_pages
+                       e.channel, e.api_spec_path, e.api_slow_ms, e.api_seed_paths, r.suite_id, r.max_pages,
+                       ap.otp_locators::text, ap.otp_submit_path, ap.otp_resend_path, ap.otp_max_resends,
+                       (SELECT m.timeout_seconds FROM otp_mailbox m WHERE m.organization_id = ap.organization_id AND m.auth_profile_id = ap.id)
                 FROM test_run r
                 JOIN environment e ON e.organization_id = r.organization_id AND e.id = r.environment_id
                 JOIN execution_policy ep ON ep.organization_id = e.organization_id AND ep.environment_id = e.id
@@ -114,17 +121,28 @@ public class WorkerController {
                 """).params(c.organizationId(), c.runId()).query((rs, n) -> new JobAssignment(c.jobId(), c.runId(), c.attempt(), token,
                 rs.getString(1), rs.getLong(2), rs.getString(3), rs.getString(4), array(rs, 19), array(rs, 5), array(rs, 6),
                 new RunLimits(rs.getInt(8), rs.getObject(25) == null ? rs.getInt(9) : Math.min(rs.getInt(9), rs.getInt(25)), rs.getInt(10), rs.getInt(11), rs.getString(4).equals("PRODUCTION") ? 1 : 2), array(rs, 7),
-                rs.getString(12) == null ? null : login(rs.getString(12), rs.getString(13), rs.getString(14), rs.getString(15), rs.getString(16), rs.getInt(17)),
+                rs.getString(12) == null ? null : login(rs.getString(12), rs.getString(13), rs.getString(14), rs.getString(15), rs.getString(16), rs.getInt(17),
+                        rs.getString(26), rs.getString(27), rs.getString(28), rs.getInt(29), (Integer) rs.getObject(30)),
                 rs.getString(20), new ApiProfile(rs.getString(21), rs.getLong(22), array(rs, 23)), scope(c.organizationId(), rs.getObject(24, UUID.class), rs.getString(1)),
                 rs.getString(18))).single());
     }
 
     /** The profile as the worker needs it. The locators were validated when they were saved. */
     @SuppressWarnings("unchecked")
-    private LoginProfile login(String method, String loginPath, String submitPath, String successPath, String locators, int timeout) {
+    private LoginProfile login(String method, String loginPath, String submitPath, String successPath, String locators, int timeout,
+                               String otpLocators, String otpSubmitPath, String otpResendPath, int maxResends, Integer mailboxTimeout) {
         Map<String, Map<String, String>> l = json.readValue(locators, Map.class);
         java.util.function.Function<String, Locator> at = k -> l.get(k) == null ? null : new Locator(l.get(k).get("strategy"), l.get(k).get("value"), l.get(k).get("name"));
-        return new LoginProfile(method, loginPath, submitPath, successPath, at.apply("username"), at.apply("password"), at.apply("submit"), at.apply("success"), at.apply("failure"), timeout);
+        OtpProfile otp = null;
+        if ("PASSWORD_EMAIL_OTP".equals(method)) {
+            Map<String, Map<String, String>> o = json.readValue(otpLocators, Map.class);
+            java.util.function.Function<String, Locator> code = k -> o.get(k) == null ? null : new Locator(o.get(k).get("strategy"), o.get(k).get("value"), o.get(k).get("name"));
+            // Longer than the platform will wait, by mailbox or by a person, so the platform's answer always comes first.
+            int wait = (int) Math.max(mailboxTimeout == null ? 0 : mailboxTimeout, qaengine.platform.otp.OtpService.MANUAL_WAIT.toSeconds()) + 30;
+            otp = new OtpProfile(code.apply("field"), code.apply("submit"), code.apply("failure"), code.apply("resend"), otpSubmitPath, otpResendPath, maxResends, wait);
+        }
+        return new LoginProfile(method, loginPath, submitPath, successPath, at.apply("username"), at.apply("password"), at.apply("submit"), at.apply("success"), at.apply("failure"),
+                timeout, otp);
     }
 
     /** The last recorded step of each automated case in the suite says what to repeat. */
@@ -213,6 +231,24 @@ public class WorkerController {
                 s.organizationId(), run).update();
         audit.record(s.organizationId(), "worker", "AUTH_ATTEMPT_RECORDED", run.toString(), r.status() + (r.failure() == null ? "" : " " + r.failure()));
         return ResponseEntity.noContent().build();
+    }
+
+    /** The sign-in is about to make the target send a code: mail from before now, and codes typed before now, no longer count. */
+    @PostMapping("/{jobId}/otp/request")
+    @Transactional
+    public ResponseEntity<Void> otpRequested(@RequestHeader(value = "Authorization", required = false) String auth, @PathVariable UUID jobId) {
+        JobTokens.Scope s = scope(auth, jobId);
+        otps.requested(s.organizationId(), runOf(s), s.attempt());
+        return ResponseEntity.noContent().build();
+    }
+
+    /** One poll for the code, only for the attempt holding the lease. The code is in this response and nowhere else. */
+    @PostMapping("/{jobId}/otp")
+    @Transactional
+    public ResponseEntity<OtpReply> otp(@RequestHeader(value = "Authorization", required = false) String auth, @PathVariable UUID jobId) {
+        JobTokens.Scope s = scope(auth, jobId);
+        var r = otps.poll(s.organizationId(), runOf(s), s.attempt());
+        return ResponseEntity.ok(new OtpReply(r.code(), r.failure(), r.detail(), r.retryAfterSeconds(), r.waitingForPerson()));
     }
 
     @PostMapping("/{jobId}/start")

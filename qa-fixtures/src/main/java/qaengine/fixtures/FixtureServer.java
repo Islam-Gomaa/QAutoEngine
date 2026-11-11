@@ -170,7 +170,102 @@ public final class FixtureServer implements AutoCloseable {
                 + "<main><h1>" + title + "</h1>" + content + "</main>";
     }
 
+    // One-time codes. The fixture "emails" a code by recording it: tests read it as a mailbox reader would.
+
+    /** A code the fixture sent, and until when it is accepted. A resend or a use ends it. */
+    record Otp(String code, long expiresAtMillis) {}
+
+    private final java.util.concurrent.ConcurrentHashMap<String, Otp> pendingOtp = new java.util.concurrent.ConcurrentHashMap<>();
+    private final List<String> outbox = new CopyOnWriteArrayList<>();
+    private volatile long otpLifetimeMillis = 120_000;
+    private static final java.security.SecureRandom RANDOM = new java.security.SecureRandom();
+
+    /** Every code sent, oldest first, as they would arrive in a mailbox. */
+    public List<String> sentCodes() {
+        return List.copyOf(outbox);
+    }
+
+    /** Makes codes sent from now on expire after this many milliseconds. */
+    public void otpLifetime(long millis) {
+        otpLifetimeMillis = millis;
+    }
+
+    private String sendCode(String pending) {
+        String code = String.format("%06d", RANDOM.nextInt(1_000_000));
+        pendingOtp.put(pending, new Otp(code, System.currentTimeMillis() + otpLifetimeMillis));
+        outbox.add(code);
+        return code;
+    }
+
+    private static String otpPage(String error, boolean boxes) {
+        String inputs = boxes
+                ? java.util.stream.IntStream.rangeClosed(1, 6).mapToObj(i -> "<input name=\"d" + i + "\" maxlength=\"1\" inputmode=\"numeric\" aria-label=\"Digit " + i + "\" class=\"digit\">").collect(java.util.stream.Collectors.joining())
+                : "<label for=\"otp\">One-time code</label> <input id=\"otp\" name=\"otp\" autocomplete=\"one-time-code\" inputmode=\"numeric\">";
+        return "<!doctype html><title>Enter your code</title><main><h1>Check your email</h1>"
+                + (error == null ? "" : "<p role=\"alert\" data-testid=\"otp-error\">" + error + "</p>")
+                + "<form method=\"post\" action=\"/app/otp-verify\">" + inputs + " <button type=\"submit\">Verify</button></form>"
+                + "<form method=\"post\" action=\"/app/otp-resend\"><button type=\"submit\" data-testid=\"resend\">Send a new code</button></form></main>";
+    }
+
+    private static java.util.Map<String, String> form(String body) {
+        java.util.Map<String, String> out = new java.util.HashMap<>();
+        for (String pair : body.split("&")) {
+            String[] kv = pair.split("=", 2);
+            if (kv.length == 2) out.put(java.net.URLDecoder.decode(kv[0], StandardCharsets.UTF_8), java.net.URLDecoder.decode(kv[1], StandardCharsets.UTF_8));
+        }
+        return out;
+    }
+
+    private static String cookieValue(HttpExchange x, String name) {
+        String cookie = x.getRequestHeaders().getFirst("Cookie");
+        if (cookie == null) return null;
+        for (String part : cookie.split(";\\s*")) if (part.startsWith(name + "=")) return part.substring(name.length() + 1);
+        return null;
+    }
+
+    private void otp(HttpExchange x, String path, String body) throws IOException {
+        String pending = cookieValue(x, "otp_pending");
+        boolean boxes = "boxes".equals(cookieValue(x, "otp_style"));
+        switch (path) {
+            case "/app/login-otp", "/app/login-otp-boxes" -> {
+                x.getResponseHeaders().add("Set-Cookie", "otp_style=" + (path.endsWith("boxes") ? "boxes" : "single") + "; Path=/app");
+                send(x, 200, "text/html; charset=utf-8", loginPage("/app/session-otp", null));
+            }
+            case "/app/session-otp" -> {
+                if (!validAppLogin(body)) { send(x, 200, "text/html; charset=utf-8", loginPage("/app/session-otp", "Incorrect email or password.")); return; }
+                String token = Long.toHexString(RANDOM.nextLong());
+                sendCode(token);
+                x.getResponseHeaders().add("Set-Cookie", "otp_pending=" + token + "; HttpOnly; Path=/app");
+                redirect(x, "/app/otp");
+            }
+            case "/app/otp" -> {
+                if (pending == null || !pendingOtp.containsKey(pending)) { redirect(x, "/app/login-otp"); return; }
+                send(x, 200, "text/html; charset=utf-8", otpPage(null, boxes));
+            }
+            case "/app/otp-resend" -> {
+                if (pending == null || !pendingOtp.containsKey(pending)) { redirect(x, "/app/login-otp"); return; }
+                sendCode(pending);
+                redirect(x, "/app/otp");
+            }
+            case "/app/otp-verify" -> {
+                Otp expected = pending == null ? null : pendingOtp.get(pending);
+                var f = form(body);
+                String given = boxes ? java.util.stream.IntStream.rangeClosed(1, 6).mapToObj(i -> f.getOrDefault("d" + i, "")).collect(java.util.stream.Collectors.joining()) : f.getOrDefault("otp", "");
+                if (expected == null) { redirect(x, "/app/login-otp"); return; }
+                if (!expected.code().equals(given) || System.currentTimeMillis() > expected.expiresAtMillis()) {
+                    send(x, 200, "text/html; charset=utf-8", otpPage("That code is not valid. It may have expired.", boxes));
+                    return;
+                }
+                pendingOtp.remove(pending); // single use
+                x.getResponseHeaders().add("Set-Cookie", APP_COOKIE + "; HttpOnly; Path=/app");
+                redirect(x, "/app/home");
+            }
+            default -> send(x, 404, "text/html", "<h1>Not found</h1>");
+        }
+    }
+
     private void app(HttpExchange x, String path, String body) throws IOException {
+        if (path.startsWith("/app/login-otp") || path.equals("/app/session-otp") || path.startsWith("/app/otp")) { otp(x, path, body); return; }
         String cookie = x.getRequestHeaders().getFirst("Cookie");
         boolean session = cookie != null && cookie.contains(APP_COOKIE);
         switch (path) {

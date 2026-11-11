@@ -1,5 +1,6 @@
-import { Box, Button, Checkbox, FormControlLabel, Stack, TextField, Typography } from '@mui/material';
-import type { Locators, LocatorView, Mailbox } from '../api';
+import { Box, Button, Checkbox, FormControlLabel, Link, Stack, TextField, Typography } from '@mui/material';
+import { Link as RouterLink } from 'react-router-dom';
+import type { Locators, LocatorView, Mailbox, OtpSettings } from '../api';
 import { Choice } from './shared';
 
 /**
@@ -90,6 +91,8 @@ export interface LocatorDraft { strategy: Strategy; value: string; name: string 
 export interface FlowDraft {
   loginPath: string; submitPath: string; successPath: string; timeoutSeconds: string;
   username: LocatorDraft; password: LocatorDraft; submit: LocatorDraft; success: LocatorDraft; failure: LocatorDraft;
+  otpSubmitPath: string; otpResendPath: string; maxResends: string;
+  otpField: LocatorDraft; otpSubmit: LocatorDraft; otpFailure: LocatorDraft; otpResend: LocatorDraft;
 }
 
 const STRATEGIES: [Strategy, string][] = [['LABEL', 'Label'], ['ROLE', 'Role and name'], ['TEST_ID', 'Test id'], ['PLACEHOLDER', 'Placeholder'], ['CSS', 'CSS selector']];
@@ -99,12 +102,22 @@ const fromView = (v: LocatorView | null | undefined, fallback: Strategy): Locato
 export const blankFlow = (): FlowDraft => ({
   loginPath: '/login', submitPath: '/login', successPath: '', timeoutSeconds: '15',
   username: blankLocator(), password: blankLocator(), submit: blankLocator('ROLE'), success: blankLocator('TEST_ID'), failure: blankLocator('ROLE'),
+  otpSubmitPath: '', otpResendPath: '', maxResends: '0', otpField: blankLocator(), otpSubmit: blankLocator('ROLE'), otpFailure: blankLocator('ROLE'), otpResend: blankLocator('ROLE'),
 });
 
-export const flowDraft = (p: { loginPath: string | null; submitPath: string | null; successPath: string | null; locators?: Locators; timeoutSeconds?: number }): FlowDraft => ({
+export const flowDraft = (p: { loginPath: string | null; submitPath: string | null; successPath: string | null; locators?: Locators; timeoutSeconds?: number; otp?: OtpSettings | null }): FlowDraft => ({
   loginPath: p.loginPath ?? '/login', submitPath: p.submitPath ?? '/login', successPath: p.successPath ?? '', timeoutSeconds: String(p.timeoutSeconds ?? 15),
   username: fromView(p.locators?.username, 'LABEL'), password: fromView(p.locators?.password, 'LABEL'), submit: fromView(p.locators?.submit, 'ROLE'),
   success: fromView(p.locators?.success, 'TEST_ID'), failure: fromView(p.locators?.failure, 'ROLE'),
+  otpSubmitPath: p.otp?.submitPath ?? '', otpResendPath: p.otp?.resendPath ?? '', maxResends: String(p.otp?.maxResends ?? 0),
+  otpField: fromView(p.otp?.locators.field, 'LABEL'), otpSubmit: fromView(p.otp?.locators.submit, 'ROLE'), otpFailure: fromView(p.otp?.locators.failure, 'ROLE'),
+  otpResend: fromView(p.otp?.locators.resend, 'ROLE'),
+});
+
+/** The code step, sent only for Email OTP. */
+export const otpBody = (f: FlowDraft) => ({
+  submitPath: f.otpSubmitPath.trim() || null, resendPath: f.otpResendPath.trim() || null, maxResends: Number(f.maxResends) || 0,
+  locators: { field: toView(f.otpField), submit: toView(f.otpSubmit), failure: toView(f.otpFailure), resend: toView(f.otpResend) },
 });
 
 const toView = (l: LocatorDraft): LocatorView | null => (l.value.trim() ? { strategy: l.strategy, value: l.value.trim(), name: l.strategy === 'ROLE' && l.name.trim() ? l.name.trim() : null } : null);
@@ -130,6 +143,16 @@ export function flowProblems(f: FlowDraft, method: string): Record<string, strin
   }
   const t = Number(f.timeoutSeconds);
   if (!Number.isInteger(t) || t < 5 || t > 60) found.timeoutSeconds = 'Between 5 and 60 seconds.';
+  if (method === 'PASSWORD_EMAIL_OTP') {
+    for (const k of ['otpSubmitPath', 'otpResendPath'] as const) {
+      const v = f[k].trim();
+      if (v && !/^\/[A-Za-z0-9._~/-]*$/.test(v)) found[k] = 'A path on the site, starting with /.';
+    }
+    if (!f.otpSubmitPath.trim()) found.otpSubmitPath = found.otpSubmitPath ?? 'Enter the path the code form posts to. The code is only let through to it.';
+    const resends = Number(f.maxResends);
+    if (!Number.isInteger(resends) || resends < 0 || resends > 3) found.maxResends = 'Between 0 and 3.';
+    else if (resends > 0 && (!f.otpResend.value.trim() || !f.otpResendPath.trim())) found.maxResends = 'Set the resend button and its path to allow resends.';
+  }
   return found;
 }
 
@@ -149,8 +172,8 @@ function LocatorField({ label, value, set, error, nameError, help }: { label: st
  * on the page is used. Success is never assumed: a success page, a signed-in marker, or both, is required.
  * @param suggestions locators the last connection test read from the login page, offered with one click
  */
-export function LoginFlowFields({ value, set, errors, prefix, suggestions }: {
-  value: FlowDraft; set: (f: FlowDraft) => void; errors: Record<string, string>; prefix: string; suggestions?: Record<string, LocatorView> | null;
+export function LoginFlowFields({ value, set, errors, prefix, suggestions, otp }: {
+  value: FlowDraft; set: (f: FlowDraft) => void; errors: Record<string, string>; prefix: string; suggestions?: Record<string, LocatorView> | null; otp?: boolean;
 }) {
   const e = (k: string) => errors[`${prefix}${k}`];
   const offered = suggestions && Object.keys(suggestions).length > 0 ? suggestions : null;
@@ -180,6 +203,21 @@ export function LoginFlowFields({ value, set, errors, prefix, suggestions }: {
       <LocatorField label="Sign-in button" value={value.submit} set={(l) => set({ ...value, submit: l })} nameError={e('submit.name')} />
       <TextField label="Wait up to (seconds)" inputMode="numeric" value={value.timeoutSeconds} onChange={(x) => set({ ...value, timeoutSeconds: x.target.value })}
         error={!!e('timeoutSeconds')} helperText={e('timeoutSeconds')} sx={{ maxWidth: 220 }} />
+      {otp && <>
+        <Typography component="h4" variant="body2" sx={{ fontWeight: 600 }}>One-time code</Typography>
+        <Typography variant="caption" color="text.secondary">Exactly one code is submitted per sign-in. Where the code goes is found automatically if you leave the field empty.</Typography>
+        <TextField label="Code form submit path" required value={value.otpSubmitPath} onChange={(x) => set({ ...value, otpSubmitPath: x.target.value })} error={!!e('otpSubmitPath')}
+          helperText={e('otpSubmitPath') ?? 'Where the code form posts. Only this is let through for the code.'} />
+        <LocatorField label="Code field" value={value.otpField} set={(l) => set({ ...value, otpField: l })} help="One field, or several boxes that take one character each." />
+        <LocatorField label="Code button" value={value.otpSubmit} set={(l) => set({ ...value, otpSubmit: l })} />
+        <LocatorField label="Code error (optional)" value={value.otpFailure} set={(l) => set({ ...value, otpFailure: l })} help="The page's own error for a wrong or expired code." />
+        <LocatorField label="Resend button (optional)" value={value.otpResend} set={(l) => set({ ...value, otpResend: l })} />
+        <Stack direction="row" spacing={1}>
+          <TextField label="Resend path" fullWidth value={value.otpResendPath} onChange={(x) => set({ ...value, otpResendPath: x.target.value })} error={!!e('otpResendPath')} helperText={e('otpResendPath')} />
+          <TextField label="Resends allowed" inputMode="numeric" value={value.maxResends} onChange={(x) => set({ ...value, maxResends: x.target.value })} error={!!e('maxResends')}
+            helperText={e('maxResends') ?? '0 never asks for a new code.'} sx={{ maxWidth: 200 }} />
+        </Stack>
+      </>}
     </Stack>
   );
 }
@@ -198,6 +236,7 @@ const CONNECTION = ['NETWORK_UNREACHABLE', 'TLS_ERROR', 'LOGIN_PAGE_UNAVAILABLE'
 export function testOutcome(t: { runStatus?: string; status: string | null; failure: string | null } | null | undefined): { label: string; tone: 'ok' | 'bad' | 'neutral' } {
   if (!t) return { label: 'Not tested', tone: 'neutral' };
   if (!t.status) return ['QUEUED', 'RUNNING'].includes(t.runStatus ?? '') ? { label: 'Testing', tone: 'neutral' } : { label: 'Test did not complete', tone: 'bad' };
+  if (t.status === 'WAITING_FOR_OTP') return { label: 'Waiting for one-time code', tone: 'neutral' };
   if (t.status === 'AUTHENTICATED') return { label: 'Authentication successful', tone: 'ok' };
   if (t.status === 'CONNECTED') return { label: 'Connected', tone: 'ok' };
   if (t.failure === 'POLICY_REFUSED' || t.failure === 'ATTEMPT_LIMIT') return { label: 'Access blocked', tone: 'bad' };
@@ -212,6 +251,7 @@ export function TestResult({ test }: { test: { runStatus?: string; status: strin
       <Typography variant="body2" sx={{ fontWeight: 560, color: o.tone === 'ok' ? 'success.main' : o.tone === 'bad' ? 'error.main' : 'text.secondary' }} data-testid="test-outcome">{o.label}</Typography>
       {test?.failure && <Typography variant="caption">{FAILURE_LABELS[test.failure] ?? test.failure}</Typography>}
       {test?.detail && test.status !== 'AUTHENTICATED' && test.status !== 'CONNECTED' && <Typography variant="caption" color="text.secondary">{test.detail}</Typography>}
+      {test?.status === 'WAITING_FOR_OTP' && 'runId' in test && <Link component={RouterLink} to={`/execution/${(test as { runId: string }).runId}`} variant="caption">Enter the code</Link>}
     </Stack>
   );
 }

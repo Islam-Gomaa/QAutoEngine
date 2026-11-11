@@ -258,15 +258,7 @@ public final class PlaywrightBrowser implements BrowserPort {
     }
 
     private com.microsoft.playwright.Locator resolve(LocatorSpec s) {
-        com.microsoft.playwright.Locator found = switch (s.strategy()) {
-            case ROLE -> page.getByRole(com.microsoft.playwright.options.AriaRole.valueOf(s.value().toUpperCase(java.util.Locale.ROOT)),
-                    s.name() == null ? new Page.GetByRoleOptions() : new Page.GetByRoleOptions().setName(s.name()));
-            case LABEL -> page.getByLabel(s.value());
-            case PLACEHOLDER -> page.getByPlaceholder(s.value());
-            case TEST_ID -> page.getByTestId(s.value());
-            case CSS -> page.locator(s.value());
-        };
-        return found.first();
+        return allOf(s).first();
     }
 
     @Override
@@ -297,6 +289,31 @@ public final class PlaywrightBrowser implements BrowserPort {
     @Override
     public void fill(LocatorSpec field, String value) {
         resolve(field).fill(value == null ? "" : value, new com.microsoft.playwright.Locator.FillOptions().setTimeout(5000));
+    }
+
+    @Override
+    public boolean fillCode(LocatorSpec field, String code) {
+        var all = allOf(field);
+        int boxes = all.count();
+        if (boxes <= 1) {
+            fill(field, code);
+            return true;
+        }
+        if (boxes != code.length()) return false;
+        for (int i = 0; i < boxes; i++) all.nth(i).fill(String.valueOf(code.charAt(i)), new com.microsoft.playwright.Locator.FillOptions().setTimeout(5000));
+        return true;
+    }
+
+    /** Every match, not just the first: segmented code inputs share one locator. */
+    private com.microsoft.playwright.Locator allOf(LocatorSpec s) {
+        return switch (s.strategy()) {
+            case ROLE -> page.getByRole(com.microsoft.playwright.options.AriaRole.valueOf(s.value().toUpperCase(java.util.Locale.ROOT)),
+                    s.name() == null ? new Page.GetByRoleOptions() : new Page.GetByRoleOptions().setName(s.name()));
+            case LABEL -> page.getByLabel(s.value());
+            case PLACEHOLDER -> page.getByPlaceholder(s.value());
+            case TEST_ID -> page.getByTestId(s.value());
+            case CSS -> page.locator(s.value());
+        };
     }
 
     @Override

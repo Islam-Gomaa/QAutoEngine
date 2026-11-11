@@ -24,6 +24,7 @@ import qaengine.contracts.WorkerContracts.JobAssignment;
 import qaengine.core.auth.AuthenticationResult;
 import qaengine.core.auth.LocatorSpec;
 import qaengine.core.auth.LoginForm;
+import qaengine.core.auth.OtpStep;
 import qaengine.contracts.WorkerContracts.LoginSecret;
 import qaengine.contracts.WorkerContracts.RunCompletion;
 import qaengine.core.engine.ExplorationEngine;
@@ -57,6 +58,8 @@ public final class WorkerMain {
     private static final long RUN_CAP_BYTES = 1L << 30;
     static final int EXIT_SELF_STOPPED = 3;
     private static final String AUTH_EXCEPTION = "environment-login";
+    private static final String OTP_EXCEPTION = "environment-login-code";
+    private static final String RESEND_EXCEPTION = "environment-login-code-resend";
     /** Exploration numbers its steps from 1 and roots them at 0, so sign-in sits apart and never joins a reproduction path. */
     private static final int SIGN_IN_STEP = -1;
     private static final long PAUSE_MILLIS = 20;
@@ -116,7 +119,7 @@ public final class WorkerMain {
                     .onProgress(step -> call(() -> platform.steps(List.of(sanitizer.step(step)))), o -> call(() -> platform.finding(sanitizer.finding(o))));
             boolean test = WorkerContracts.AUTH_TEST.equals(job.kind());
             if (job.login() != null) {
-                LoginFlow.Attempt attempt = signIn(gate, browser, job, secret, new LoginFlow.Evidence(evidence, SIGN_IN_STEP));
+                LoginFlow.Attempt attempt = signIn(gate, browser, job, secret, new LoginFlow.Evidence(evidence, SIGN_IN_STEP), new PlatformCodes(platform, redactor));
                 record(platform, sanitizer, job, attempt.result(), false);
                 if (attempt.outcome() != LoginFlow.Outcome.SIGNED_IN) {
                     String reason = test ? attempt.result().failure().name() : attempt.outcome() == LoginFlow.Outcome.BLOCKED ? "AUTH_BLOCKED" : "AUTH_FAILED";
@@ -192,7 +195,7 @@ public final class WorkerMain {
         return job.startUrl().replaceAll("/+$", "");
     }
 
-    private static LoginFlow.Attempt signIn(ActionGate gate, PlaywrightBrowser browser, JobAssignment job, LoginSecret s, LoginFlow.Evidence evidence) {
+    private static LoginFlow.Attempt signIn(ActionGate gate, PlaywrightBrowser browser, JobAssignment job, LoginSecret s, LoginFlow.Evidence evidence, PlatformCodes codes) {
         var profile = job.login();
         LoginForm form;
         try {
@@ -202,9 +205,20 @@ public final class WorkerMain {
             // The platform validates these; a profile it let through but this cannot read is not guessed around.
             form = LoginForm.automatic();
         }
-        var spec = new LoginFlow.Spec(LoginFlow.Method.valueOf(profile.method()), base(job), profile.loginPath() == null ? "" : profile.loginPath(), profile.successPath(), AUTH_EXCEPTION, form);
+        OtpStep otp = null;
+        if (profile.otp() != null) {
+            try {
+                var o = profile.otp();
+                otp = new OtpStep(locator(o.field()), locator(o.submitButton()), locator(o.failureElement()), locator(o.resendButton()), o.maxResends(),
+                        Duration.ofSeconds(o.waitSeconds()), OTP_EXCEPTION, o.resendPath() == null ? null : RESEND_EXCEPTION);
+            } catch (RuntimeException e) {
+                otp = null; // Without a usable code step the flow stops with a clear reason rather than guessing.
+            }
+        }
+        var spec = new LoginFlow.Spec(LoginFlow.Method.valueOf(profile.method()), base(job), profile.loginPath() == null ? "" : profile.loginPath(), profile.successPath(), AUTH_EXCEPTION,
+                form, otp);
         var credentials = new LoginFlow.Credentials(s.username(), s.password(), s.oneTimeCode(), s.sessionCookieName(), s.sessionCookieValue());
-        return new LoginFlow(gate, browser).attempt(spec, credentials, evidence);
+        return new LoginFlow(gate, browser).attempt(spec, credentials, evidence, codes);
     }
 
     private static LocatorSpec locator(WorkerContracts.Locator l) {
@@ -227,10 +241,23 @@ public final class WorkerMain {
         var limits = job.limits();
         TargetScope scope = new TargetScope(Set.copyOf(job.allowedOrigins()), job.includePaths(), job.excludePaths());
         RunBudget budget = new RunBudget(limits.maxActions(), limits.maxPages(), limits.maxDepth(), Duration.ofMinutes(limits.maxMinutes()), limits.maxLoginAttempts());
-        List<ScopedException> exceptions = job.login() == null || job.login().submitPath() == null || "API".equals(job.channel()) ? List.of() : List.of(new ScopedException(
-                AUTH_EXCEPTION, ScopedException.Purpose.AUTH, job.allowedOrigins().getFirst(), "POST", job.login().submitPath(), null,
-                Instant.now().plus(Duration.ofMinutes(limits.maxMinutes())), limits.maxLoginAttempts(), "environment login profile",
-                ScopedException.ApproverRole.ORGANIZATION_ADMIN));
+        List<ScopedException> exceptions = new java.util.ArrayList<>();
+        if (job.login() != null && job.login().submitPath() != null && !"API".equals(job.channel())) {
+            Instant until = Instant.now().plus(Duration.ofMinutes(limits.maxMinutes()));
+            String origin = job.allowedOrigins().getFirst();
+            exceptions.add(new ScopedException(AUTH_EXCEPTION, ScopedException.Purpose.AUTH, origin, "POST", job.login().submitPath(), null,
+                    until, limits.maxLoginAttempts(), "environment login profile", ScopedException.ApproverRole.ORGANIZATION_ADMIN));
+            var otp = job.login().otp();
+            // The code and the resend each get their own narrow permission, used only inside the sign-in window.
+            if (otp != null && otp.submitPath() != null) {
+                exceptions.add(new ScopedException(OTP_EXCEPTION, ScopedException.Purpose.AUTH, origin, "POST", otp.submitPath(), null,
+                        until, limits.maxLoginAttempts(), "environment login profile", ScopedException.ApproverRole.ORGANIZATION_ADMIN));
+            }
+            if (otp != null && otp.resendPath() != null && otp.maxResends() > 0) {
+                exceptions.add(new ScopedException(RESEND_EXCEPTION, ScopedException.Purpose.AUTH, origin, "POST", otp.resendPath(), null,
+                        until, otp.maxResends() * limits.maxLoginAttempts(), "environment login profile", ScopedException.ApproverRole.ORGANIZATION_ADMIN));
+            }
+        }
         return new ExecutionPolicy(ExecutionMode.valueOf(job.mode()), EnvironmentClass.valueOf(job.environmentClass()), scope, exceptions, new HashSet<>(), budget);
     }
 

@@ -12,6 +12,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Component;
 import qaengine.core.auth.LocatorSpec;
 import qaengine.core.auth.LoginForm;
+import qaengine.core.auth.OtpStep;
 import qaengine.core.policy.BaseUrl;
 import qaengine.core.policy.PolicyException;
 import qaengine.platform.audit.AuditLog;
@@ -54,6 +55,11 @@ public class AuthProfiles {
         static final Locators NONE = new Locators(null, null, null, null, null);
     }
 
+    /** Where the one-time code goes, which button sends it, the page's error for a wrong code, and the resend button. All optional. */
+    public record OtpLocators(LocatorView field, LocatorView submit, LocatorView failure, LocatorView resend) {
+        static final OtpLocators NONE = new OtpLocators(null, null, null, null);
+    }
+
     /** The latest connection test of a profile or environment. Status and failure are empty while it is queued or running. */
     public record LastTest(UUID runId, String runStatus, String status, String failure, String stage, String detail, OffsetDateTime at,
                            java.util.Map<String, LocatorView> suggestions) {}
@@ -62,13 +68,22 @@ public class AuthProfiles {
      * @param isDefault true makes this the profile runs use; false is ignored, so an environment never
      *                  silently loses its default
      * @param locators  null keeps the current ones on an update
+     * @param otp       for Email OTP; null keeps the current code settings on an update. A profile with Email OTP and no
+     *                  mailbox takes codes a person types into the dashboard.
      */
     public record Settings(String name, String method, UUID credentialId, String loginPath, String submitPath, String successPath,
-                           Boolean enabled, Boolean isDefault, MailboxSettings mailbox, Locators locators, Integer timeoutSeconds) {}
+                           Boolean enabled, Boolean isDefault, MailboxSettings mailbox, Locators locators, Integer timeoutSeconds,
+                           OtpSettings otp) {}
+
+    /**
+     * @param maxResends    how many times a new code may be asked for; needs the resend button and path
+     * @param typedByPerson true: a person types the code, and any mailbox is removed with its sealed password
+     */
+    public record OtpSettings(OtpLocators locators, String submitPath, String resendPath, Integer maxResends, Boolean typedByPerson) {}
 
     /** A new profile together with a new credential for it, as the setup wizard creates them. */
     public record NewProfile(String name, String method, String username, String password, Boolean enabled, MailboxSettings mailbox,
-                             String loginPath, String submitPath, String successPath, Locators locators, Integer timeoutSeconds) {}
+                             String loginPath, String submitPath, String successPath, Locators locators, Integer timeoutSeconds, OtpSettings otp) {}
 
     /**
      * @param loginFlowComplete false while a web profile lacks a success check, or the form submit path the gate needs to
@@ -77,7 +92,7 @@ public class AuthProfiles {
     public record View(UUID id, UUID environmentId, String environmentName, String applicationName, String channel, String name, String method,
                        UUID credentialId, String credentialName, boolean credentialEnabled, boolean credentialShared, String usernameHint,
                        boolean enabled, boolean isDefault, String loginPath, String submitPath, String successPath, boolean loginFlowComplete,
-                       MailboxView mailbox, OffsetDateTime updatedAt, Locators locators, int timeoutSeconds, LastTest lastTest) {}
+                       MailboxView mailbox, OffsetDateTime updatedAt, Locators locators, int timeoutSeconds, LastTest lastTest, OtpSettings otp) {}
 
     /** The profile a new run will use, or why the run cannot start. Both null: the environment has no sign-in. */
     public record ForRun(UUID profileId, String refusal) {}
@@ -106,7 +121,8 @@ public class AuthProfiles {
                    ap.enabled, ap.is_default, ap.login_path, ap.submit_path, ap.success_path, ap.updated_at,
                    m.address, m.host, m.security, m.port, m.folder, m.sender_filter, m.subject_filter, m.code_pattern, m.timeout_seconds, m.poll_seconds,
                    m.dedicated_confirmed_by, m.dedicated_confirmed_at, ap.locators::text, ap.login_timeout_seconds,
-                   lt.run_id, lt.run_status, lt.status, lt.failure, lt.stage, lt.detail, lt.at, lt.suggestions::text
+                   lt.run_id, lt.run_status, lt.status, lt.failure, lt.stage, lt.detail, lt.at, lt.suggestions::text,
+                   ap.otp_locators::text, ap.otp_submit_path, ap.otp_resend_path, ap.otp_max_resends
             FROM auth_profile ap
             JOIN environment e ON e.organization_id = ap.organization_id AND e.id = ap.environment_id
             JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id
@@ -129,8 +145,9 @@ public class AuthProfiles {
                 rs.getString(38), rs.getObject(39, OffsetDateTime.class), suggestions(rs.getString(40)));
         return new View(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4), channel, rs.getString(6), method,
                 rs.getObject(8, UUID.class), rs.getString(9), rs.getBoolean(10), rs.getBoolean(11), rs.getString(12), rs.getBoolean(13), rs.getBoolean(14),
-                rs.getString(15), rs.getString(16), rs.getString(17), complete(channel, method, rs.getString(16), rs.getString(17), locators), mailbox,
-                rs.getObject(18, OffsetDateTime.class), locators, rs.getInt(32), last);
+                rs.getString(15), rs.getString(16), rs.getString(17), complete(channel, method, rs.getString(16), rs.getString(17), locators, rs.getString(42)), mailbox,
+                rs.getObject(18, OffsetDateTime.class), locators, rs.getInt(32), last,
+                method.equals("PASSWORD_EMAIL_OTP") ? new OtpSettings(json.readValue(rs.getString(41), OtpLocators.class), rs.getString(42), rs.getString(43), rs.getInt(44), mailbox == null) : null);
     }
 
     @SuppressWarnings("unchecked")
@@ -145,10 +162,11 @@ public class AuthProfiles {
      * A web sign-in needs a way to tell success (a success path, a signed-in marker, or both), and the form's
      * submit path, which is what the gate lets through during sign-in. A session cookie submits no form.
      */
-    static boolean complete(String channel, String method, String submitPath, String successPath, Locators locators) {
+    static boolean complete(String channel, String method, String submitPath, String successPath, Locators locators, String otpSubmitPath) {
         if (channel.equals("API")) return true;
         boolean check = successPath != null || (locators != null && locators.success() != null);
-        return check && (method.equals("SESSION_IMPORT") || submitPath != null);
+        // The code goes through the gate as its own request, so Email OTP needs that path as well.
+        return check && (method.equals("SESSION_IMPORT") || submitPath != null) && (!method.equals("PASSWORD_EMAIL_OTP") || otpSubmitPath != null);
     }
 
     public List<View> list(UUID org, UUID projectId) {
@@ -186,7 +204,6 @@ public class AuthProfiles {
     private static ForRun usable(View v) {
         if (!v.enabled()) return new ForRun(null, "The environment's sign-in profile is disabled");
         if (!v.credentialEnabled()) return new ForRun(null, "The sign-in profile's credential is disabled");
-        if (v.method().equals("PASSWORD_EMAIL_OTP")) return new ForRun(null, "Email OTP sign-in is not available yet");
         if (!v.loginFlowComplete()) return new ForRun(null, "Finish the sign-in profile's login flow before running");
         return new ForRun(v.id(), null);
     }
@@ -255,17 +272,19 @@ public class AuthProfiles {
         if (s.credentialId() == null) throw new ConflictException("Choose a credential");
         String login = path(s.loginPath()), submit = path(s.submitPath()), success = path(s.successPath());
         Flow flow = flow(s.locators(), s.timeoutSeconds());
-        if (method.equals("PASSWORD_EMAIL_OTP") && s.mailbox() == null) throw new ConflictException("Email OTP needs a mailbox");
+        Code code = code(method, s.otp());
         if (!method.equals("PASSWORD_EMAIL_OTP") && s.mailbox() != null) throw new ConflictException("A mailbox is only used with Email OTP");
+        if (s.otp() != null && Boolean.TRUE.equals(s.otp().typedByPerson()) && s.mailbox() != null) throw new ConflictException("A code typed by a person needs no mailbox");
         Mailbox mailbox = s.mailbox() == null ? null : mailbox(s.mailbox());
         bind(p, projectId, environmentId, s.credentialId());
 
         UUID id = UUID.randomUUID();
         db.sql("""
-                INSERT INTO auth_profile (organization_id, id, environment_id, name, method, credential_id, enabled, login_path, submit_path, success_path, locators, login_timeout_seconds)
-                VALUES (?,?,?,?,?,?,?,?,?,?, ?::jsonb, ?)
+                INSERT INTO auth_profile (organization_id, id, environment_id, name, method, credential_id, enabled, login_path, submit_path, success_path, locators, login_timeout_seconds,
+                                          otp_locators, otp_submit_path, otp_resend_path, otp_max_resends)
+                VALUES (?,?,?,?,?,?,?,?,?,?, ?::jsonb, ?, ?::jsonb, ?, ?, ?)
                 """).params(p.organizationId(), id, environmentId, name, method, s.credentialId(), s.enabled() == null || s.enabled(), login, submit, success,
-                flow.json(), flow.timeout()).update();
+                flow.json(), flow.timeout(), code.json(), code.submitPath(), code.resendPath(), code.maxResends()).update();
         if (Boolean.TRUE.equals(s.isDefault()) || !hasDefault(p.organizationId(), environmentId)) makeDefault(p.organizationId(), environmentId, id);
         if (mailbox != null) saveMailbox(p, projectId, id, mailbox, s.mailbox(), null);
         audit.record(p.organizationId(), projectId, p.email(), "AUTH_PROFILE_CREATED", id.toString(), method + " " + name);
@@ -285,7 +304,7 @@ public class AuthProfiles {
         audit.record(p.organizationId(), projectId, p.email(), "CREDENTIAL_CREATED", credential.toString(), unique);
         String name = text(n.name()).isEmpty() ? "Default" : text(n.name());
         return create(p, projectId, environmentId, new Settings(name, method, credential, n.loginPath(), n.submitPath(), n.successPath(), n.enabled(), true, n.mailbox(),
-                n.locators(), n.timeoutSeconds()));
+                n.locators(), n.timeoutSeconds(), n.otp()));
     }
 
     public void update(Principal p, UUID projectId, UUID id, Settings s) {
@@ -299,17 +318,21 @@ public class AuthProfiles {
         Flow flow = flow(s.locators() == null ? current.locators() : s.locators(), s.timeoutSeconds() == null ? current.timeoutSeconds() : s.timeoutSeconds());
         boolean otp = method.equals("PASSWORD_EMAIL_OTP");
         if (!otp && s.mailbox() != null) throw new ConflictException("A mailbox is only used with Email OTP");
-        if (otp && s.mailbox() == null && current.mailbox() == null) throw new ConflictException("Email OTP needs a mailbox");
+        Code code = code(method, s.otp() != null ? s.otp() : current.otp());
         Mailbox mailbox = s.mailbox() == null ? null : mailbox(s.mailbox());
         if (!credential.equals(current.credentialId())) bind(p, projectId, current.environmentId(), credential);
 
         db.sql("""
                 UPDATE auth_profile SET name = ?, method = ?, credential_id = ?, login_path = ?, submit_path = ?, success_path = ?,
-                       enabled = coalesce(?, enabled), locators = ?::jsonb, login_timeout_seconds = ?, updated_at = now()
+                       enabled = coalesce(?, enabled), locators = ?::jsonb, login_timeout_seconds = ?, otp_locators = ?::jsonb, otp_submit_path = ?, otp_resend_path = ?,
+                       otp_max_resends = ?, updated_at = now()
                 WHERE organization_id = ? AND id = ?
-                """).params(name, method, credential, login, submit, success, s.enabled(), flow.json(), flow.timeout(), p.organizationId(), id).update();
+                """).params(name, method, credential, login, submit, success, s.enabled(), flow.json(), flow.timeout(), code.json(), code.submitPath(), code.resendPath(),
+                code.maxResends(), p.organizationId(), id).update();
         if (Boolean.TRUE.equals(s.isDefault())) makeDefault(p.organizationId(), current.environmentId(), id);
-        if (!otp) db.sql("DELETE FROM otp_mailbox WHERE organization_id = ? AND auth_profile_id = ?").params(p.organizationId(), id).update();
+        boolean byPerson = s.otp() != null && Boolean.TRUE.equals(s.otp().typedByPerson());
+        if (otp && byPerson && s.mailbox() != null) throw new ConflictException("A code typed by a person needs no mailbox");
+        if (!otp || byPerson) db.sql("DELETE FROM otp_mailbox WHERE organization_id = ? AND auth_profile_id = ?").params(p.organizationId(), id).update();
         else if (mailbox != null) saveMailbox(p, projectId, id, mailbox, s.mailbox(), current.mailbox());
         audit.record(p.organizationId(), projectId, p.email(), "AUTH_PROFILE_UPDATED", id.toString(), method + " " + name);
     }
@@ -370,6 +393,31 @@ public class AuthProfiles {
 
     private static void put(java.util.Map<String, LocatorView> out, String key, LocatorSpec spec) {
         if (spec != null) out.put(key, new LocatorView(spec.strategy().name(), spec.value(), spec.name()));
+    }
+
+    // ---- one-time code
+
+    private record Code(String json, String submitPath, String resendPath, int maxResends) {}
+
+    /** Checked by the rules the worker follows. Other methods keep no code settings. */
+    private Code code(String method, OtpSettings given) {
+        if (!method.equals("PASSWORD_EMAIL_OTP")) return new Code("{}", null, null, 0);
+        OtpSettings o = given == null ? new OtpSettings(OtpLocators.NONE, null, null, 0, null) : given;
+        OtpLocators l = o.locators() == null ? OtpLocators.NONE : o.locators();
+        String submit = path(o.submitPath()), resend = path(o.resendPath());
+        int resends = o.maxResends() == null ? 0 : o.maxResends();
+        if (resends > 0 && resend == null) throw new ConflictException("Set the resend path to allow resends");
+        try {
+            var step = new OtpStep(spec(l.field()), spec(l.submit()), spec(l.failure()), spec(l.resend()), resends, java.time.Duration.ofMinutes(5), "otp", resend == null ? null : "otp-resend");
+            var stored = new java.util.LinkedHashMap<String, LocatorView>();
+            put(stored, "field", step.field());
+            put(stored, "submit", step.submit());
+            put(stored, "failure", step.failureElement());
+            put(stored, "resend", step.resend());
+            return new Code(json.writeValueAsString(stored), submit, resend, resends);
+        } catch (PolicyException e) {
+            throw new ConflictException(e.getMessage());
+        }
     }
 
     // ---- mailbox

@@ -5,7 +5,7 @@ import { api, type AuthProfile, type Credential, type Environment, type LoginPro
 import { Async, Card, Confirm, DataTable, dateTime, Empty, Failure, FormDialog, KeyValue, PageHeader, Tag, words } from '../design/ui';
 import { useWorkspace } from '../shell/context';
 import { Choice, NeedsProject, useForm } from './shared';
-import { blankMailbox, flowBody, flowDraft, flowProblems, LoginFlowFields, MailboxFields, mailboxBody, mailboxDraft, mailboxProblems, METHOD_LABELS, TestResult, type FlowDraft, type MailboxDraft } from './signin';
+import { blankMailbox, flowBody, flowDraft, flowProblems, LoginFlowFields, MailboxFields, mailboxBody, mailboxDraft, mailboxProblems, METHOD_LABELS, otpBody, TestResult, type FlowDraft, type MailboxDraft } from './signin';
 
 /** Mirrors Access.Level and the checks in each controller. */
 const MATRIX: [string, boolean, boolean, boolean, boolean][] = [
@@ -156,7 +156,8 @@ function Credentials({ project }: { project: string }) {
 }
 
 interface ProfileForm { method: string; credentialId: string }
-const testing = (r: LoginProfile) => !!r.lastTest && !r.lastTest.status && ['QUEUED', 'RUNNING'].includes(r.lastTest.runStatus);
+/** Still in progress: queued, running, or holding its browser session while it waits for a one-time code. */
+const testing = (r: LoginProfile) => !!r.lastTest && (r.lastTest.status === 'WAITING_FOR_OTP' || (!r.lastTest.status && ['QUEUED', 'RUNNING'].includes(r.lastTest.runStatus)));
 
 function Profiles({ project }: { project: string }) {
   const client = useQueryClient();
@@ -181,17 +182,19 @@ function Profiles({ project }: { project: string }) {
   const [v, set] = useState<ProfileForm>({ method: 'PASSWORD', credentialId: '' });
   const [flow, setFlow] = useState<FlowDraft>(flowDraft({ loginPath: null, submitPath: null, successPath: null }));
   const [mailbox, setMailbox] = useState<MailboxDraft>(blankMailbox());
+  const [codeFrom, setCodeFrom] = useState<'MAILBOX' | 'PERSON'>('MAILBOX');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const profileOf = (environmentId: string) => details.data?.find((d) => d.environmentId === environmentId && d.isDefault);
   const current = editing ? profileOf(editing.environmentId) : undefined;
   const otp = v.method === 'PASSWORD_EMAIL_OTP';
   const save = useForm<void>(async () => {
     const web = editing?.channel !== 'API';
-    const found = { ...(otp ? mailboxProblems(mailbox, current?.mailbox) : {}), ...(web ? Object.fromEntries(Object.entries(flowProblems(flow, v.method)).map(([k, x]) => [`flow.${k}`, x])) : {}) };
+    const fromMailbox = otp && codeFrom === 'MAILBOX';
+    const found = { ...(fromMailbox ? mailboxProblems(mailbox, current?.mailbox) : {}), ...(web ? Object.fromEntries(Object.entries(flowProblems(flow, v.method)).map(([k, x]) => [`flow.${k}`, x])) : {}) };
     setErrors(found);
-    if (Object.keys(found).length) throw new Error(otp && Object.keys(found).some((k) => !k.startsWith('flow.')) ? 'Check the highlighted mailbox fields.' : 'Check the highlighted fields.');
+    if (Object.keys(found).length) throw new Error(fromMailbox && Object.keys(found).some((k) => !k.startsWith('flow.')) ? 'Check the highlighted mailbox fields.' : 'Check the highlighted fields.');
     const body = { name: current?.name ?? 'Default', method: v.method, credentialId: v.credentialId || null, ...(web ? flowBody(flow) : {}),
-      isDefault: true, mailbox: otp ? mailboxBody(mailbox) : null };
+      isDefault: true, mailbox: fromMailbox ? mailboxBody(mailbox) : null, otp: otp ? { ...otpBody(flow), typedByPerson: codeFrom === 'PERSON' } : null };
     if (current) await api(`/projects/${project}/auth-profiles/${current.id}`, 'PUT', body);
     else await api(`/projects/${project}/environments/${editing!.environmentId}/auth-profiles`, 'POST', body);
     setMailbox(blankMailbox());
@@ -203,6 +206,7 @@ function Profiles({ project }: { project: string }) {
     set({ method: r.method ?? (r.channel === 'API' ? 'API_TOKEN' : 'PASSWORD'), credentialId: r.credentialId ?? '' });
     setFlow(p ? flowDraft(p) : flowDraft({ loginPath: r.loginPath, submitPath: r.submitPath, successPath: r.successPath }));
     setMailbox(p?.mailbox ? mailboxDraft(p.mailbox) : blankMailbox());
+    setCodeFrom(p && p.method === 'PASSWORD_EMAIL_OTP' && !p.mailbox ? 'PERSON' : 'MAILBOX');
     setErrors({});
     save.show();
     setEditing(r);
@@ -241,10 +245,13 @@ function Profiles({ project }: { project: string }) {
         <Choice label="Credential" required value={v.credentialId} onChange={(x) => set({ ...v, credentialId: x })}
           options={usable.map((c) => [c.id, `${c.name}${c.usernameHint ? ` (${c.usernameHint})` : ''}${c.enabled ? '' : ', disabled'}${c.shared ? ', shared' : ''}`] as [string, string])} />
         <Typography variant="caption" color="text.secondary">Only credentials for this environment, or not yet bound to one, are offered. Choosing an unbound one binds it here.</Typography>
-        {!api2 && <LoginFlowFields value={flow} set={setFlow} errors={errors} prefix="flow." suggestions={editing?.lastTest?.suggestions ?? current?.lastTest?.suggestions} />}
+        {!api2 && <LoginFlowFields value={flow} set={setFlow} errors={errors} prefix="flow." suggestions={editing?.lastTest?.suggestions ?? current?.lastTest?.suggestions} otp={otp} />}
         {otp && <>
-          <Alert severity="info">Email OTP sign-in is not available yet. The profile can be saved, and runs are refused until it is.</Alert>
-          <MailboxFields value={mailbox} set={setMailbox} errors={errors} prefix="" existing={current?.mailbox} />
+          <Choice label="Where the code comes from" value={codeFrom} onChange={(x) => setCodeFrom(x as 'MAILBOX' | 'PERSON')}
+            options={[['MAILBOX', 'A dedicated test mailbox'], ['PERSON', 'A person types it in while the run waits']]} />
+          {codeFrom === 'MAILBOX'
+            ? <MailboxFields value={mailbox} set={setMailbox} errors={errors} prefix="" existing={current?.mailbox} />
+            : <Alert severity="info">The run keeps its browser session open and asks for the code on its page, for up to 5 minutes. Only whoever started the run, or a project admin, can enter it.</Alert>}
         </>}
       </FormDialog>
     </>

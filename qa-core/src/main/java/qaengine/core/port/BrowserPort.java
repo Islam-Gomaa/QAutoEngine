@@ -46,6 +46,15 @@ public interface BrowserPort extends AutoCloseable {
         throw new UnsupportedOperationException("fill");
     }
 
+    /**
+     * Types a one-time code: into the one field, or one character per box when the locator finds several.
+     * Returns false, typing nothing, when the boxes do not match the code's length.
+     */
+    default boolean fillCode(LocatorSpec field, String code) {
+        fill(field, code);
+        return true;
+    }
+
     /** Clicks the button and waits for a navigation, or for the page to settle if it stays where it is. */
     default Navigation submitWith(LocatorSpec button, Duration timeout) {
         throw new UnsupportedOperationException("submitWith");

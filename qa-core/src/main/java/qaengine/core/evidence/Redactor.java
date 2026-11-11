@@ -33,7 +33,15 @@ public final class Redactor {
     private final List<String> knownSecrets;
 
     public Redactor(Collection<String> knownSecrets) {
-        this.knownSecrets = knownSecrets.stream().filter(s -> s != null && s.length() >= 4).toList();
+        this.knownSecrets = new java.util.concurrent.CopyOnWriteArrayList<>(knownSecrets.stream().filter(s -> s != null && s.length() >= 4).toList());
+    }
+
+    /**
+     * Adds a secret learned during the run, such as a one-time code, before it can reach anything this
+     * redacts. Codes are short, so this accepts them from 4 characters, like the others.
+     */
+    public void remember(String secret) {
+        if (secret != null && secret.length() >= 4 && !knownSecrets.contains(secret)) knownSecrets.add(secret);
     }
 
     public String redact(String text) {

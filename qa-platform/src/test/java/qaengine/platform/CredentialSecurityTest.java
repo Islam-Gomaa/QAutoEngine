@@ -345,10 +345,13 @@ class CredentialSecurityTest extends IntegrationTestBase {
     }
 
     @Test
-    void mailboxSettingsAreStoredSealedAndEmailOtpDoesNotRunYet() throws Exception {
+    void mailboxSettingsAreStoredSealedAndEmailOtpNeedsItsCodeStepToRun() throws Exception {
         UUID env = environment(FIXTURE, "QA");
         UUID cred = credential(env, canary);
-        assertEquals("Email OTP needs a mailbox", detail(admin, post(base() + "/environments/" + env + "/auth-profiles"), otpProfile(cred, null)));
+        // Without a mailbox, a person types the code: the profile is allowed, and runs once its code step is set.
+        JsonNode manual = ok(admin, post(base() + "/environments/" + env + "/auth-profiles"), otpProfile(cred, null));
+        assertTrue(manual.get("mailbox").isNull());
+        ok(admin, delete(base() + "/auth-profiles/" + manual.get("id").asString()), null);
         assertEquals("A mailbox is only used with Email OTP", detail(admin, post(base() + "/environments/" + env + "/auth-profiles"),
                 Map.of("name", "P", "method", "PASSWORD", "credentialId", cred.toString(), "mailbox", mailbox())));
 
@@ -360,7 +363,7 @@ class CredentialSecurityTest extends IntegrationTestBase {
         assertEquals("INBOX", m.get("folder").asString());
         assertEquals(admin.email(), m.get("dedicatedConfirmedBy").asString());
         assertFalse(m.has("password"));
-        assertEquals("Email OTP sign-in is not available yet", runRefusal(env));
+        assertEquals("Finish the sign-in profile's login flow before running", runRefusal(env), "the code needs its own submit path through the gate");
         assertEquals("mailbox-" + canary, mailboxPassword(id));
 
         // A blank password keeps the sealed one; moving to another server needs the confirmation again.

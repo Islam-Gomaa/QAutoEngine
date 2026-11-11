@@ -104,7 +104,11 @@ export interface AuthProfile {
   id: string; environmentId: string; environmentName: string; applicationName: string; channel: 'WEB' | 'API'; name: string; method: string;
   credentialId: string; credentialName: string; credentialEnabled: boolean; credentialShared: boolean; usernameHint: string; enabled: boolean; isDefault: boolean;
   loginPath: string | null; submitPath: string | null; successPath: string | null; loginFlowComplete: boolean; mailbox: Mailbox | null; updatedAt: string;
-  locators: Locators; timeoutSeconds: number; lastTest: LastTest | null;
+  locators: Locators; timeoutSeconds: number; lastTest: LastTest | null; otp?: OtpSettings | null;
+}
+export interface OtpSettings {
+  locators: { field?: LocatorView | null; submit?: LocatorView | null; failure?: LocatorView | null; resend?: LocatorView | null };
+  submitPath: string | null; resendPath: string | null; maxResends: number;
 }
 export interface LoginProfile {
   environmentId: string; environmentName: string; applicationName: string; channel: string; method: string | null; credentialId: string | null; credentialName: string | null;

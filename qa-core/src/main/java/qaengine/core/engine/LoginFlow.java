@@ -11,6 +11,8 @@ import qaengine.core.auth.AuthenticationResult.Stage;
 import qaengine.core.auth.AuthenticationResult.Status;
 import qaengine.core.auth.LocatorSpec;
 import qaengine.core.auth.LoginForm;
+import qaengine.core.auth.OtpSource;
+import qaengine.core.auth.OtpStep;
 import qaengine.core.evidence.EvidenceCollector;
 import qaengine.core.evidence.EvidenceRef;
 import qaengine.core.evidence.EvidenceType;
@@ -30,19 +32,27 @@ import qaengine.core.port.BrowserPort;
  */
 public final class LoginFlow {
 
-    public enum Method { PASSWORD, TOTP, SESSION_IMPORT }
+    /** PASSWORD_EMAIL_OTP signs in with a password, then a one-time code from an {@link OtpSource}. */
+    public enum Method { PASSWORD, TOTP, SESSION_IMPORT, PASSWORD_EMAIL_OTP }
 
     /** The decision callers act on. BLOCKED means the session is not ours, or the gate or attempt limit stopped it. */
     public enum Outcome { SIGNED_IN, BLOCKED, FAILED }
 
-    /** @param form how to fill and check the form; the five-argument form keeps the original behaviour */
-    public record Spec(Method method, String baseUrl, String loginPath, String successPath, String authExceptionId, LoginForm form) {
+    /**
+     * @param form how to fill and check the form; the five-argument form keeps the original behaviour
+     * @param otp  the one-time code step; required for PASSWORD_EMAIL_OTP and ignored otherwise
+     */
+    public record Spec(Method method, String baseUrl, String loginPath, String successPath, String authExceptionId, LoginForm form, OtpStep otp) {
         public Spec {
             form = form == null ? LoginForm.automatic() : form;
         }
 
+        public Spec(Method method, String baseUrl, String loginPath, String successPath, String authExceptionId, LoginForm form) {
+            this(method, baseUrl, loginPath, successPath, authExceptionId, form, null);
+        }
+
         public Spec(Method method, String baseUrl, String loginPath, String successPath, String authExceptionId) {
-            this(method, baseUrl, loginPath, successPath, authExceptionId, LoginForm.automatic());
+            this(method, baseUrl, loginPath, successPath, authExceptionId, LoginForm.automatic(), null);
         }
     }
 
@@ -55,6 +65,7 @@ public final class LoginFlow {
 
     private static final LocatorSpec ANY_PASSWORD = LocatorSpec.of(LocatorSpec.Strategy.CSS, "input[type=password]");
     private static final LocatorSpec ANY_CODE = LocatorSpec.of(LocatorSpec.Strategy.CSS, "input[autocomplete=one-time-code], input[name=code], input[name=otp], input[name=totp]");
+    private static final LocatorSpec ANY_SUBMIT = LocatorSpec.of(LocatorSpec.Strategy.CSS, "button[type=submit], input[type=submit], form button:not([type])");
     private static final List<String> MASKS = List.of("input[type=password]", "input[autocomplete=one-time-code]", "input[autocomplete=username]", "input[type=email]");
     private static final int MAX_REDIRECTS = 3;
 
@@ -72,19 +83,24 @@ public final class LoginFlow {
 
     /** One sign-in attempt, classified, with masked evidence when a collector is given. */
     public Attempt attempt(Spec spec, Credentials credentials, Evidence evidence) {
+        return attempt(spec, credentials, evidence, null);
+    }
+
+    /** As above, taking one-time codes from the source when the method asks for one. */
+    public Attempt attempt(Spec spec, Credentials credentials, Evidence evidence, OtpSource codes) {
         ExecutionLock.requireSecureForSecrets(spec.baseUrl());
         long started = System.nanoTime();
         State state = new State();
         browser.drainSignals();
         Ending end;
         try {
-            end = run(spec, credentials, state);
+            end = run(spec, credentials, state, codes);
         } catch (RuntimeException e) {
             // A browser error must never pass for a result: it is reported as the stage that failed, without its message.
             end = new Ending(Status.FAILED, state.stage == Stage.LOGIN_PAGE ? Failure.LOGIN_PAGE_UNAVAILABLE : Failure.VERIFICATION_FAILED,
                     "The browser reported an error during " + state.stage.name().toLowerCase(java.util.Locale.ROOT).replace('_', ' '), Outcome.FAILED);
         }
-        List<EvidenceRef> refs = evidence == null ? List.of() : capture(evidence, spec.form());
+        List<EvidenceRef> refs = evidence == null ? List.of() : capture(evidence, spec.form(), spec.otp());
         Stage stage = end.status() == Status.AUTHENTICATED ? Stage.DONE : state.stage;
         var result = new AuthenticationResult(end.status(), end.failure(), stage, end.detail(), Duration.ofNanos(System.nanoTime() - started), state.suggestions, refs);
         return new Attempt(result, end.outcome());
@@ -104,7 +120,7 @@ public final class LoginFlow {
         } catch (RuntimeException e) {
             end = failed(Failure.LOGIN_PAGE_UNAVAILABLE, "The browser reported an error while connecting");
         }
-        List<EvidenceRef> refs = evidence == null ? List.of() : capture(evidence, LoginForm.automatic());
+        List<EvidenceRef> refs = evidence == null ? List.of() : capture(evidence, LoginForm.automatic(), null);
         Duration took = Duration.ofNanos(System.nanoTime() - started);
         if (end == null) return new AuthenticationResult(Status.NOT_STARTED, null, Stage.DONE, "The application answered; no sign-in is configured", took, Map.of(), refs);
         return new AuthenticationResult(end.status(), end.failure(), Stage.LOGIN_PAGE, end.detail().replace("The login page", "The application"), took, Map.of(), refs);
@@ -129,22 +145,30 @@ public final class LoginFlow {
         return new Ending(Status.FAILED, failure, detail, Outcome.BLOCKED);
     }
 
-    private Ending run(Spec spec, Credentials c, State state) {
+    private Ending run(Spec spec, Credentials c, State state, OtpSource codes) {
         if (spec.method() == Method.SESSION_IMPORT) {
             browser.importCookies(c.cookieName(), c.cookieValue(), spec.baseUrl());
             state.stage = Stage.VERIFY;
             Ending v = verify(spec, true);
             return v != null ? v : Ending.ok();
         }
-        Decision window = gate.openAuthWindow(spec.authExceptionId());
+        boolean otp = spec.method() == Method.PASSWORD_EMAIL_OTP;
+        if (otp && (spec.otp() == null || codes == null)) return failed(Failure.OTP_NOT_RECEIVED, "No one-time code step or code source is set up");
+        String[] companions = !otp ? new String[0] : spec.otp().resendExceptionId() == null ? new String[] {spec.otp().exceptionId()}
+                : new String[] {spec.otp().exceptionId(), spec.otp().resendExceptionId()};
+        Decision window = gate.openAuthWindow(spec.authExceptionId(), companions);
         if (!window.allowed()) {
             return window.reason() == Decision.Reason.BUDGET_EXCEEDED
                     ? blocked(Failure.ATTEMPT_LIMIT, "The sign-in attempts for this run are used up, to protect the account from lockout")
                     : blocked(Failure.POLICY_REFUSED, "Sign-in is not permitted for this target");
         }
         try {
-            Ending problem = signInWithinWindow(spec, c, state);
+            Ending problem = signInWithinWindow(spec, c, state, codes);
             if (problem != null) return problem;
+            if (otp) {
+                problem = oneTimeCode(spec, state, codes);
+                if (problem != null) return problem;
+            }
         } finally {
             gate.closeAuthWindow();
         }
@@ -153,7 +177,7 @@ public final class LoginFlow {
         return v != null ? v : Ending.ok();
     }
 
-    private Ending signInWithinWindow(Spec spec, Credentials c, State state) {
+    private Ending signInWithinWindow(Spec spec, Credentials c, State state, OtpSource codes) {
         state.stage = Stage.LOGIN_PAGE;
         Navigation page = openWithinOrigin(spec, spec.baseUrl() + spec.loginPath());
         Ending problem = pageProblem(page, spec);
@@ -176,9 +200,12 @@ public final class LoginFlow {
             if (code != null) browser.fill(ANY_CODE, code);
             state.stage = Stage.SUBMIT;
             if (!gate.decideAction(new ActionRequest(ActionRequest.Kind.FORM_SUBMIT, null, Map.of())).allowed()) return blocked(Failure.POLICY_REFUSED, "The gate refused to submit the form");
+            // The password is what makes the target send the code, so codes from before this moment are not ours.
+            if (codes != null && spec.method() == Method.PASSWORD_EMAIL_OTP) codes.requested();
             submitted = browser.submitWith(form.submit(), Duration.ofSeconds(form.timeoutSeconds()));
         } else {
             state.stage = Stage.SUBMIT;
+            if (codes != null && spec.method() == Method.PASSWORD_EMAIL_OTP) codes.requested();
             submitted = browser.submitLogin(c.username(), c.password(), code);
         }
         return afterSubmit(submitted, spec);
@@ -239,7 +266,8 @@ public final class LoginFlow {
                 String target = submitted.redirectTarget();
                 if (!sameOrigin(target, spec.baseUrl())) return blocked(Failure.VERIFICATION_FAILED, "Signing in leads to another site, which is outside the authorized scope");
                 if (path(target).equals(path(spec.baseUrl() + spec.loginPath()))) return failed(Failure.INVALID_CREDENTIALS, "Signing in led back to the login page, so the credentials were probably refused");
-                if (form.successElement() != null && spec.successPath() == null) openWithinOrigin(spec, target);
+                // The code page, or a page whose marker is the only success check, has to be on screen to be read.
+                if (spec.method() == Method.PASSWORD_EMAIL_OTP || (form.successElement() != null && spec.successPath() == null)) openWithinOrigin(spec, target);
                 return null;
             }
             case LOADED -> {
@@ -248,9 +276,100 @@ public final class LoginFlow {
                 if (status >= 500) return failed(Failure.VERIFICATION_FAILED, "The target answered HTTP " + status + " to the sign-in");
                 if (status >= 400) return failed(Failure.INVALID_CREDENTIALS, "The target rejected the sign-in (HTTP " + status + ")");
                 if (form.failureElement() != null && browser.isVisible(form.failureElement())) return failed(Failure.INVALID_CREDENTIALS, "The page showed its sign-in error, found by " + form.failureElement().describe());
-                if (browser.isVisible(form.password() != null ? form.password() : ANY_PASSWORD)) {
+                if (browser.isVisible(form.password() != null ? form.password() : ANY_PASSWORD)
+                        && !(spec.method() == Method.PASSWORD_EMAIL_OTP && browser.isVisible(codeField(spec)))) {
                     return failed(Failure.INVALID_CREDENTIALS, "The sign-in form was shown again after submitting, so the credentials were probably refused");
                 }
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static LocatorSpec codeField(Spec spec) {
+        return spec.otp() != null && spec.otp().field() != null ? spec.otp().field() : ANY_CODE;
+    }
+
+    /**
+     * Waits for a code, then types and submits exactly that one code, in the same page and session. A new
+     * code is requested only through the configured resend button, spread over the wait, and never more often.
+     */
+    private Ending oneTimeCode(Spec spec, State state, OtpSource codes) {
+        state.stage = Stage.OTP;
+        OtpStep step = spec.otp();
+        LocatorSpec field = codeField(spec);
+        Duration patience = Duration.ofSeconds(spec.form().timeoutSeconds());
+        if (!browser.appears(field, patience)) {
+            if (browser.isVisible(spec.form().password() != null ? spec.form().password() : ANY_PASSWORD)) {
+                return failed(Failure.INVALID_CREDENTIALS, "The sign-in form was shown again after submitting, so the credentials were probably refused");
+            }
+            return failed(Failure.VERIFICATION_FAILED, "No one-time code field appeared after the password: not found by " + field.describe());
+        }
+        codes.waiting();
+        long started = System.nanoTime();
+        long limit = step.maxWait().toNanos();
+        long resendEvery = limit / (step.maxResends() + 1);
+        long lastRequest = started;
+        int resends = 0;
+        String code;
+        while (true) {
+            OtpSource.Reply reply = codes.poll();
+            if (reply.code() != null && !reply.code().isBlank()) {
+                code = reply.code().strip();
+                break;
+            }
+            if (reply.failure() != null) return failed(reply.failure(), reply.detail() == null ? "No one-time code could be obtained" : reply.detail());
+            long now = System.nanoTime();
+            if (now - started >= limit) return failed(Failure.OTP_NOT_RECEIVED, "No one-time code arrived within " + step.maxWait().toSeconds() + " seconds");
+            if (resends < step.maxResends() && now - lastRequest >= resendEvery && browser.isVisible(step.resend())) {
+                if (!gate.decideAction(new ActionRequest(ActionRequest.Kind.FORM_SUBMIT, null, Map.of())).allowed()) return blocked(Failure.POLICY_REFUSED, "The gate refused to ask for a new code");
+                codes.requested();
+                Navigation resent = browser.submitWith(step.resend(), patience);
+                if (resent.outcome() == Navigation.Outcome.BLOCKED) return blocked(Failure.POLICY_REFUSED, "The gate refused to ask for a new code; check the resend path");
+                // A resend usually redirects back to the code page, and redirects are only followed through the gate.
+                if (resent.outcome() == Navigation.Outcome.REDIRECTED && sameOrigin(resent.redirectTarget(), spec.baseUrl())) openWithinOrigin(spec, resent.redirectTarget());
+                resends++;
+                lastRequest = System.nanoTime();
+                if (!browser.appears(field, patience)) return failed(Failure.VERIFICATION_FAILED, "The code field did not come back after asking for a new code");
+                continue;
+            }
+            long wait = Math.min(reply.retryAfter() == null ? 2_000 : Math.max(200, reply.retryAfter().toMillis()), Math.max(0, (limit - (now - started)) / 1_000_000));
+            try {
+                Thread.sleep(wait);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return failed(Failure.OTP_NOT_RECEIVED, "Waiting for the one-time code was interrupted");
+            }
+        }
+        if (!browser.fillCode(field, code)) return failed(Failure.VERIFICATION_FAILED, "The code does not fit the code boxes on the page");
+        if (!gate.decideAction(new ActionRequest(ActionRequest.Kind.FORM_SUBMIT, null, Map.of())).allowed()) return blocked(Failure.POLICY_REFUSED, "The gate refused to submit the code");
+        Navigation sent = browser.submitWith(step.submit() != null ? step.submit() : ANY_SUBMIT, patience);
+        return afterCode(sent, spec, field);
+    }
+
+    private Ending afterCode(Navigation sent, Spec spec, LocatorSpec field) {
+        OtpStep step = spec.otp();
+        switch (sent.outcome()) {
+            case BLOCKED -> {
+                return blocked(Failure.POLICY_REFUSED, "The gate refused the code submission; check the code submit path");
+            }
+            case FAILED -> {
+                String d = sent.detail() == null ? "" : sent.detail();
+                return d.contains("ERR_") ? network(d, "Submitting the code did not complete") : failed(Failure.VERIFICATION_FAILED, "Submitting the code did not complete");
+            }
+            case REDIRECTED -> {
+                String target = sent.redirectTarget();
+                if (!sameOrigin(target, spec.baseUrl())) return blocked(Failure.VERIFICATION_FAILED, "The code leads to another site, which is outside the authorized scope");
+                if (path(target).equals(path(spec.baseUrl() + spec.loginPath()))) return failed(Failure.OTP_INVALID, "The code led back to the login page, so it was probably refused or expired");
+                if (spec.form().successElement() != null && spec.successPath() == null) openWithinOrigin(spec, target);
+                return null;
+            }
+            case LOADED -> {
+                int status = sent.status();
+                if (status >= 400 && status < 500) return failed(Failure.OTP_INVALID, "The target refused the code (HTTP " + status + ")");
+                if (status >= 500) return failed(Failure.VERIFICATION_FAILED, "The target answered HTTP " + status + " to the code");
+                if (step.failureElement() != null && browser.isVisible(step.failureElement())) return failed(Failure.OTP_INVALID, "The page showed its code error, found by " + step.failureElement().describe());
+                if (browser.isVisible(field)) return failed(Failure.OTP_INVALID, "The code form was shown again, so the code was probably wrong or expired");
                 return null;
             }
         }
@@ -277,7 +396,7 @@ public final class LoginFlow {
         return null;
     }
 
-    private List<EvidenceRef> capture(Evidence evidence, LoginForm form) {
+    private List<EvidenceRef> capture(Evidence evidence, LoginForm form, OtpStep otp) {
         List<EvidenceRef> refs = new ArrayList<>();
         try {
             var signals = browser.drainSignals();
@@ -285,6 +404,7 @@ public final class LoginFlow {
             List<LocatorSpec> masks = new ArrayList<>();
             if (form.username() != null) masks.add(form.username());
             if (form.password() != null) masks.add(form.password());
+            if (otp != null && otp.field() != null) masks.add(otp.field());
             refs.add(evidence.collector().binary(EvidenceType.SCREENSHOT, evidence.step(), browser.screenshot(MASKS, masks)));
         } catch (RuntimeException e) {
             // Evidence is best effort; its absence is visible, and it must never change the result.

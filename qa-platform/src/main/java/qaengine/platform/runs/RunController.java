@@ -51,13 +51,15 @@ public class RunController {
     private final JobQueue queue;
     private final AuditLog audit;
     private final AuthProfiles profiles;
+    private final qaengine.platform.otp.OtpService otps;
 
-    public RunController(JdbcClient db, Access access, JobQueue queue, AuditLog audit, AuthProfiles profiles) {
+    public RunController(JdbcClient db, Access access, JobQueue queue, AuditLog audit, AuthProfiles profiles, qaengine.platform.otp.OtpService otps) {
         this.db = db;
         this.access = access;
         this.queue = queue;
         this.audit = audit;
         this.profiles = profiles;
+        this.otps = otps;
     }
 
     private static final String SELECT = """
@@ -186,6 +188,25 @@ public class RunController {
                 WHERE organization_id = ? AND run_id = ? ORDER BY attempt
                 """).params(p.organizationId(), runId).query((rs, n) -> new AuthAttemptView(rs.getInt(1), rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4),
                 rs.getString(5), rs.getString(6), rs.getLong(7), rs.getObject(8, OffsetDateTime.class))).list();
+    }
+
+    public record TypedCode(String code) {}
+
+    /**
+     * A person types the one-time code for a run waiting for one. The run's own browser session continues
+     * with it; nothing new is started. Only whoever started the run, or a project admin, may do this.
+     */
+    @PostMapping("/{runId}/otp")
+    @Transactional
+    public ResponseEntity<Void> typeCode(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID runId, @RequestBody TypedCode body) {
+        access.require(p, projectId, Access.Level.TESTER);
+        UUID startedBy = db.sql("SELECT created_by FROM test_run WHERE organization_id = ? AND project_id = ? AND id = ?").params(p.organizationId(), projectId, runId)
+                .query(UUID.class).optional().orElseThrow(() -> new NotFoundException("Run"));
+        if (!startedBy.equals(p.userId()) && !"PROJECT_ADMIN".equals(access.roleIn(p, projectId))) {
+            throw new org.springframework.security.access.AccessDeniedException("Only whoever started the run, or a project admin, can enter its code");
+        }
+        otps.typed(p.organizationId(), projectId, runId, p.email(), body == null ? null : body.code());
+        return ResponseEntity.accepted().build();
     }
 
     @GetMapping("/{runId}/findings")

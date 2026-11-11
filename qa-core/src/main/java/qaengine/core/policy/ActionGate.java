@@ -25,7 +25,8 @@ public final class ActionGate {
     private final Map<String, Integer> uses = new HashMap<>();
     private int actions;
     private int loginAttempts;
-    private String authWindow;
+    /** The AUTH exceptions the open sign-in window covers. Empty when closed. */
+    private final java.util.Set<String> authWindow = new java.util.LinkedHashSet<>();
 
     public ActionGate(ExecutionPolicy policy, Clock clock, Consumer<String> audit) {
         this.policy = policy;
@@ -61,28 +62,38 @@ public final class ActionGate {
         return d;
     }
 
-    /** Opens the login window for one AUTH exception. Attempts are limited to avoid account lockout. */
-    public synchronized Decision openAuthWindow(String exceptionId) {
-        Optional<ScopedException> found = policy.exceptions().stream()
-                .filter(e -> e.id().equals(exceptionId) && e.purpose() == ScopedException.Purpose.AUTH)
-                .findFirst();
-        if (found.isEmpty()) return Decision.block(Decision.Reason.AUTH_WINDOW_CLOSED, "no such AUTH exception");
+    /**
+     * Opens the login window for one AUTH exception, and any companions that belong to the same sign-in,
+     * such as the one-time code form and its resend button. The whole window is one attempt: attempts are
+     * limited to avoid account lockout. Every exception named must exist, or nothing opens.
+     */
+    public synchronized Decision openAuthWindow(String exceptionId, String... companions) {
+        java.util.List<String> ids = new java.util.ArrayList<>();
+        ids.add(exceptionId);
+        ids.addAll(java.util.List.of(companions));
+        for (String id : ids) {
+            Optional<ScopedException> found = policy.exceptions().stream()
+                    .filter(e -> e.id().equals(id) && e.purpose() == ScopedException.Purpose.AUTH)
+                    .findFirst();
+            if (found.isEmpty()) return Decision.block(Decision.Reason.AUTH_WINDOW_CLOSED, "no such AUTH exception");
+        }
         if (loginAttempts >= policy.budget().maxLoginAttempts()) {
             return Decision.block(Decision.Reason.BUDGET_EXCEEDED, "login attempt limit reached");
         }
         loginAttempts++;
-        authWindow = exceptionId;
-        audit.accept("auth window opened " + exceptionId);
+        authWindow.clear();
+        authWindow.addAll(ids);
+        audit.accept("auth window opened " + String.join(",", ids));
         return Decision.allow(Decision.Reason.EXCEPTION_MATCHED, exceptionId);
     }
 
     public synchronized void closeAuthWindow() {
-        if (authWindow != null) audit.accept("auth window closed " + authWindow);
-        authWindow = null;
+        if (!authWindow.isEmpty()) audit.accept("auth window closed " + String.join(",", authWindow));
+        authWindow.clear();
     }
 
     public synchronized boolean authWindowOpen() {
-        return authWindow != null;
+        return !authWindow.isEmpty();
     }
 
     private Decision evaluateRequest(HttpRequestInfo r) {
@@ -130,7 +141,7 @@ public final class ActionGate {
     private boolean active(ScopedException e) {
         if (clock.instant().isAfter(e.expires())) return false;
         if (uses.getOrDefault(e.id(), 0) >= e.maxUses()) return false;
-        return e.purpose() != ScopedException.Purpose.AUTH || e.id().equals(authWindow);
+        return e.purpose() != ScopedException.Purpose.AUTH || authWindow.contains(e.id());
     }
 
     private Decision evaluateAction(ActionRequest a) {
@@ -145,7 +156,7 @@ public final class ActionGate {
             return Decision.block(Decision.Reason.OUT_OF_SCOPE, "host not allowed");
         }
         Optional<String> controlRisk = RiskRules.controlRisk(a.attributes(), policy.extraRiskTokens());
-        boolean loginStep = authWindow != null && (a.kind() == ActionRequest.Kind.FORM_FILL || a.kind() == ActionRequest.Kind.FORM_SUBMIT);
+        boolean loginStep = !authWindow.isEmpty() && (a.kind() == ActionRequest.Kind.FORM_FILL || a.kind() == ActionRequest.Kind.FORM_SUBMIT);
         if (!loginStep && controlRisk.isPresent()) return Decision.block(Decision.Reason.HARD_DENY, controlRisk.get());
 
         return switch (a.kind()) {
@@ -158,11 +169,11 @@ public final class ActionGate {
             }
             case DISCLOSURE -> Decision.allow(Decision.Reason.ALLOWED_INTERACTION, "disclosure");
             case API_CALL -> Decision.allow(Decision.Reason.ALLOWED_INTERACTION, "api call");
-            case FORM_FILL -> authWindow != null || policy.mode() == ExecutionMode.VALIDATION_ONLY
+            case FORM_FILL -> !authWindow.isEmpty() || policy.mode() == ExecutionMode.VALIDATION_ONLY
                     ? Decision.allow(Decision.Reason.ALLOWED_INTERACTION, "fill")
                     : Decision.block(Decision.Reason.ACTION_NOT_ALLOWED, "forms are not filled in READ_ONLY");
-            case FORM_SUBMIT -> authWindow != null
-                    ? Decision.allow(Decision.Reason.EXCEPTION_MATCHED, authWindow)
+            case FORM_SUBMIT -> !authWindow.isEmpty()
+                    ? Decision.allow(Decision.Reason.EXCEPTION_MATCHED, String.join(",", authWindow))
                     : Decision.block(Decision.Reason.ACTION_NOT_ALLOWED, "forms are never submitted");
             default -> Decision.block(Decision.Reason.ACTION_NOT_ALLOWED, "not on the interaction allowlist");
         };

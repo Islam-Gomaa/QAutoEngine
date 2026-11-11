@@ -18,7 +18,8 @@ public record AuthenticationResult(Status status, Failure failure, Stage stage, 
     /** The lifecycle states. WAITING_FOR_OTP is used once email OTP sign-in exists. */
     public enum Status { NOT_STARTED, IN_PROGRESS, WAITING_FOR_OTP, AUTHENTICATED, FAILED, EXPIRED, REQUIRES_USER_ACTION }
 
-    public enum Stage { LOGIN_PAGE, CREDENTIALS, SUBMIT, VERIFY, DONE }
+    /** OTP is the wait for, and the submission of, a one-time code. */
+    public enum Stage { LOGIN_PAGE, CREDENTIALS, SUBMIT, OTP, VERIFY, DONE }
 
     /**
      * Why it failed, in terms a tester can act on. The OTP codes are reserved for email OTP sign-in.

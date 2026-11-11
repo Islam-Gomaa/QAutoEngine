@@ -285,10 +285,12 @@ describe('application setup: sign-in', () => {
   const check = (c: Call) => ({ baseUrl: (c.body as { baseUrl: string }).baseUrl, origin: '', executable: false });
   const routes = { ...signedIn(), 'GET /projects/p1/targets': [], 'GET /projects/p1/environments': [], 'GET /projects/p1/login-profiles': [], 'POST /projects/p1/base-url-check': check };
   const next = () => userEvent.click(screen.getByRole('button', { name: 'Next' }));
-  /** Fills the login flow step with its one required choice, a success page, and moves to the review. */
+  /** Fills the login flow step with its required choices, a success page and for Email OTP the code path, and moves to the review. */
   async function toReview() {
     await screen.findByRole('heading', { level: 2, name: 'Login flow' });
     await userEvent.type(screen.getByLabelText(/^Page only a signed-in user can open/), '/account');
+    const codePath = screen.queryByLabelText(/^Code form submit path/);
+    if (codePath) await userEvent.type(codePath, '/otp');
     await next();
     await screen.findByRole('heading', { level: 2, name: 'Review and save' });
   }
@@ -544,6 +546,7 @@ describe('login profiles', () => {
     await userEvent.type(within(dialog).getByLabelText(/^Mailbox address/), 'otp@mail.example');
     await userEvent.type(within(dialog).getByLabelText(/^IMAP server/), 'imap.mail.example');
     await userEvent.type(within(dialog).getByLabelText(/^Mailbox password/), 'mb');
+    await userEvent.type(within(dialog).getByLabelText(/^Code form submit path/), '/otp');
     // Required fields are filled; the dedicated-mailbox confirmation is not, and nothing is sent without it.
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save profile' }));
     expect(await within(dialog).findByText('Check the highlighted mailbox fields.')).toBeInTheDocument();
@@ -559,7 +562,8 @@ describe('login profiles', () => {
   it('keeps a saved mailbox password when the field is left blank', async () => {
     const mailbox = { address: 'otp@mail.example', host: 'imap.mail.example', security: 'IMAPS', port: 993, folder: 'INBOX', senderFilter: '', subjectFilter: '', codePattern: '\b(\d{6})\b',
       timeoutSeconds: 120, pollSeconds: 5, dedicatedConfirmedBy: 'admin@qa.local', dedicatedConfirmedAt: '2026-11-01T00:00:00Z' };
-    const otp = { ...profile, method: 'PASSWORD_EMAIL_OTP', mailbox, successPath: '/account', loginFlowComplete: true };
+    const otp = { ...profile, method: 'PASSWORD_EMAIL_OTP', mailbox, successPath: '/account', loginFlowComplete: true,
+      otp: { locators: {}, submitPath: '/otp', resendPath: null, maxResends: 0, typedByPerson: false } };
     const calls = server({ ...routes, 'GET /projects/p1/login-profiles': [{ ...row, method: 'PASSWORD_EMAIL_OTP', successPath: '/account' }], 'GET /projects/p1/auth-profiles': [otp], 'PUT /projects/p1/auth-profiles/ap1': otp });
     mount(<App />, '/login-profiles');
     await userEvent.click(within(await screen.findByTestId('profile-row')).getByRole('button', { name: 'Configure' }));
@@ -704,5 +708,125 @@ describe('application setup: connection test', () => {
     expect(await within((await screen.findAllByTestId('connection-test'))[0]).findByText('Connected')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Finish' }));
     expect(await screen.findByRole('heading', { level: 1, name: 'Applications & Environments' })).toBeInTheDocument();
+  });
+});
+
+describe('one-time codes', () => {
+  const run = (over: object = {}) => ({ id: 'r9', kind: 'AUTH_TEST', environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', suiteId: null, suiteName: null,
+    status: 'RUNNING', createdAt: '2026-11-01T00:00:00Z', finishedAt: null, stopReason: null, startedBy: 'admin@qa.local', passed: 0, failed: 0, inconclusive: 0, blocked: 0, ...over });
+  const waiting = { attempt: 1, authProfileId: 'ap1', status: 'WAITING_FOR_OTP', failure: null, stage: 'OTP', detail: 'Waiting for someone to enter the code', durationMs: 0, at: '2026-11-01T00:00:00Z' };
+  const routes = (r: object, attempts: object[]) => ({ ...signedIn(), 'GET /projects/p1/runs/r9/progress': { run: r, attempt: 1, jobState: 'RUNNING', currentOperation: '', steps: 1, defects: 0, durationSeconds: 10 },
+    'GET /projects/p1/runs/r9/steps': [], 'GET /projects/p1/runs/r9/findings': [], 'GET /projects/p1/runs/r9/auth': attempts });
+
+  it('asks for the code on the run page while the run waits, sends it once, and clears it', async () => {
+    const calls = server({ ...routes(run(), [waiting]), 'POST /projects/p1/runs/r9/otp': () => new Response(null, { status: 202 }) });
+    mount(<App />, '/execution/r9');
+    const prompt = await screen.findByTestId('otp-prompt');
+    const field = within(prompt).getByLabelText(/^One-time code/);
+    expect(field).toHaveAttribute('type', 'password');
+    expect(field).toHaveAttribute('autocomplete', 'one-time-code');
+    const send = within(prompt).getByRole('button', { name: 'Continue sign-in' });
+    expect(send).toBeDisabled();
+    await userEvent.type(field, '482913');
+    await userEvent.click(send);
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1));
+    expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ code: '482913' });
+    expect(await within(prompt).findByText('Code sent. The run continues in the same browser session.')).toBeInTheDocument();
+    expect(field).toHaveValue('');
+  });
+
+  it('shows the server refusal and does not keep the code', async () => {
+    server({ ...routes(run(), [waiting]), 'POST /projects/p1/runs/r9/otp': () => new Response(JSON.stringify({ detail: 'Only whoever started the run, or a project admin, can enter its code' }), { status: 403 }) });
+    mount(<App />, '/execution/r9');
+    const prompt = await screen.findByTestId('otp-prompt');
+    await userEvent.type(within(prompt).getByLabelText(/^One-time code/), '482913');
+    await userEvent.click(within(prompt).getByRole('button', { name: 'Continue sign-in' }));
+    expect(await within(prompt).findByText(/Only whoever started the run/)).toBeInTheDocument();
+    expect(within(prompt).getByLabelText(/^One-time code/)).toHaveValue('');
+  });
+
+  it('does not ask once the run has finished or stopped waiting', async () => {
+    server(routes(run({ status: 'FAILED', finishedAt: '2026-11-01T00:00:10Z', stopReason: 'OTP_NOT_RECEIVED' }), [{ ...waiting, status: 'FAILED', failure: 'OTP_NOT_RECEIVED', detail: 'No code was entered within 5 minutes' }]));
+    mount(<App />, '/execution/r9');
+    const card = await screen.findByTestId('run-auth');
+    expect(card).toHaveTextContent('OTP email not received');
+    expect(screen.queryByTestId('otp-prompt')).toBeNull();
+  });
+
+  it('shows a waiting test in Login Profiles with a way to the prompt', async () => {
+    const t = { runId: 'r9', runStatus: 'RUNNING', status: 'WAITING_FOR_OTP', failure: null, stage: 'OTP', detail: 'Waiting for someone to enter the code', at: '2026-11-01T00:00:00Z', suggestions: {} };
+    server({ ...signedIn(), 'GET /projects/p1/login-profiles': [{ environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', method: 'PASSWORD_EMAIL_OTP',
+      credentialId: 'c1', credentialName: 'login', loginPath: '/app/login-otp', submitPath: '/app/session-otp', successPath: '/app/home', lastTest: t }],
+      'GET /projects/p1/auth-profiles': [], 'GET /projects/p1/environments': [env({})], 'GET /projects/p1/credentials': [] });
+    mount(<App />, '/login-profiles');
+    const r = await screen.findByTestId('profile-row');
+    expect(within(r).getByTestId('test-outcome')).toHaveTextContent('Waiting for one-time code');
+    expect(within(r).getByRole('link', { name: 'Enter the code' })).toHaveAttribute('href', '/execution/r9');
+    expect(within(r).getByRole('button', { name: 'Test connection' })).toBeDisabled();
+  });
+
+  it('lets a person type the code instead of reading a mailbox, and removes the mailbox', async () => {
+    const mailbox = { address: 'otp@mail.example', host: 'imap.mail.example', security: 'IMAPS', port: 993, folder: 'INBOX', senderFilter: '', subjectFilter: '', codePattern: '\\b(\\d{6})\\b',
+      timeoutSeconds: 120, pollSeconds: 5, dedicatedConfirmedBy: 'admin@qa.local', dedicatedConfirmedAt: '2026-11-01T00:00:00Z' };
+    const profile = { id: 'ap1', environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', name: 'Default', method: 'PASSWORD_EMAIL_OTP', credentialId: 'c1',
+      credentialName: 'login', credentialEnabled: true, credentialShared: false, usernameHint: 'f•••r', enabled: true, isDefault: true, loginPath: '/app/login-otp', submitPath: '/app/session-otp',
+      successPath: '/app/home', loginFlowComplete: true, mailbox, updatedAt: '2026-11-01T00:00:00Z', locators: {}, timeoutSeconds: 15, lastTest: null,
+      otp: { locators: { field: { strategy: 'LABEL', value: 'One-time code' } }, submitPath: '/app/otp-verify', resendPath: null, maxResends: 0, typedByPerson: false } };
+    const calls = server({ ...signedIn(), 'GET /projects/p1/login-profiles': [{ environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', method: 'PASSWORD_EMAIL_OTP',
+      credentialId: 'c1', credentialName: 'login', loginPath: '/app/login-otp', submitPath: '/app/session-otp', successPath: '/app/home', lastTest: null }],
+      'GET /projects/p1/auth-profiles': [profile], 'GET /projects/p1/environments': [env({})], 'GET /projects/p1/credentials': [credential({})], 'PUT /projects/p1/auth-profiles/ap1': profile });
+    mount(<App />, '/login-profiles');
+    await userEvent.click(within(await screen.findByTestId('profile-row')).getByRole('button', { name: 'Configure' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByLabelText(/^Mailbox address/)).toHaveValue('otp@mail.example');
+    expect(within(dialog).getByLabelText(/^Code form submit path/)).toHaveValue('/app/otp-verify');
+    await userEvent.click(within(dialog).getByLabelText('Where the code comes from'));
+    await userEvent.click(await screen.findByRole('option', { name: 'A person types it in while the run waits' }));
+    expect(within(dialog).queryByLabelText(/^Mailbox address/)).toBeNull();
+
+    await userEvent.clear(within(dialog).getByLabelText(/^Resends allowed/));
+    await userEvent.type(within(dialog).getByLabelText(/^Resends allowed/), '2');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save profile' }));
+    expect(await within(dialog).findByText('Set the resend button and its path to allow resends.')).toBeInTheDocument();
+    expect(calls.some((c) => c.method === 'PUT')).toBe(false);
+
+    await userEvent.clear(within(dialog).getByLabelText(/^Resends allowed/));
+    await userEvent.type(within(dialog).getByLabelText(/^Resends allowed/), '0');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save profile' }));
+    await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({
+      method: 'PASSWORD_EMAIL_OTP', mailbox: null,
+      otp: { submitPath: '/app/otp-verify', resendPath: null, maxResends: 0, typedByPerson: true, locators: { field: { strategy: 'LABEL', value: 'One-time code', name: null } } },
+    }));
+  });
+
+  it('sets up a code typed by a person in the wizard, with no mailbox to fill', async () => {
+    const calls = server({ ...signedIn(), 'GET /projects/p1/targets': [], 'GET /projects/p1/environments': [], 'GET /projects/p1/login-profiles': [],
+      'POST /projects/p1/base-url-check': (c: Call) => ({ baseUrl: (c.body as { baseUrl: string }).baseUrl, origin: '', executable: true }),
+      'POST /projects/p1/targets': { id: 't9', name: 'Shop', type: 'WEB', description: '', active: true } });
+    mount(<App />, '/applications/new');
+    const next = () => userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await userEvent.type(await screen.findByLabelText(/Application name/), 'Shop');
+    await next();
+    await userEvent.type(await screen.findByLabelText(/Environment name/), 'Fixture');
+    await userEvent.click(screen.getByRole('button', { name: 'Use local fixture' }));
+    await next();
+    await userEvent.click(await screen.findByLabelText('Sign-in for Fixture'));
+    await userEvent.click(await screen.findByRole('option', { name: 'Username, password and email OTP' }));
+    await userEvent.click(screen.getByLabelText('Where the code comes from for Fixture'));
+    await userEvent.click(await screen.findByRole('option', { name: 'A person types it in while the run waits' }));
+    expect(screen.queryByLabelText(/^Mailbox address/)).toBeNull();
+    await userEvent.type(screen.getByRole('textbox', { name: /^Username/ }), 'qa-bot');
+    await userEvent.type(screen.getByLabelText(/^Password/), 'pw');
+    await next();
+    await screen.findByRole('heading', { level: 2, name: 'Login flow' });
+    await userEvent.type(screen.getByLabelText(/^Page only a signed-in user can open/), '/app/home');
+    await next();
+    expect(await screen.findByText('Enter the path the code form posts to. The code is only let through to it.')).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText(/^Code form submit path/), '/app/otp-verify');
+    await next();
+    await userEvent.click(await screen.findByRole('button', { name: 'Save application' }));
+    await screen.findByRole('heading', { level: 2, name: 'Connection test' });
+    const body = calls.find((c) => c.method === 'POST' && c.path === '/projects/p1/targets')!.body as { environments: { authentication: object }[] };
+    expect(body.environments[0].authentication).toMatchObject({ method: 'PASSWORD_EMAIL_OTP', mailbox: null, otp: { submitPath: '/app/otp-verify', typedByPerson: true, maxResends: 0 } });
   });
 });

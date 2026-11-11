@@ -187,7 +187,7 @@ public class CredentialController {
         if (channel.equals("WEB") && (body.successPath() == null || body.successPath().isBlank())) throw new ConflictException("A web login needs a success path");
         var current = profiles.defaultFor(p.organizationId(), environmentId);
         var settings = new AuthProfiles.Settings(current.map(AuthProfiles.View::name).orElse("Default"), body.method(), body.credentialId(),
-                body.loginPath(), body.submitPath(), body.successPath(), null, true, null, null, null);
+                body.loginPath(), body.submitPath(), body.successPath(), null, true, null, null, null, null);
         if (current.isPresent()) profiles.update(p, projectId, current.get().id(), settings);
         else profiles.create(p, projectId, environmentId, settings);
         audit.record(p.organizationId(), projectId, p.email(), "LOGIN_PROFILE_SET", environmentId.toString(), body.method());

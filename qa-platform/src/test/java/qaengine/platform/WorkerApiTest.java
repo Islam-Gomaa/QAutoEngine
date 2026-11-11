@@ -296,6 +296,28 @@ class WorkerApiTest extends IntegrationTestBase {
         mvc.perform(get("/api/v1/projects/" + project + "/runs/" + run + "/auth").with(as(outsider))).andExpect(status().isNotFound());
     }
 
+    @Test void theCodeStepTravelsWithTheJobAndItsEndpointsAreFenced() throws Exception {
+        UUID profile = signInWith(credentials.store(org, project, env, "acct", new qaengine.platform.credentials.CredentialService.Material("u", "p", null, null, null, null)));
+        db.sql("""
+                UPDATE auth_profile SET method = 'PASSWORD_EMAIL_OTP', submit_path = '/app/session-otp', otp_submit_path = '/app/otp-verify', otp_resend_path = '/app/otp-resend',
+                       otp_max_resends = 1, otp_locators = '{"field":{"strategy":"LABEL","value":"One-time code"},"resend":{"strategy":"TEST_ID","value":"resend"}}'::jsonb
+                WHERE id = ?""").param(profile).update();
+        String json = mvc.perform(post("/internal/v1/jobs/claim").header("X-Worker-Key", KEY).contentType(MediaType.APPLICATION_JSON).content("{}")).andReturn().getResponse().getContentAsString();
+        assertTrue(json.contains("\"otp\":{\"field\":{\"strategy\":\"LABEL\",\"value\":\"One-time code\""), json);
+        assertTrue(json.contains("\"submitPath\":\"/app/otp-verify\",\"resendPath\":\"/app/otp-resend\",\"maxResends\":1,\"waitSeconds\":330"), json);
+        String token = json.replaceAll(".*\"jobToken\":\"([^\"]+)\".*", "$1");
+        mvc.perform(post("/internal/v1/jobs/" + job + "/otp")).andExpect(status().isUnauthorized());
+        mvc.perform(post("/internal/v1/jobs/" + job + "/otp/request")).andExpect(status().isUnauthorized());
+        mvc.perform(post("/internal/v1/jobs/" + UUID.randomUUID() + "/otp").header("Authorization", "Bearer " + token)).andExpect(status().isUnauthorized());
+        String before = mvc.perform(post("/internal/v1/jobs/" + job + "/otp").header("Authorization", "Bearer " + token)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertTrue(before.contains("\"failure\":\"OTP_NOT_RECEIVED\""), "no code before it was requested: " + before);
+        mvc.perform(post("/internal/v1/jobs/" + job + "/otp/request").header("Authorization", "Bearer " + token)).andExpect(status().isNoContent());
+        String waiting = mvc.perform(post("/internal/v1/jobs/" + job + "/otp").header("Authorization", "Bearer " + token)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertTrue(waiting.contains("\"waitingForPerson\":true"), waiting);
+        db.sql("UPDATE run_job SET state = 'FAILED' WHERE id = ?").param(job).update();
+        mvc.perform(post("/internal/v1/jobs/" + job + "/otp").header("Authorization", "Bearer " + token)).andExpect(status().isConflict());
+    }
+
     @Test void tamperingIsDetected() throws Exception {
         UUID id = upload(claim(), 1, "SCREENSHOT", PNG);
         assertEquals(List.of(), evidence.verifySample(10));

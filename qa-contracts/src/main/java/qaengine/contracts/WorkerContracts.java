@@ -33,11 +33,22 @@ public final class WorkerContracts {
      */
     public record LoginProfile(String method, String loginPath, String submitPath, String successPath,
                                Locator usernameField, Locator passwordField, Locator submitButton, Locator successElement, Locator failureElement,
-                               int timeoutSeconds) {
+                               int timeoutSeconds, OtpProfile otp) {
         public LoginProfile(String method, String loginPath, String submitPath, String successPath) {
-            this(method, loginPath, submitPath, successPath, null, null, null, null, null, 0);
+            this(method, loginPath, submitPath, successPath, null, null, null, null, null, 0, null);
         }
     }
+
+    /**
+     * The one-time code step. The code itself comes from the platform, one poll at a time.
+     *
+     * @param waitSeconds how long the worker waits for a code; the platform's own limits end the wait sooner
+     */
+    public record OtpProfile(Locator field, Locator submitButton, Locator failureElement, Locator resendButton, String submitPath, String resendPath,
+                             int maxResends, int waitSeconds) {}
+
+    /** One poll for a code. Either a code, a failure name with fixed-text detail, or a wait. */
+    public record OtpReply(String code, String failure, String detail, int retryAfterSeconds, boolean waitingForPerson) {}
 
     /**
      * One sign-in attempt or connection check, as the worker saw it. Holds no secret.

@@ -112,6 +112,14 @@ final class PlatformClient {
         postJson("/findings", finding);
     }
 
+    void otpRequested() throws IOException, InterruptedException {
+        post("/otp/request", "application/json", HttpRequest.BodyPublishers.noBody());
+    }
+
+    qaengine.contracts.WorkerContracts.OtpReply otp() throws IOException, InterruptedException {
+        return gson.fromJson(post("/otp", "application/json", HttpRequest.BodyPublishers.noBody()).body(), qaengine.contracts.WorkerContracts.OtpReply.class);
+    }
+
     void auth(qaengine.contracts.WorkerContracts.AuthReport report) throws IOException, InterruptedException {
         postJson("/auth", report);
     }

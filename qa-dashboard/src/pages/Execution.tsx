@@ -140,8 +140,9 @@ function Detail({ project, id }: { project: string; id: string }) {
                 <Card title={r.kind === 'AUTH_TEST' ? 'Connection test' : 'Sign-in'} testId="run-auth">
                   <Stack direction={{ xs: 'column', md: 'row' }} spacing={3}>
                     <TestResult test={{ status: a.status, failure: a.failure, detail: a.detail }} />
-                    <KeyValue items={[['Stage reached', words(a.stage)], ['Took', `${(a.durationMs / 1000).toFixed(1)} s`], ['Attempt', String(a.attempt)]]} />
+                    <KeyValue items={[['Stage reached', STAGES[a.stage] ?? words(a.stage)], ['Took', `${(a.durationMs / 1000).toFixed(1)} s`], ['Attempt', String(a.attempt)]]} />
                   </Stack>
+                  {a.status === 'WAITING_FOR_OTP' && !finished && <OtpPrompt project={project} run={id} />}
                 </Card>
               );
             })()}
@@ -183,6 +184,45 @@ function Detail({ project, id }: { project: string; id: string }) {
 }
 
 export const ExecutionPage = () => <NeedsProject>{(p) => <Body project={p} />}</NeedsProject>;
+/**
+ * Asks for the one-time code while the run's browser session waits for it. The value goes to the server
+ * once and is cleared from the page at once; the run continues in the same session.
+ */
+const STAGES: Record<string, string> = { LOGIN_PAGE: 'Login page', CREDENTIALS: 'Filling the form', SUBMIT: 'Submitting', OTP: 'One-time code', VERIFY: 'Checking success', DONE: 'Done' };
+
+function OtpPrompt({ project, run }: { project: string; run: string }) {
+  const [code, setCode] = useState('');
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState<unknown>();
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await api(`/projects/${project}/runs/${run}/otp`, 'POST', { code });
+      setSent(true);
+    } catch (e) {
+      setError(e);
+    } finally {
+      setCode('');
+      setBusy(false);
+    }
+  };
+  return (
+    <Box component="form" onSubmit={(e) => { e.preventDefault(); void submit(); }} sx={{ mt: 2, pt: 2, borderTop: 1, borderColor: 'divider' }} aria-labelledby="otp-prompt-title" data-testid="otp-prompt">
+      <Typography id="otp-prompt-title" variant="body1" sx={{ fontWeight: 600 }}>Enter the one-time code</Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>The run is holding its browser session open and waits for up to 5 minutes. The code is used once and never shown or stored in the clear.</Typography>
+      {error ? <Box sx={{ mb: 1.5 }}><Failure error={error} /></Box> : null}
+      {sent && <Alert severity="success" sx={{ mb: 1.5 }} role="status">Code sent. The run continues in the same browser session.</Alert>}
+      <Stack direction="row" spacing={1} alignItems="flex-start">
+        <TextField label="One-time code" type="password" autoComplete="one-time-code" inputMode="numeric" value={code} onChange={(e) => setCode(e.target.value)}
+          slotProps={{ htmlInput: { maxLength: 12, spellCheck: false } }} />
+        <Button type="submit" variant="contained" disabled={busy || code.trim().length < 4} sx={{ mt: 0.25 }}>Continue sign-in</Button>
+      </Stack>
+    </Box>
+  );
+}
+
 export function RunDetailPage() {
   const { id = '' } = useParams();
   return <NeedsProject>{(p) => <Detail project={p} id={id} />}</NeedsProject>;

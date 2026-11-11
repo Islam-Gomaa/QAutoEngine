@@ -152,6 +152,35 @@ class ActionGateTest {
         assertEquals(Decision.Reason.BUDGET_EXCEEDED, g.openAuthWindow("login").reason());
     }
 
+    @Test void oneSignInWindowCoversTheCodeAndResendAsOneAttempt() {
+        var login = exception("login", Purpose.AUTH, "POST", "/session", null, 5, NOW.plusSeconds(60));
+        var code = exception("code", Purpose.AUTH, "POST", "/otp-verify", null, 5, NOW.plusSeconds(60));
+        var resend = exception("resend", Purpose.AUTH, "POST", "/otp-resend", null, 5, NOW.plusSeconds(60));
+        var g = gate(login, code, resend);
+        var verify = HttpRequestInfo.of("POST", O + "/otp-verify", Resource.DOCUMENT);
+        assertTrue(g.openAuthWindow("login").allowed());
+        assertFalse(g.decideRequest(verify).allowed(), "the code path is not part of a password-only window");
+        g.closeAuthWindow();
+
+        assertTrue(g.openAuthWindow("login", "code", "resend").allowed());
+        assertTrue(g.decideRequest(HttpRequestInfo.of("POST", O + "/session", Resource.DOCUMENT)).allowed());
+        assertTrue(g.decideRequest(verify).allowed());
+        assertTrue(g.decideRequest(HttpRequestInfo.of("POST", O + "/otp-resend", Resource.DOCUMENT)).allowed());
+        assertFalse(g.decideRequest(HttpRequestInfo.of("POST", O + "/other", Resource.DOCUMENT)).allowed());
+        g.closeAuthWindow();
+        assertFalse(g.decideRequest(verify).allowed(), "closed again, all of it");
+        assertEquals(Decision.Reason.BUDGET_EXCEEDED, g.openAuthWindow("login", "code").reason(), "two windows were two attempts, not four");
+    }
+
+    @Test void aWindowNamingAMissingCompanionOpensNothing() {
+        var g = gate(exception("login", Purpose.AUTH, "POST", "/session", null, 5, NOW.plusSeconds(60)),
+                exception("read", Purpose.READ_OPERATION, "POST", "/otp-verify", null, 5, NOW.plusSeconds(60)));
+        assertEquals(Decision.Reason.AUTH_WINDOW_CLOSED, g.openAuthWindow("login", "missing").reason());
+        assertEquals(Decision.Reason.AUTH_WINDOW_CLOSED, g.openAuthWindow("login", "read").reason(), "only AUTH exceptions can join a sign-in window");
+        assertFalse(g.authWindowOpen());
+        assertTrue(g.openAuthWindow("login").allowed(), "a refused window spent no attempt");
+    }
+
     @Test void onlyAllowlistedInteractions() {
         var g = gate();
         assertTrue(g.decideAction(new ActionRequest(Kind.NAVIGATE_LINK, O + "/about", Map.of("text", "About"))).allowed());
