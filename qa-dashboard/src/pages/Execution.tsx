@@ -32,8 +32,18 @@ function Starter({ project }: { project: string }) {
     onSuccess: (r) => { void client.invalidateQueries({ queryKey: ['runs', project] }); navigate(`/execution/${r.id}`); },
   });
   if (envs.data?.length === 0) return <Empty title="No environments to run" action={<Button component={RouterLink} to="/applications" variant="contained">Add an application</Button>}>Add an application and a fixture environment first.</Empty>;
+  // Environments exist, but none can take a run: say why, rather than leave a list of disabled entries and a disabled button.
+  const blocked = envs.data && !envs.data.some((e) => e.executable && e.active && e.applicationActive);
+  const locked = envs.data?.some((e) => !e.executable) ?? false;
   return (
     <Stack spacing={1.5}>
+      {blocked && (
+        <Alert severity="info" data-testid="no-runnable-environment" action={<Button component={RouterLink} to="/applications" color="inherit" size="small">Applications</Button>}>
+          No environment in this project can be run.
+          {locked ? ' Real targets stay locked until the pre-pilot security gate passes, so only a local fixture environment can be run.' : ''}
+          {envs.data!.some((e) => e.executable && (!e.active || !e.applicationActive)) ? ' Activate an inactive fixture environment, or its application, to run it.' : ''}
+        </Alert>
+      )}
       {start.isError && <Failure error={start.error} />}
       <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} alignItems={{ md: 'center' }}>
         <TextField select label="Environment" value={environmentId} onChange={(e) => { setEnvironment(e.target.value); setSuite(''); }} sx={{ minWidth: 300 }}>

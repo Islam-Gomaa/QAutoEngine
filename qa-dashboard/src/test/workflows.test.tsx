@@ -398,6 +398,31 @@ describe('execution', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Start fixture run' }));
     expect(await screen.findByTestId('error-state')).toHaveTextContent('Real targets are locked');
   });
+  it('explains why nothing can run when every environment is a locked real target', async () => {
+    server({ ...routes, 'GET /projects/p1/environments': [env({ id: 'e2', name: 'Real', executable: false })] });
+    mount(<App />, '/execution');
+    const alert = await screen.findByTestId('no-runnable-environment');
+    expect(alert).toHaveTextContent('No environment in this project can be run.');
+    expect(alert).toHaveTextContent('Real targets stay locked until the pre-pilot security gate passes');
+    expect(alert).not.toHaveTextContent('Activate');
+    expect(screen.getByRole('button', { name: 'Start fixture run' })).toBeDisabled();
+    await userEvent.click(screen.getByLabelText('Environment'));
+    expect(await screen.findByRole('option', { name: /Real.*locked/ })).toHaveAttribute('aria-disabled', 'true');
+  });
+  it('points to activation when the only fixture environment is inactive', async () => {
+    server({ ...routes, 'GET /projects/p1/environments': [env({ active: false })] });
+    mount(<App />, '/execution');
+    const alert = await screen.findByTestId('no-runnable-environment');
+    expect(alert).toHaveTextContent('Activate an inactive fixture environment');
+    expect(alert).not.toHaveTextContent('pre-pilot');
+  });
+  it('says nothing extra when an environment can run', async () => {
+    server(routes);
+    mount(<App />, '/execution');
+    await userEvent.click(await screen.findByLabelText('Environment'));
+    await screen.findByRole('option', { name: /Fixture/ });
+    expect(screen.queryByTestId('no-runnable-environment')).toBeNull();
+  });
   it('does not let a viewer start runs', async () => {
     server({ ...routes, ...signedIn(member, 'VIEWER') });
     mount(<App />, '/execution');
