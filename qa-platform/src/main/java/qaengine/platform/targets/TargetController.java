@@ -22,7 +22,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import qaengine.core.policy.BaseUrl;
-import qaengine.core.policy.ExecutionLock;
 import qaengine.core.policy.PolicyException;
 import qaengine.platform.audit.AuditLog;
 import qaengine.platform.credentials.AuthProfiles;
@@ -50,20 +49,29 @@ public class TargetController {
     public record UpdateEnvironment(@NotBlank String name, String description, List<String> includePaths, List<String> excludePaths,
                                     String apiSpecPath, Integer apiSlowMillis) {}
     /**
-     * @param executable false for anything but the fixture until the security gate passes
+     * @param executable whether its target may be run, from {@link Eligibility}. False for anything but the fixture until the security gate passes
+     * @param lockReason why not, when it may not: {@link Eligibility.Reason}. Null when executable. Activity is reported separately
      * @param applicationActive an inactive application stops its environments from running, whatever their own switch says
-     * @param authorized a written authorization is recorded. It never makes an environment executable
+     * @param authorized a written authorization is recorded and in date. On its own it never makes an environment executable
      */
     public record EnvironmentView(UUID id, UUID targetId, String targetName, String name, String classification, String baseUrl, String mode, String channel,
-                                  String description, boolean active, boolean applicationActive, boolean executable, boolean authorized, List<String> includePaths, List<String> excludePaths,
+                                  String description, boolean active, boolean applicationActive, boolean executable, Eligibility.Reason lockReason, boolean authorized,
+                                  List<String> includePaths, List<String> excludePaths,
                                   String apiSpecPath, int apiSlowMillis, String loginMethod, String credentialName, String lastRunStatus, OffsetDateTime lastRunAt) {}
     public record BaseUrlCheck(String baseUrl) {}
     /** What would be stored. Nothing is contacted: the platform never reaches a target itself. */
     public record BaseUrlResult(String baseUrl, String origin, boolean executable) {}
-    /** @param reference an identifier for the written authorization, such as a document number. Never the document itself */
-    public record RecordAuthorization(String reference) {}
-    /** @param authorizedBy the Organization Admin who recorded it */
-    public record AuthorizationView(boolean authorized, String reference, String authorizedBy, OffsetDateTime authorizedAt) {}
+    /**
+     * @param reference an identifier for the written authorization, such as a document number. Never the document itself
+     * @param expiresAt the end of the window the authorization covers
+     */
+    public record RecordAuthorization(String reference, OffsetDateTime expiresAt) {}
+    /**
+     * @param authorized recorded and in date
+     * @param expired recorded, but its window has ended
+     * @param authorizedBy the Organization Admin who recorded it
+     */
+    public record AuthorizationView(boolean authorized, boolean expired, String reference, String authorizedBy, OffsetDateTime authorizedAt, OffsetDateTime expiresAt) {}
 
     private static final Set<String> CLASSES = Set.of("LOCAL", "DEV", "QA", "UAT", "STAGING", "PRODUCTION");
     private static final Set<String> TYPES = Set.of("WEB", "API");
@@ -118,7 +126,8 @@ public class TargetController {
     public BaseUrlResult checkBaseUrl(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @RequestBody BaseUrlCheck body) {
         access.require(p, projectId, Access.Level.PROJECT_ADMIN);
         String url = normalized(body.baseUrl());
-        return new BaseUrlResult(url, BaseUrl.origin(url), ExecutionLock.isLocal(url));
+        // A URL not yet saved has no authorization, so only the fixture can be executable here.
+        return new BaseUrlResult(url, BaseUrl.origin(url), Eligibility.of(url, null, null, java.time.Instant.now()).executable());
     }
 
     private static String normalized(String raw) {
@@ -175,7 +184,7 @@ public class TargetController {
     private static final String ENV = """
             SELECT e.id, e.target_id, t.name, e.name, e.classification, e.base_url, ep.mode, e.channel, e.description, ep.include_paths, ep.exclude_paths,
                    e.api_spec_path, e.api_slow_ms, ap.method, ap.credential_name,
-                   lr.status, lr.created_at, e.active, t.active, e.authorization_reference IS NOT NULL
+                   lr.status, lr.created_at, e.active, t.active, e.authorization_reference, e.authorization_expires_at
             FROM environment e
             JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id
             JOIN execution_policy ep ON ep.organization_id = e.organization_id AND ep.environment_id = e.id
@@ -186,8 +195,13 @@ public class TargetController {
 
     private static EnvironmentView env(java.sql.ResultSet rs) throws java.sql.SQLException {
         String url = rs.getString(6);
+        String reference = rs.getString(20);
+        OffsetDateTime expiresAt = rs.getObject(21, OffsetDateTime.class);
+        java.time.Instant now = java.time.Instant.now();
+        Eligibility.Result eligibility = Eligibility.of(url, reference, expiresAt, now);
+        boolean authorized = reference != null && expiresAt != null && expiresAt.toInstant().isAfter(now);
         return new EnvironmentView(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4), rs.getString(5), url, rs.getString(7), rs.getString(8),
-                rs.getString(9), rs.getBoolean(18), rs.getBoolean(19), ExecutionLock.isLocal(url), rs.getBoolean(20), array(rs, 10), array(rs, 11), rs.getString(12), rs.getInt(13), rs.getString(14),
+                rs.getString(9), rs.getBoolean(18), rs.getBoolean(19), eligibility.executable(), eligibility.lockReason(), authorized, array(rs, 10), array(rs, 11), rs.getString(12), rs.getInt(13), rs.getString(14),
                 rs.getString(15), rs.getString(16), rs.getObject(17, OffsetDateTime.class));
     }
 
@@ -295,20 +309,35 @@ public class TargetController {
     /** An identifier such as a document number: no line breaks, no markup, nothing long enough to be the document itself. */
     private static final java.util.regex.Pattern REFERENCE = java.util.regex.Pattern.compile("[A-Za-z0-9 ._:/#()-]{3,120}");
 
-    private record Authorization(String baseUrl, boolean archived, String reference, String authorizedBy, OffsetDateTime authorizedAt) {
+    /** A written authorization covers a window, and no window is open-ended. */
+    private static final java.time.Duration LONGEST_AUTHORIZATION = java.time.Duration.ofDays(366);
+
+    private record Authorization(String baseUrl, boolean archived, String reference, String authorizedBy, OffsetDateTime authorizedAt, OffsetDateTime expiresAt) {
         AuthorizationView view() {
-            return new AuthorizationView(reference != null, reference, authorizedBy, authorizedAt);
+            boolean recorded = reference != null;
+            boolean expired = recorded && !expiresAt.toInstant().isAfter(java.time.Instant.now());
+            return new AuthorizationView(recorded && !expired, expired, reference, authorizedBy, authorizedAt, expiresAt);
         }
+
+        /** How the audit names it: the reference and, in UTC to the second, when it ends. */
+        String described() {
+            return describe(reference, expiresAt);
+        }
+    }
+
+    private static String describe(String reference, OffsetDateTime expiresAt) {
+        return "ref=" + reference + " until=" + expiresAt.toInstant().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
     }
 
     /** Locks the row when changing it, so two admins cannot record over each other and leave the audit out of step. */
     private Authorization authorization(Principal p, UUID projectId, UUID environmentId, boolean forUpdate) {
         return db.sql("""
-                SELECT e.base_url, e.archived_at IS NOT NULL, e.authorization_reference, e.authorized_by, e.authorized_at FROM environment e
+                SELECT e.base_url, e.archived_at IS NOT NULL, e.authorization_reference, e.authorized_by, e.authorized_at, e.authorization_expires_at FROM environment e
                 JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id
                 WHERE e.organization_id = ? AND t.project_id = ? AND e.id = ?""" + (forUpdate ? " FOR UPDATE OF e" : ""))
                 .params(p.organizationId(), projectId, environmentId)
-                .query((rs, n) -> new Authorization(rs.getString(1), rs.getBoolean(2), rs.getString(3), rs.getString(4), rs.getObject(5, OffsetDateTime.class)))
+                .query((rs, n) -> new Authorization(rs.getString(1), rs.getBoolean(2), rs.getString(3), rs.getString(4), rs.getObject(5, OffsetDateTime.class),
+                        rs.getObject(6, OffsetDateTime.class)))
                 .optional().orElseThrow(() -> new NotFoundException("Environment"));
     }
 
@@ -327,17 +356,25 @@ public class TargetController {
         access.requireOrganizationAdmin(p);
         Authorization current = authorization(p, projectId, environmentId, true);
         if (current.archived()) throw new ConflictException("This environment is archived");
-        if (ExecutionLock.isLocal(current.baseUrl())) throw new ConflictException("The local fixture needs no authorization");
+        // The fixture by its own list, not by ExecutionLock: a real host approved there one day must still be authorizable.
+        if (Eligibility.isFixture(current.baseUrl())) throw new ConflictException("The local fixture needs no authorization");
         String reference = body == null || body.reference() == null ? "" : body.reference().strip();
         if (!REFERENCE.matcher(reference).matches()) throw new ConflictException("Authorization reference is missing or invalid");
-        if (reference.equals(current.reference())) return current.view();
-        db.sql("UPDATE environment SET authorization_reference = ?, authorized_by = ?, authorized_at = now() WHERE organization_id = ? AND id = ?")
-                .params(reference, p.email(), p.organizationId(), environmentId).update();
+        if (body.expiresAt() == null) throw new ConflictException("Authorization expiry is missing");
+        // Stored to the second, so sending the same window again is recognized as no change.
+        OffsetDateTime expiresAt = body.expiresAt().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        java.time.Instant now = java.time.Instant.now();
+        if (!expiresAt.toInstant().isAfter(now)) throw new ConflictException("Authorization expiry must be in the future");
+        if (expiresAt.toInstant().isAfter(now.plus(LONGEST_AUTHORIZATION))) throw new ConflictException("An authorization cannot last longer than a year");
+        if (reference.equals(current.reference()) && expiresAt.toInstant().equals(current.expiresAt().toInstant())) return current.view();
+        db.sql("UPDATE environment SET authorization_reference = ?, authorization_expires_at = ?, authorized_by = ?, authorized_at = now() WHERE organization_id = ? AND id = ?")
+                .params(reference, expiresAt, p.email(), p.organizationId(), environmentId).update();
         String origin = BaseUrl.origin(current.baseUrl());
         if (current.reference() == null) {
-            audit.record(p.organizationId(), projectId, p.email(), "ENVIRONMENT_AUTHORIZATION_RECORDED", environmentId.toString(), origin + " ref=" + reference);
+            audit.record(p.organizationId(), projectId, p.email(), "ENVIRONMENT_AUTHORIZATION_RECORDED", environmentId.toString(), origin + " " + describe(reference, expiresAt));
         } else {
-            audit.record(p.organizationId(), projectId, p.email(), "ENVIRONMENT_AUTHORIZATION_UPDATED", environmentId.toString(), origin + " ref=" + current.reference() + " -> " + reference);
+            audit.record(p.organizationId(), projectId, p.email(), "ENVIRONMENT_AUTHORIZATION_UPDATED", environmentId.toString(),
+                    origin + " " + current.described() + " -> " + describe(reference, expiresAt));
         }
         return authorization(p, projectId, environmentId, false).view();
     }
@@ -350,9 +387,9 @@ public class TargetController {
         access.requireOrganizationAdmin(p);
         Authorization current = authorization(p, projectId, environmentId, true);
         if (current.reference() == null) throw new ConflictException("This environment has no authorization");
-        db.sql("UPDATE environment SET authorization_reference = NULL, authorized_by = NULL, authorized_at = NULL WHERE organization_id = ? AND id = ?")
+        db.sql("UPDATE environment SET authorization_reference = NULL, authorization_expires_at = NULL, authorized_by = NULL, authorized_at = NULL WHERE organization_id = ? AND id = ?")
                 .params(p.organizationId(), environmentId).update();
         audit.record(p.organizationId(), projectId, p.email(), "ENVIRONMENT_AUTHORIZATION_REVOKED", environmentId.toString(),
-                BaseUrl.origin(current.baseUrl()) + " ref=" + current.reference());
+                BaseUrl.origin(current.baseUrl()) + " " + current.described());
     }
 }

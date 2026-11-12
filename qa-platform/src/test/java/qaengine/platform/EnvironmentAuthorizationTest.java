@@ -52,6 +52,21 @@ class EnvironmentAuthorizationTest extends IntegrationTestBase {
 
     static final String REAL = "https://staging.shop.example/";
     static final String REFERENCE = "SHOP-AUTH-2026-014";
+    /** A window well inside the one-year limit, to the second as it is stored. */
+    static final java.time.Instant UNTIL = java.time.Instant.now().plus(java.time.Duration.ofDays(90)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+    static final String ORIGIN = "https://staging.shop.example";
+
+    static Map<String, Object> grant(String reference) {
+        return grant(reference, UNTIL);
+    }
+
+    static Map<String, Object> grant(String reference, java.time.Instant until) {
+        return Map.of("reference", reference, "expiresAt", until.toString());
+    }
+
+    static String described(String reference, java.time.Instant until) {
+        return "ref=" + reference + " until=" + until;
+    }
 
     @Autowired MockMvc mvc;
     @Autowired JdbcClient db;
@@ -159,7 +174,7 @@ class EnvironmentAuthorizationTest extends IntegrationTestBase {
         UUID env = environment(REAL);
         assertFalse(listed(viewer, env).get("authorized").asBoolean());
 
-        JsonNode view = ok(admin, put(auth(env)), Map.of("reference", "  " + REFERENCE + " "));
+        JsonNode view = ok(admin, put(auth(env)), grant("  " + REFERENCE + " "));
         assertTrue(view.get("authorized").asBoolean());
         assertEquals(REFERENCE, view.get("reference").asString(), "stored trimmed");
         assertEquals(admin.email(), view.get("authorizedBy").asString(), "the recorder comes from the session, never the request");
@@ -169,14 +184,16 @@ class EnvironmentAuthorizationTest extends IntegrationTestBase {
         assertEquals(REFERENCE, s.reference());
         assertEquals(admin.email(), s.by());
         assertNotNull(s.at());
-        assertEquals(List.of(new Event(admin.email(), "ENVIRONMENT_AUTHORIZATION_RECORDED", "https://staging.shop.example ref=" + REFERENCE)), audit(env));
+        assertEquals(UNTIL, java.time.Instant.parse(view.get("expiresAt").asString()));
+        assertFalse(view.get("expired").asBoolean());
+        assertEquals(List.of(new Event(admin.email(), "ENVIRONMENT_AUTHORIZATION_RECORDED", ORIGIN + " " + described(REFERENCE, UNTIL))), audit(env));
     }
 
     @Test
     void statusIsReadableByProjectAdminsAndListedAsAFlagOnly() throws Exception {
         UUID env = environment(REAL);
         assertFalse(ok(projectAdmin, get(auth(env)), null).get("authorized").asBoolean());
-        ok(admin, put(auth(env)), Map.of("reference", REFERENCE));
+        ok(admin, put(auth(env)), grant(REFERENCE));
 
         JsonNode status = ok(projectAdmin, get(auth(env)), null);
         assertTrue(status.get("authorized").asBoolean());
@@ -195,13 +212,13 @@ class EnvironmentAuthorizationTest extends IntegrationTestBase {
     void nobodyButAnOrganizationAdminCanChangeIt() throws Exception {
         UUID env = environment(REAL);
         for (Principal p : List.of(projectAdmin, lead, tester, viewer)) {
-            assertEquals(403, status(p, put(auth(env)), Map.of("reference", REFERENCE)));
+            assertEquals(403, status(p, put(auth(env)), grant(REFERENCE)));
         }
-        assertEquals(404, status(stranger, put(auth(env)), Map.of("reference", REFERENCE)), "not a member: the project is not revealed");
-        assertEquals(404, status(outsiderAdmin, put(auth(env)), Map.of("reference", REFERENCE)), "another organization's admin");
+        assertEquals(404, status(stranger, put(auth(env)), grant(REFERENCE)), "not a member: the project is not revealed");
+        assertEquals(404, status(outsiderAdmin, put(auth(env)), grant(REFERENCE)), "another organization's admin");
         assertEquals(new Stored(null, null, null), stored(env));
 
-        ok(admin, put(auth(env)), Map.of("reference", REFERENCE));
+        ok(admin, put(auth(env)), grant(REFERENCE));
         for (Principal p : List.of(projectAdmin, lead, tester, viewer)) assertEquals(403, status(p, delete(auth(env)), null));
         assertEquals(404, status(stranger, delete(auth(env)), null));
         assertEquals(404, status(outsiderAdmin, delete(auth(env)), null));
@@ -226,12 +243,12 @@ class EnvironmentAuthorizationTest extends IntegrationTestBase {
     @Test
     void theFixtureAndArchivedEnvironmentsAreRefused() throws Exception {
         UUID fixture = environment("http://fixture.qa.internal:8090/");
-        assertEquals("The local fixture needs no authorization", detail(admin, put(auth(fixture)), Map.of("reference", REFERENCE)));
+        assertEquals("The local fixture needs no authorization", detail(admin, put(auth(fixture)), grant(REFERENCE)));
 
         UUID env = environment(REAL);
         ok(admin, post(base() + "/environments/" + env + "/archive"), null);
-        assertEquals("This environment is archived", detail(admin, put(auth(env)), Map.of("reference", REFERENCE)));
-        assertEquals(404, status(admin, put(base() + "/environments/" + UUID.randomUUID() + "/authorization"), Map.of("reference", REFERENCE)));
+        assertEquals("This environment is archived", detail(admin, put(auth(env)), grant(REFERENCE)));
+        assertEquals(404, status(admin, put(base() + "/environments/" + UUID.randomUUID() + "/authorization"), grant(REFERENCE)));
         assertTrue(audit(fixture).isEmpty());
         assertTrue(audit(env).isEmpty());
     }
@@ -239,27 +256,37 @@ class EnvironmentAuthorizationTest extends IntegrationTestBase {
     @Test
     void replacingItIsAuditedWithTheOldAndNewReference() throws Exception {
         UUID env = environment(REAL);
-        ok(admin, put(auth(env)), Map.of("reference", REFERENCE));
-        ok(admin, put(auth(env)), Map.of("reference", REFERENCE));
+        ok(admin, put(auth(env)), grant(REFERENCE));
+        ok(admin, put(auth(env)), grant(REFERENCE));
         assertEquals(1, audit(env).size(), "the same reference again changes nothing");
 
         Principal second = user(org, "ORGANIZATION_ADMIN");
-        JsonNode view = ok(second, put(auth(env)), Map.of("reference", "SHOP-AUTH-2026-015"));
+        JsonNode view = ok(second, put(auth(env)), grant("SHOP-AUTH-2026-015"));
         assertEquals(second.email(), view.get("authorizedBy").asString());
-        assertEquals(new Event(second.email(), "ENVIRONMENT_AUTHORIZATION_UPDATED", "https://staging.shop.example ref=" + REFERENCE + " -> SHOP-AUTH-2026-015"), audit(env).get(1));
+        assertEquals(new Event(second.email(), "ENVIRONMENT_AUTHORIZATION_UPDATED",
+                ORIGIN + " " + described(REFERENCE, UNTIL) + " -> " + described("SHOP-AUTH-2026-015", UNTIL)), audit(env).get(1));
+
+        java.time.Instant extended = UNTIL.plus(java.time.Duration.ofDays(30));
+        ok(second, put(auth(env)), grant("SHOP-AUTH-2026-015", extended));
+        assertEquals(new Event(second.email(), "ENVIRONMENT_AUTHORIZATION_UPDATED",
+                ORIGIN + " " + described("SHOP-AUTH-2026-015", UNTIL) + " -> " + described("SHOP-AUTH-2026-015", extended)), audit(env).get(2), "a new window alone is a change");
+        ok(second, put(auth(env)), grant("SHOP-AUTH-2026-015", extended));
+        assertEquals(3, audit(env).size(), "the same reference and window again change nothing");
     }
 
     @Test
     void revokingClearsItAndIsAudited() throws Exception {
         UUID env = environment(REAL);
         assertEquals("This environment has no authorization", detail(admin, delete(auth(env)), null));
-        ok(admin, put(auth(env)), Map.of("reference", REFERENCE));
+        ok(admin, put(auth(env)), grant(REFERENCE));
 
         assertEquals(204, status(admin, delete(auth(env)), null));
         assertEquals(new Stored(null, null, null), stored(env));
         assertFalse(ok(projectAdmin, get(auth(env)), null).get("authorized").asBoolean());
         assertFalse(listed(viewer, env).get("authorized").asBoolean());
-        assertEquals(new Event(admin.email(), "ENVIRONMENT_AUTHORIZATION_REVOKED", "https://staging.shop.example ref=" + REFERENCE), audit(env).get(1));
+        assertEquals(new Event(admin.email(), "ENVIRONMENT_AUTHORIZATION_REVOKED", ORIGIN + " " + described(REFERENCE, UNTIL)), audit(env).get(1));
+        assertTrue(db.sql("SELECT authorization_expires_at IS NULL FROM environment WHERE organization_id = ? AND id = ?").params(org, env).query(Boolean.class).single(),
+                "revoking clears the window too");
         assertEquals("This environment has no authorization", detail(admin, delete(auth(env)), null));
         assertEquals(2, audit(env).size());
     }
@@ -267,7 +294,7 @@ class EnvironmentAuthorizationTest extends IntegrationTestBase {
     @Test
     void anAuthorizedRealTargetStaysLocked() throws Exception {
         UUID env = environment(REAL);
-        ok(admin, put(auth(env)), Map.of("reference", REFERENCE));
+        ok(admin, put(auth(env)), grant(REFERENCE));
         JsonNode listed = listed(viewer, env);
         assertTrue(listed.get("authorized").asBoolean());
         assertFalse(listed.get("executable").asBoolean(), "authorization is a record, not a key");
@@ -286,7 +313,53 @@ class EnvironmentAuthorizationTest extends IntegrationTestBase {
     }
 
     @Test
+    void anExpiryIsRequiredInTheFutureAndWithinAYear() throws Exception {
+        UUID env = environment(REAL);
+        assertEquals("Authorization expiry is missing", detail(admin, put(auth(env)), Map.of("reference", REFERENCE)));
+        assertEquals("Authorization expiry must be in the future", detail(admin, put(auth(env)), grant(REFERENCE, java.time.Instant.now().minusSeconds(60))));
+        assertEquals("An authorization cannot last longer than a year",
+                detail(admin, put(auth(env)), grant(REFERENCE, java.time.Instant.now().plus(java.time.Duration.ofDays(367)))));
+        assertEquals(400, status(admin, put(auth(env)), Map.of("reference", REFERENCE, "expiresAt", "next month")), "not a date");
+        assertEquals(new Stored(null, null, null), stored(env));
+        assertTrue(audit(env).isEmpty());
+    }
+
+    @Test
+    void anExpiredAuthorizationNoLongerCountsButStaysVisible() throws Exception {
+        UUID env = environment(REAL);
+        ok(admin, put(auth(env)), grant(REFERENCE));
+        // Time passes. Only the database can move the window into the past: the API refuses an expiry that is not in the future.
+        db.sql("UPDATE environment SET authorization_expires_at = now() - interval '1 day' WHERE organization_id = ? AND id = ?").params(org, env).update();
+
+        JsonNode status = ok(projectAdmin, get(auth(env)), null);
+        assertFalse(status.get("authorized").asBoolean());
+        assertTrue(status.get("expired").asBoolean());
+        assertEquals(REFERENCE, status.get("reference").asString(), "the record is kept");
+        assertFalse(listed(viewer, env).get("authorized").asBoolean());
+
+        ok(admin, put(auth(env)), grant(REFERENCE));
+        assertTrue(ok(projectAdmin, get(auth(env)), null).get("authorized").asBoolean(), "recording a new window renews it");
+        assertEquals("ENVIRONMENT_AUTHORIZATION_UPDATED", audit(env).get(1).action());
+    }
+
+    @Test
+    void theListSaysWhyAnEnvironmentIsLocked() throws Exception {
+        UUID fixture = environment("http://fixture.qa.internal:8090/");
+        UUID env = environment(REAL);
+        JsonNode f = listed(viewer, fixture);
+        assertTrue(f.get("executable").asBoolean());
+        assertTrue(f.get("lockReason").isNull());
+        assertEquals("HOST_NOT_APPROVED", listed(viewer, env).get("lockReason").asString());
+        ok(admin, put(auth(env)), grant(REFERENCE));
+        assertEquals("HOST_NOT_APPROVED", listed(viewer, env).get("lockReason").asString(), "the gate comes first: authorization does not change it");
+    }
+
+    @Test
     void theDatabaseRefusesAHalfRecordedAuthorization() throws Exception {
+        UUID env0 = environment(REAL);
+        assertThrows(org.springframework.dao.DataIntegrityViolationException.class, () ->
+                db.sql("UPDATE environment SET authorization_reference = 'REF-1', authorized_by = 'x', authorized_at = now() WHERE organization_id = ? AND id = ?").params(org, env0).update(),
+                "an authorization without its window");
         UUID env = environment(REAL);
         assertThrows(org.springframework.dao.DataIntegrityViolationException.class, () ->
                 db.sql("UPDATE environment SET authorized_by = 'x', authorized_at = now() WHERE organization_id = ? AND id = ?").params(org, env).update());

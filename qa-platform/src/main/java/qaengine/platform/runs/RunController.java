@@ -24,6 +24,7 @@ import qaengine.platform.identity.Access;
 import qaengine.platform.shared.ConflictException;
 import qaengine.platform.shared.NotFoundException;
 import qaengine.platform.shared.Principal;
+import qaengine.platform.targets.Eligibility;
 
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}/runs")
@@ -90,21 +91,26 @@ public class RunController {
         var existing = db.sql("SELECT id FROM test_run WHERE organization_id = ? AND idempotency_key = ?").params(p.organizationId(), key).query(UUID.class).optional();
         if (existing.isPresent()) return ResponseEntity.ok(view(p, projectId, existing.get()));
 
-        record Target(String mode, int minutes, int maxPages, String baseUrl, String channel, boolean archived, boolean environmentActive, boolean applicationActive) {}
+        record Target(String mode, int minutes, int maxPages, String baseUrl, String channel, boolean archived, boolean environmentActive, boolean applicationActive,
+                      String authorizationReference, OffsetDateTime authorizationExpiresAt) {}
         var policy = db.sql("""
-                SELECT ep.mode, ep.max_minutes, ep.max_pages, e.base_url, e.channel, e.archived_at IS NOT NULL, e.active, t.active FROM environment e
+                SELECT ep.mode, ep.max_minutes, ep.max_pages, e.base_url, e.channel, e.archived_at IS NOT NULL, e.active, t.active,
+                       e.authorization_reference, e.authorization_expires_at FROM environment e
                 JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id
                 JOIN execution_policy ep ON ep.organization_id = e.organization_id AND ep.environment_id = e.id
                 WHERE e.organization_id = ? AND e.id = ? AND t.project_id = ?
                 """).params(p.organizationId(), body.environmentId(), projectId)
-                .query((rs, n) -> new Target(rs.getString(1), rs.getInt(2), rs.getInt(3), rs.getString(4), rs.getString(5), rs.getBoolean(6), rs.getBoolean(7), rs.getBoolean(8))).optional()
+                .query((rs, n) -> new Target(rs.getString(1), rs.getInt(2), rs.getInt(3), rs.getString(4), rs.getString(5), rs.getBoolean(6), rs.getBoolean(7), rs.getBoolean(8),
+                        rs.getString(9), rs.getObject(10, OffsetDateTime.class))).optional()
                 .orElseThrow(() -> new NotFoundException("Environment"));
         if ("AUTHORIZED_MUTATION".equals(policy.mode())) throw new ConflictException("Mutation runs are not available");
         if (policy.archived()) throw new ConflictException("This environment is archived");
         if (!policy.applicationActive()) throw new ConflictException("This application is inactive");
         if (!policy.environmentActive()) throw new ConflictException("This environment is inactive");
-        // The worker would refuse too. Saying so here keeps a real target from ever being queued.
-        if (!qaengine.core.policy.ExecutionLock.isLocal(policy.baseUrl())) throw new ConflictException("Real targets are locked until the pre-pilot security gate passes");
+        // The worker would refuse an unapproved host too. Saying so here keeps a real target from ever being queued, and a real
+        // host approved one day still needs a written authorization in date: ExecutionLock alone is never enough.
+        Eligibility.Result eligibility = Eligibility.of(policy.baseUrl(), policy.authorizationReference(), policy.authorizationExpiresAt(), java.time.Instant.now());
+        if (!eligibility.executable()) throw new ConflictException(Eligibility.refusal(eligibility.reason()));
         String kind = body.kind() == null ? "EXPLORATION" : body.kind();
         if (!kind.equals("EXPLORATION") && !kind.equals("AUTH_TEST") && !kind.equals("DISCOVERY")) throw new ConflictException("Unknown run kind");
         if (kind.equals("DISCOVERY") && (body.suiteId() != null || !"WEB".equals(policy.channel()))) throw new ConflictException("Discovery explores a web application, without a suite");
