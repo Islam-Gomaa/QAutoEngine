@@ -11,10 +11,12 @@ import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -42,7 +44,7 @@ public class TargetController {
     public record UpdateTarget(@NotBlank String name, String description) {}
     public record TargetView(UUID id, String name, String type, String description, boolean active, OffsetDateTime archivedAt) {}
     public record CreateEnvironment(@NotBlank String name, @NotBlank String classification, @NotBlank String baseUrl,
-                                    List<String> includePaths, List<String> excludePaths, String authorizedBy,
+                                    List<String> includePaths, List<String> excludePaths,
                                     String channel, String apiSpecPath, Integer apiSlowMillis, List<String> apiSeedPaths, String description, Boolean active,
                                     AuthProfiles.NewProfile authentication) {}
     public record UpdateEnvironment(@NotBlank String name, String description, List<String> includePaths, List<String> excludePaths,
@@ -50,13 +52,18 @@ public class TargetController {
     /**
      * @param executable false for anything but the fixture until the security gate passes
      * @param applicationActive an inactive application stops its environments from running, whatever their own switch says
+     * @param authorized a written authorization is recorded. It never makes an environment executable
      */
     public record EnvironmentView(UUID id, UUID targetId, String targetName, String name, String classification, String baseUrl, String mode, String channel,
-                                  String description, boolean active, boolean applicationActive, boolean executable, List<String> includePaths, List<String> excludePaths,
+                                  String description, boolean active, boolean applicationActive, boolean executable, boolean authorized, List<String> includePaths, List<String> excludePaths,
                                   String apiSpecPath, int apiSlowMillis, String loginMethod, String credentialName, String lastRunStatus, OffsetDateTime lastRunAt) {}
     public record BaseUrlCheck(String baseUrl) {}
     /** What would be stored. Nothing is contacted: the platform never reaches a target itself. */
     public record BaseUrlResult(String baseUrl, String origin, boolean executable) {}
+    /** @param reference an identifier for the written authorization, such as a document number. Never the document itself */
+    public record RecordAuthorization(String reference) {}
+    /** @param authorizedBy the Organization Admin who recorded it */
+    public record AuthorizationView(boolean authorized, String reference, String authorizedBy, OffsetDateTime authorizedAt) {}
 
     private static final Set<String> CLASSES = Set.of("LOCAL", "DEV", "QA", "UAT", "STAGING", "PRODUCTION");
     private static final Set<String> TYPES = Set.of("WEB", "API");
@@ -168,7 +175,7 @@ public class TargetController {
     private static final String ENV = """
             SELECT e.id, e.target_id, t.name, e.name, e.classification, e.base_url, ep.mode, e.channel, e.description, ep.include_paths, ep.exclude_paths,
                    e.api_spec_path, e.api_slow_ms, ap.method, ap.credential_name,
-                   lr.status, lr.created_at, e.active, t.active
+                   lr.status, lr.created_at, e.active, t.active, e.authorization_reference IS NOT NULL
             FROM environment e
             JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id
             JOIN execution_policy ep ON ep.organization_id = e.organization_id AND ep.environment_id = e.id
@@ -180,7 +187,7 @@ public class TargetController {
     private static EnvironmentView env(java.sql.ResultSet rs) throws java.sql.SQLException {
         String url = rs.getString(6);
         return new EnvironmentView(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4), rs.getString(5), url, rs.getString(7), rs.getString(8),
-                rs.getString(9), rs.getBoolean(18), rs.getBoolean(19), ExecutionLock.isLocal(url), array(rs, 10), array(rs, 11), rs.getString(12), rs.getInt(13), rs.getString(14),
+                rs.getString(9), rs.getBoolean(18), rs.getBoolean(19), ExecutionLock.isLocal(url), rs.getBoolean(20), array(rs, 10), array(rs, 11), rs.getString(12), rs.getInt(13), rs.getString(14),
                 rs.getString(15), rs.getString(16), rs.getObject(17, OffsetDateTime.class));
     }
 
@@ -220,10 +227,10 @@ public class TargetController {
 
         UUID id = UUID.randomUUID();
         db.sql("""
-                INSERT INTO environment (organization_id, id, target_id, name, classification, base_url, authorized_by, authorized_at,
+                INSERT INTO environment (organization_id, id, target_id, name, classification, base_url,
                                          channel, api_spec_path, api_slow_ms, api_seed_paths, description, active)
-                VALUES (?,?,?,?,?,?,?, CASE WHEN ?::text IS NULL THEN NULL ELSE now() END, ?,?,?,?,?,?)
-                """).params(p.organizationId(), id, targetId, body.name(), body.classification(), baseUrl, body.authorizedBy(), body.authorizedBy(),
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                """).params(p.organizationId(), id, targetId, body.name(), body.classification(), baseUrl,
                 channel, body.apiSpecPath(), body.apiSlowMillis() == null ? 1000 : body.apiSlowMillis(), seeds.toArray(String[]::new), body.description() == null ? "" : body.description(),
                 body.active() == null || body.active()).update();
         String origin = BaseUrl.origin(baseUrl);
@@ -280,5 +287,72 @@ public class TargetController {
         one(p, projectId, environmentId);
         db.sql("UPDATE environment SET archived_at = now() WHERE organization_id = ? AND id = ?").params(p.organizationId(), environmentId).update();
         audit.record(p.organizationId(), projectId, p.email(), "ENVIRONMENT_ARCHIVED", environmentId.toString(), "");
+    }
+
+    // ---- written authorization to test a real environment
+    // A record only. Nothing here makes an environment executable: that stays ExecutionLock's decision alone.
+
+    /** An identifier such as a document number: no line breaks, no markup, nothing long enough to be the document itself. */
+    private static final java.util.regex.Pattern REFERENCE = java.util.regex.Pattern.compile("[A-Za-z0-9 ._:/#()-]{3,120}");
+
+    private record Authorization(String baseUrl, boolean archived, String reference, String authorizedBy, OffsetDateTime authorizedAt) {
+        AuthorizationView view() {
+            return new AuthorizationView(reference != null, reference, authorizedBy, authorizedAt);
+        }
+    }
+
+    /** Locks the row when changing it, so two admins cannot record over each other and leave the audit out of step. */
+    private Authorization authorization(Principal p, UUID projectId, UUID environmentId, boolean forUpdate) {
+        return db.sql("""
+                SELECT e.base_url, e.archived_at IS NOT NULL, e.authorization_reference, e.authorized_by, e.authorized_at FROM environment e
+                JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id
+                WHERE e.organization_id = ? AND t.project_id = ? AND e.id = ?""" + (forUpdate ? " FOR UPDATE OF e" : ""))
+                .params(p.organizationId(), projectId, environmentId)
+                .query((rs, n) -> new Authorization(rs.getString(1), rs.getBoolean(2), rs.getString(3), rs.getString(4), rs.getObject(5, OffsetDateTime.class)))
+                .optional().orElseThrow(() -> new NotFoundException("Environment"));
+    }
+
+    @GetMapping("/environments/{environmentId}/authorization")
+    public AuthorizationView authorization(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID environmentId) {
+        access.require(p, projectId, Access.Level.PROJECT_ADMIN);
+        return authorization(p, projectId, environmentId, false).view();
+    }
+
+    /** Records, or replaces, the written authorization. Organization Admin only, so whoever adds a target cannot also authorize it. */
+    @PutMapping("/environments/{environmentId}/authorization")
+    @Transactional
+    public AuthorizationView recordAuthorization(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID environmentId,
+                                                 @RequestBody RecordAuthorization body) {
+        access.require(p, projectId, Access.Level.PROJECT_ADMIN);
+        access.requireOrganizationAdmin(p);
+        Authorization current = authorization(p, projectId, environmentId, true);
+        if (current.archived()) throw new ConflictException("This environment is archived");
+        if (ExecutionLock.isLocal(current.baseUrl())) throw new ConflictException("The local fixture needs no authorization");
+        String reference = body == null || body.reference() == null ? "" : body.reference().strip();
+        if (!REFERENCE.matcher(reference).matches()) throw new ConflictException("Authorization reference is missing or invalid");
+        if (reference.equals(current.reference())) return current.view();
+        db.sql("UPDATE environment SET authorization_reference = ?, authorized_by = ?, authorized_at = now() WHERE organization_id = ? AND id = ?")
+                .params(reference, p.email(), p.organizationId(), environmentId).update();
+        String origin = BaseUrl.origin(current.baseUrl());
+        if (current.reference() == null) {
+            audit.record(p.organizationId(), projectId, p.email(), "ENVIRONMENT_AUTHORIZATION_RECORDED", environmentId.toString(), origin + " ref=" + reference);
+        } else {
+            audit.record(p.organizationId(), projectId, p.email(), "ENVIRONMENT_AUTHORIZATION_UPDATED", environmentId.toString(), origin + " ref=" + current.reference() + " -> " + reference);
+        }
+        return authorization(p, projectId, environmentId, false).view();
+    }
+
+    @DeleteMapping("/environments/{environmentId}/authorization")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @Transactional
+    public void revokeAuthorization(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID environmentId) {
+        access.require(p, projectId, Access.Level.PROJECT_ADMIN);
+        access.requireOrganizationAdmin(p);
+        Authorization current = authorization(p, projectId, environmentId, true);
+        if (current.reference() == null) throw new ConflictException("This environment has no authorization");
+        db.sql("UPDATE environment SET authorization_reference = NULL, authorized_by = NULL, authorized_at = NULL WHERE organization_id = ? AND id = ?")
+                .params(p.organizationId(), environmentId).update();
+        audit.record(p.organizationId(), projectId, p.email(), "ENVIRONMENT_AUTHORIZATION_REVOKED", environmentId.toString(),
+                BaseUrl.origin(current.baseUrl()) + " ref=" + current.reference());
     }
 }

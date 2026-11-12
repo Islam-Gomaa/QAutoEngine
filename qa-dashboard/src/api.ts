@@ -57,7 +57,7 @@ export interface Target { id: string; name: string; type: 'WEB' | 'API' | 'MOBIL
 export interface BaseUrlCheck { baseUrl: string; origin: string; executable: boolean }
 export interface Environment {
   id: string; targetId: string; targetName: string; name: string; classification: string; baseUrl: string; mode: string; channel: 'WEB' | 'API'; description: string;
-  active: boolean; applicationActive: boolean; executable: boolean; includePaths: string[]; excludePaths: string[]; apiSpecPath: string | null; apiSlowMillis: number; loginMethod: string | null; credentialName: string | null;
+  active: boolean; applicationActive: boolean; executable: boolean; authorized?: boolean; includePaths: string[]; excludePaths: string[]; apiSpecPath: string | null; apiSlowMillis: number; loginMethod: string | null; credentialName: string | null;
   lastRunStatus: string | null; lastRunAt: string | null;
 }
 export interface Suite { id: string; name: string; description: string; module: string; channel: 'WEB' | 'API'; archivedAt: string | null; cases: number; automatedCases: number }
