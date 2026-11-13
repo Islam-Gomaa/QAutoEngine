@@ -51,7 +51,7 @@ import tools.jackson.databind.ObjectMapper;
 @AutoConfigureMockMvc
 class AiProviderTest extends IntegrationTestBase {
 
-    static final String KEY = "sk-test-not-a-real-key-7f3a";
+    static final String KEY = "test-only-placeholder-key";
     static final HttpServer STUB;
     static final List<Map<String, Object>> REQUESTS = new CopyOnWriteArrayList<>();
     static final AtomicReference<Reply> REPLY = new AtomicReference<>();
