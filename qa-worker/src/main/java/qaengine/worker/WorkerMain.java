@@ -262,7 +262,17 @@ public final class WorkerMain {
     }
 
     private static String base(JobAssignment job) {
-        return job.startUrl().replaceAll("/+$", "");
+        return origin(job.startUrl());
+    }
+
+    /**
+     * Where sign-in paths are resolved: the environment's origin. Login, submit and success paths are paths on the
+     * site, as the gate's sign-in exception already treats the submit path. Appending them to the base URL's own path
+     * sent an application at https://host/app/ to /app/app/login.
+     */
+    static String origin(String startUrl) {
+        java.net.URI u = java.net.URI.create(startUrl);
+        return u.getScheme() + "://" + u.getRawAuthority();
     }
 
     private static LoginFlow.Spec spec(JobAssignment job) {

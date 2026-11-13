@@ -279,9 +279,12 @@ public class RuleBasedAdvisor implements TestDesignAdvisor {
             List<Step> steps = b.open(p);
             String to = l.toTitle() == null || l.toTitle().isBlank() ? l.toPath() : l.toTitle();
             steps.add(new Step("Use " + quote(l.via()), "The page " + quote(to) + " opens at " + l.toPath(), Basis.OBSERVED));
+            // A link can be recorded from a page while it was only on screen after something was used, such as a tab.
+            // A script opens the page and uses the link at once, so it is planned only for a link the page shows as it opens.
+            boolean onScreen = p.actions().stream().anyMatch(a -> "LINK".equals(a.kind()) && l.via().strip().equals(a.name() == null ? null : a.name().strip()));
             b.add("nav:" + p.path() + "->" + l.toPath(), "NAVIGATION", "From " + pageName(p) + " to " + to + " by " + quote(l.via()), "Checks a way through the application that discovery took.",
                     p, "LOW", List.of("navigation"), steps, List.of(quote(l.via()) + " led from " + p.path() + " to " + l.toPath()), List.of(), List.of(),
-                    ScriptPlanner.navigation(p.path(), l.via(), l.toPath(), null), READ_ONLY, "LOW");
+                    onScreen ? ScriptPlanner.navigation(p.path(), l.via(), l.toPath(), null) : Optional.empty(), READ_ONLY, "LOW");
         }
     }
 }

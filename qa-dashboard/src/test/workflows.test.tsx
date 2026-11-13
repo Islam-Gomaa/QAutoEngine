@@ -390,6 +390,25 @@ describe('execution', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Start fixture run' }));
     await waitFor(() => expect(calls.find((c) => c.method === 'POST')?.body).toMatchObject({ environmentId: 'e1', suiteId: null }));
   });
+  it('offers a fixture environment and a suite of approved scripts, and enables Start only once one is chosen', async () => {
+    const clinic = env({ id: 'c1', targetName: 'Clinic records', name: 'Local fixture', baseUrl: 'http://fixture.qa.internal:8090/clinic/', lockReason: null });
+    const locked = env({ id: 'r1', targetName: 'LPR system', name: 'Test', executable: false, lockReason: 'HOST_NOT_APPROVED', baseUrl: 'https://real.example/' });
+    const suite = { id: 's1', name: 'Clinic smoke', description: '', module: 'clinic', channel: 'WEB', archivedAt: null, cases: 12, automatedCases: 9 };
+    const calls = server({ ...routes, 'GET /projects/p1/environments': [locked, clinic], 'GET /projects/p1/suites': [suite],
+      'POST /projects/p1/runs': { id: 'r9' }, 'GET /projects/p1/runs/r9/progress': () => new Response('{}', { status: 404 }) });
+    mount(<App />, '/execution');
+    const start = await screen.findByRole('button', { name: 'Start fixture run' });
+    expect(start).toBeDisabled();
+    expect(screen.queryByTestId('no-runnable-environment')).toBeNull();
+    await userEvent.click(screen.getByLabelText('Environment'));
+    expect(await screen.findByRole('option', { name: 'LPR system / Test (Web), locked' })).toHaveAttribute('aria-disabled', 'true');
+    await userEvent.click(screen.getByRole('option', { name: 'Clinic records / Local fixture (Web)' }));
+    await userEvent.click(screen.getByLabelText('Scope'));
+    await userEvent.click(await screen.findByRole('option', { name: 'Clinic smoke (9 automated)' }));
+    expect(start).toBeEnabled();
+    await userEvent.click(start);
+    await waitFor(() => expect(calls.find((c) => c.method === 'POST')?.body).toMatchObject({ environmentId: 'c1', suiteId: 's1' }));
+  });
   it('shows the server refusal', async () => {
     server({ ...routes, 'POST /projects/p1/runs': () => new Response(JSON.stringify({ detail: 'Real targets are locked' }), { status: 409 }) });
     mount(<App />, '/execution');

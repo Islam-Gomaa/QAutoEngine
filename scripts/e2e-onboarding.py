@@ -140,7 +140,13 @@ rejected = by_rule["NAVIGATION"][0]["testCase"]["id"]
 check("rejecting works", call("POST", f"/api/v1/projects/{project}/test-cases/{rejected}/reject", {"note": "not needed"})["status"] == "REJECTED")
 suite = call("POST", f"/api/v1/projects/{project}/suites", {"name": "Console checks", "channel": "WEB"})["id"]
 call("PATCH", f"/api/v1/projects/{project}/test-cases/{pending}", {"title": by_rule["REQUIRED_FIELD"][0]["testCase"]["title"], "suiteId": suite})
-check("a suite holding only generated cases cannot be run", status_of("POST", f"/api/v1/projects/{project}/runs", {"environmentId": env["id"], "suiteId": suite}) == 409)
+# A generated case runs only once a person approved it, and only with a validated script.
+waiting = by_rule["PAGE_OPENS"][0]["testCase"]
+unreviewed = call("POST", f"/api/v1/projects/{project}/suites", {"name": "Unreviewed", "channel": "WEB"})["id"]
+call("PATCH", f"/api/v1/projects/{project}/test-cases/{waiting['id']}", {"title": waiting["title"], "suiteId": unreviewed, "tags": waiting["tags"], "module": waiting["module"]})
+check("a suite holding only an unapproved generated case cannot be run", status_of("POST", f"/api/v1/projects/{project}/runs", {"environmentId": env["id"], "suiteId": unreviewed}) == 409)
+counts = {s["id"]: s["automatedCases"] for s in call("GET", f"/api/v1/projects/{project}/suites")}
+check("an approved generated case with a script makes its suite runnable", counts[suite] == 1 and counts[unreviewed] == 0, json.dumps(counts))
 check("the approved case is recorded by a person", status_of("POST", f"/api/v1/projects/{project}/test-cases/{pending}/results", {"verdict": "PASS"}) == 200)
 
 print("== 5. The password is nowhere it should not be")

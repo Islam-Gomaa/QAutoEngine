@@ -88,7 +88,9 @@ class ExecutableCaseTest extends IntegrationTestBase {
         // The same address after a tab was used on it: a state a script that only opens the page cannot reach.
         discoveries.page(org, run, 1, new DiscoveredPage("a3", 3, 0, BASE + "/app/console/users", "Users", List.of("Users", "Invited"), List.of(), List.of(),
                 List.of(new TableReport("Invitations", List.of("Email", "Sent"), 1)), List.of(), List.of()));
-        discoveries.edges(org, run, 1, List.of(new DiscoveredEdge("a1", "b2", "Billing"), new DiscoveredEdge("a1", "a3", "Invited")));
+        // A link recorded from the users page that was only on screen after a tab was used: not among the page's own actions.
+        discoveries.page(org, run, 1, new DiscoveredPage("c4", 4, 1, BASE + "/app/console/archive", "Archive", List.of("Archive"), List.of(), List.of(), List.of(), List.of(), List.of()));
+        discoveries.edges(org, run, 1, List.of(new DiscoveredEdge("a1", "b2", "Billing"), new DiscoveredEdge("a1", "a3", "Invited"), new DiscoveredEdge("a1", "c4", "Archived users")));
     }
 
     MockHttpServletResponse call(Principal p, MockHttpServletRequestBuilder r, Object body) throws Exception {
@@ -157,6 +159,11 @@ class ExecutableCaseTest extends IntegrationTestBase {
         assertTrue(destructive.get("script").isNull());
         assertEquals("HIGH", destructive.get("review").get("provenance").get("risk").asString());
         assertEquals("LOW", destructive.get("review").get("provenance").get("confidence").asString());
+
+        JsonNode shown = ok(viewer, get(base() + "/test-cases/" + caseWithRule("NAVIGATION", "Billing")), null);
+        assertTrue(shown.get("testCase").get("executable").asBoolean(), "a link the page shows as it opens is scripted");
+        JsonNode hidden = ok(viewer, get(base() + "/test-cases/" + caseWithRule("NAVIGATION", "Archived users")), null);
+        assertFalse(hidden.get("testCase").get("executable").asBoolean(), "a link only on screen after using something is left for a person");
 
         long invitations = db.sql("SELECT count(*) FROM test_case WHERE organization_id = ? AND title LIKE '%Invitations%' AND 'executable' = ANY(tags)").param(org).query(Long.class).single();
         assertEquals(0, invitations, "a table seen only after using a tab gets no script that would only open the page");
