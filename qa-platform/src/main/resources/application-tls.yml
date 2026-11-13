@@ -1,0 +1,12 @@
+# Used in every deployment. Tests run without it.
+server:
+  ssl:
+    certificate: /etc/qa-pki/platform.crt
+    certificate-private-key: /etc/qa-pki/platform.key
+    enabled-protocols: TLSv1.3
+qa:
+  internal-tls:
+    certificate: /etc/qa-pki/platform.crt
+    key: /etc/qa-pki/platform.key
+    truststore: /etc/qa-pki/truststore.p12
+    password-file: /etc/qa-pki/password

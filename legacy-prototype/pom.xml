@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>tech.wakeb</groupId>
+        <artifactId>qa-engine-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+    <artifactId>legacy-prototype</artifactId>
+    <description>Frozen V6 prototype. Contained to loopback. Nothing may depend on this module.</description>
+    <properties>
+        <maven.compiler.release>17</maven.compiler.release>
+        <allure.version>2.27.0</allure.version>
+    </properties>
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>tech.wakeb</groupId>
+                <artifactId>qa-bom</artifactId>
+                <version>${project.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+    <dependencies>
+        <dependency><groupId>org.seleniumhq.selenium</groupId><artifactId>selenium-java</artifactId></dependency>
+        <dependency><groupId>org.testng</groupId><artifactId>testng</artifactId><version>7.11.0</version></dependency>
+        <dependency><groupId>io.qameta.allure</groupId><artifactId>allure-testng</artifactId><version>${allure.version}</version></dependency>
+        <dependency><groupId>io.qameta.allure</groupId><artifactId>allure-attachments</artifactId><version>${allure.version}</version></dependency>
+        <dependency><groupId>io.qameta.allure</groupId><artifactId>allure-java-commons</artifactId><version>${allure.version}</version></dependency>
+        <dependency><groupId>io.rest-assured</groupId><artifactId>rest-assured</artifactId><version>5.4.0</version></dependency>
+        <dependency><groupId>com.github.stephenc.monte</groupId><artifactId>monte-screen-recorder</artifactId><version>0.7.7.0</version></dependency>
+        <dependency><groupId>org.apache.poi</groupId><artifactId>poi-ooxml</artifactId><version>5.2.5</version></dependency>
+        <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-simple</artifactId><version>2.0.9</version></dependency>
+    </dependencies>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- Only the containment test runs by default. The old suites target the
+                         configured URL and stay off until replaced. -->
+                    <includes><include>**/LoopbackGuardTest.java</include></includes>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

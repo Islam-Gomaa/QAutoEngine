@@ -1,0 +1,9 @@
+# Real hosts this deployment may test: the infrastructure key. Copy to deploy/approved-hosts.txt (not committed).
+# The platform, the worker and the egress proxy read it read-only at start; restart them together after a change:
+#   ./scripts/apply-approved-hosts.sh
+#
+# One host per line, exact name, optional port (443 when none), who approved it and the change that did:
+#   staging.example.com:443  approved-by=ops@example.com  change=CHG-1042  reason=Pilot of the billing portal
+#
+# No wildcards, no IP addresses. Approving a host does not let anything run on its own: an Organization Admin must
+# also record the environment's written authorization, with its expiry, in QAutoEngine.

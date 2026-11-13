@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>tech.wakeb</groupId>
+        <artifactId>qa-engine-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+    <artifactId>qa-dashboard</artifactId>
+    <packaging>pom</packaging>
+    <properties><skipTests>false</skipTests></properties>
+    <description>React dashboard, served by the platform from the same origin.</description>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.6.2</version>
+                <executions>
+                    <execution>
+                        <id>npm-ci</id><phase>generate-resources</phase><goals><goal>exec</goal></goals>
+                        <configuration><executable>npm</executable><arguments><argument>ci</argument></arguments></configuration>
+                    </execution>
+                    <execution>
+                        <id>npm-test</id><phase>generate-resources</phase><goals><goal>exec</goal></goals>
+                        <configuration><skip>${skipTests}</skip><executable>npm</executable><arguments><argument>test</argument></arguments></configuration>
+                    </execution>
+                    <execution>
+                        <id>npm-build</id><phase>generate-resources</phase><goals><goal>exec</goal></goals>
+                        <configuration><executable>npm</executable><arguments><argument>run</argument><argument>build</argument></arguments></configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

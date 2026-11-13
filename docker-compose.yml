@@ -1,0 +1,153 @@
+# QA Engine on one host (ADR-024). Secrets come from files in deploy/secrets, which are never committed.
+# The fixture profile adds the planted-defect site for end-to-end and attack tests.
+name: qa-engine
+
+x-worker: &worker
+  build: { context: ., dockerfile: deploy/worker/Dockerfile }
+  image: qa-engine/worker:dev
+  restart: always
+  init: true
+  read_only: true
+  user: pwuser
+  cap_drop: [ALL]
+  cap_add: [SYS_CHROOT]
+  security_opt:
+    - no-new-privileges:true
+    - seccomp=deploy/worker/seccomp.json
+  shm_size: 256m
+  tmpfs:
+    - /tmp:rw,exec,size=512m
+    - /home/pwuser:rw,exec,size=128m,uid=1001
+  mem_limit: 2g
+  cpus: 2
+  pids_limit: 512
+  environment:
+    QA_INTERNAL_URL: https://gateway:8081
+    QA_TLS_DIR: /etc/qa-pki
+    QA_EGRESS_PROXY: http://egress:3128
+    QA_WORKER_KEY_FILE: /run/secrets/worker_key
+    QA_APPROVED_HOSTS_FILE: /etc/qa/approved-hosts.txt
+  secrets: [worker_key]
+  # The deployment's approved real hosts: the same file the platform and the proxy read.
+  volumes: [./deploy/secrets/pki/worker:/etc/qa-pki:ro, "${QA_APPROVED_HOSTS:-./deploy/approved-hosts.txt}:/etc/qa/approved-hosts.txt:ro"]
+  networks: [exec]
+  depends_on: [gateway, egress]
+
+services:
+  postgres:
+    image: postgres@sha256:80df0884d0d3b7f0f7b2c37f273b1c12d5fd66e25aaef2e19ebf95908d620f11
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: qaengine
+      POSTGRES_USER: qaengine
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes: [pgdata:/var/lib/postgresql]
+    networks: [core]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U qaengine]
+      interval: 5s
+      retries: 20
+
+  platform:
+    build: { context: ., dockerfile: deploy/platform/Dockerfile }
+    image: qa-engine/platform:dev
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    environment:
+      QA_DB_URL: jdbc:postgresql://postgres:5432/qaengine
+      QA_DB_USER: qaengine
+      QA_DB_PASSWORD_FILE: /run/secrets/db_password
+      QA_WORKER_KEY_FILE: /run/secrets/worker_key
+      QA_INTERNAL_PORT: "8081"
+      QA_EVIDENCE_ROOT: /var/lib/qa-engine/evidence
+      QA_MASTER_KEY_FILE: /run/secrets/master_key
+      QA_BOOTSTRAP_ADMIN_EMAIL: ${QA_ADMIN_EMAIL:-admin@qa.local}
+      QA_BOOTSTRAP_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+      QA_COOKIE_SECURE: ${QA_COOKIE_SECURE:-true}
+      QA_APPROVED_HOSTS_FILE: /etc/qa/approved-hosts.txt
+      SPRING_PROFILES_ACTIVE: tls
+    secrets: [db_password, master_key, admin_password, worker_key]
+    volumes:
+      - evidence:/var/lib/qa-engine/evidence
+      - ./deploy/secrets/pki/platform:/etc/qa-pki:ro
+      - ${QA_APPROVED_HOSTS:-./deploy/approved-hosts.txt}:/etc/qa/approved-hosts.txt:ro
+    networks: [edge, core, workerapi]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  # Workers reach the platform only through this. It forwards TCP and cannot read the TLS inside.
+  gateway:
+    image: haproxy@sha256:96ec3c75a9264ba94e733eeacb44051ed6e7b79bb77a73c2c36f236b6423f1f0
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    volumes: [./deploy/gateway/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro]
+    networks: [workerapi, exec]
+    depends_on: [platform]
+
+  egress:
+    build: { context: deploy/egress }
+    image: qa-engine/egress:dev
+    restart: unless-stopped
+    read_only: true
+    # No NET_RAW: this container handles hostile traffic and must not be able to spoof the network.
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/var/spool/squid, /var/log/squid, /var/run, /run, /tmp]
+    volumes:
+      - ./deploy/egress/squid.conf:/etc/squid/squid.conf:ro
+      - ./deploy/egress/allowed-hosts.txt:/etc/squid/allowed-hosts.txt:ro
+      - ./deploy/egress/private-approved.txt:/etc/squid/private-approved.txt:ro
+      - ${QA_APPROVED_HOSTS:-./deploy/approved-hosts.txt}:/etc/qa/approved-hosts.txt:ro
+    networks: [exec, egress]
+
+  worker:
+    <<: *worker
+
+  caddy:
+    image: caddy@sha256:ae5e525ca6773b0a4ce579c774cb39b3147e1576084139229517bdbcfe3ed812
+    restart: unless-stopped
+    ports: ["${QA_HTTPS_PORT:-8443}:443"]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    volumes:
+      - ./deploy/edge/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/secrets/pki/edge:/etc/qa-pki:ro
+    networks: [edge]
+    depends_on: [platform]
+
+  fixture:
+    profiles: [fixture]
+    build: { context: ., dockerfile: deploy/fixture/Dockerfile }
+    image: qa-engine/fixture:dev
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    networks:
+      egress:
+        aliases: [fixture.qa.internal, rebind.qa.internal]
+
+networks:
+  edge: {}
+  core: { internal: true }
+  workerapi: { internal: true }
+  exec: { internal: true }
+  egress: {}
+
+volumes:
+  pgdata: {}
+  evidence: {}
+
+secrets:
+  db_password: { file: deploy/secrets/db_password }
+  master_key: { file: deploy/secrets/master_key }
+  admin_password: { file: deploy/secrets/admin_password }
+  worker_key: { file: deploy/secrets/worker_key }

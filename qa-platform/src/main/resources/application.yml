@@ -1,0 +1,38 @@
+spring:
+  application:
+    name: qa-platform
+  datasource:
+    url: ${QA_DB_URL:jdbc:postgresql://localhost:5432/qaengine}
+    username: ${QA_DB_USER:qaengine}
+    password: ${QA_DB_PASSWORD:}
+  flyway:
+    enabled: true
+server:
+  port: 8080
+  error:
+    include-message: never
+    include-stacktrace: never
+  servlet:
+    session:
+      cookie:
+        http-only: true
+        same-site: strict
+        secure: ${QA_COOKIE_SECURE:true}
+      timeout: 8h
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+qa:
+  evidence:
+    root: ${QA_EVIDENCE_ROOT:/var/lib/qa-engine/evidence}
+  internal-port: ${QA_INTERNAL_PORT:0}
+  master-key-file: ${QA_MASTER_KEY_FILE:}
+  worker-key-file: ${QA_WORKER_KEY_FILE:}
+  worker-key: ${QA_WORKER_KEY:}
+  # The deployment's approved real hosts (docs/guides/REAL_APPLICATION_ONBOARDING.md). Unset: the local fixture only.
+  approved-hosts-file: ${QA_APPROVED_HOSTS_FILE:}
+  bootstrap:
+    admin-email: ${QA_BOOTSTRAP_ADMIN_EMAIL:}
+    admin-password-file: ${QA_BOOTSTRAP_ADMIN_PASSWORD_FILE:}

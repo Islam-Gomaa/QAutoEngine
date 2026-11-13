@@ -1,0 +1,11 @@
+package qaengine.platform;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.modulith.core.ApplicationModules;
+
+class ModuleStructureTest {
+    @Test
+    void moduleBoundariesHold() {
+        ApplicationModules.of(PlatformApplication.class).verify();
+    }
+}

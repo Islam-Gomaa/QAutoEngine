@@ -1,0 +1,16 @@
+{
+  "project": "Clinic records (fixture)",
+  "description": "The fixture's clinic application: server-rendered, behind a password sign-in",
+  "application": { "name": "Clinic records", "type": "WEB", "description": "Patient records, served by the local fixture under /clinic" },
+  "environment": { "name": "Local fixture", "classification": "LOCAL", "baseUrl": "http://fixture.qa.internal:8090/clinic/", "includePaths": ["/clinic"], "executionMode": "READ_ONLY" },
+  "authentication": {
+    "name": "Clinic tester", "method": "PASSWORD", "username": "fixture-user", "password": "fixture-canary-password-7Q2x",
+    "loginPath": "/clinic/login", "submitPath": "/clinic/session", "successPath": "/clinic/", "timeoutSeconds": 15,
+    "locators": { "username": { "strategy": "LABEL", "value": "Email" }, "password": { "strategy": "LABEL", "value": "Password" },
+                  "submit": { "strategy": "ROLE", "value": "button", "name": "Sign in" }, "success": { "strategy": "ROLE", "value": "heading", "name": "Dashboard" },
+                  "failure": { "strategy": "ROLE", "value": "alert" } }
+  },
+  "discovery": { "expectPaths": ["/clinic/", "/clinic/patients", "/clinic/appointments", "/clinic/reports/invoices", "/clinic/visits/"] },
+  "suite": "Clinic smoke",
+  "approve": ["READ_ONLY"]
+}

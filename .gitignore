@@ -9,6 +9,9 @@ target/
 .idea/jarRepositories.xml
 .idea/compiler.xml
 .idea/libraries/
+.idea/encodings.xml
+.idea/checkstyle-idea.xml
+.idea/google-java-format.xml
 *.iws
 *.iml
 *.ipr
@@ -37,3 +40,16 @@ build/
 
 ### Mac OS ###
 .DS_Store
+### QA Engine run output ###
+learning_v6.dat
+learning_v6.dat.tmp
+allure-results/
+allure-report/
+deploy/secrets/*
+!deploy/secrets/.gitkeep
+qa-dashboard/node_modules/
+qa-dashboard/dist/
+backups/
+
+# The deployment's approved real hosts: operator-managed, specific to each deployment.
+deploy/approved-hosts.txt

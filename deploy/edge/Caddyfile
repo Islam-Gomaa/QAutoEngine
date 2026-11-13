@@ -1,0 +1,9 @@
+https://localhost {
+    tls internal
+    reverse_proxy https://platform:8080 {
+        transport http {
+            tls_trust_pool file /etc/qa-pki/ca.crt
+            tls_server_name platform
+        }
+    }
+}
