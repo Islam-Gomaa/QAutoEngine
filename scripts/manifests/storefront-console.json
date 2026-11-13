@@ -1,0 +1,16 @@
+{
+  "project": "Storefront console (fixture)",
+  "description": "The fixture storefront's admin console: a different sign-in form, found by test ids",
+  "application": { "name": "Storefront console", "type": "WEB", "description": "The admin console of the fixture storefront" },
+  "environment": { "name": "Local fixture", "classification": "LOCAL", "baseUrl": "http://fixture.qa.internal:8090/app/console", "includePaths": ["/app"], "executionMode": "READ_ONLY" },
+  "authentication": {
+    "name": "Console tester", "method": "PASSWORD", "username": "fixture-user", "password": "fixture-canary-password-7Q2x",
+    "loginPath": "/app/login", "submitPath": "/app/session", "successPath": "/app/console", "timeoutSeconds": 15,
+    "locators": { "username": { "strategy": "LABEL", "value": "Email" }, "password": { "strategy": "LABEL", "value": "Password" },
+                  "submit": { "strategy": "TEST_ID", "value": "sign-in" }, "success": { "strategy": "TEST_ID", "value": "account-menu" },
+                  "failure": { "strategy": "TEST_ID", "value": "sign-in-error" } }
+  },
+  "discovery": { "expectPaths": ["/app/console", "/app/console/users", "/app/console/billing", "/app/console/settings"] },
+  "suite": "Console smoke",
+  "approve": ["READ_ONLY"]
+}

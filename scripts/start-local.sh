@@ -6,6 +6,8 @@ cd "$(dirname "$0")/.."
 
 [ -f deploy/secrets/admin_password ] || ./scripts/generate-secrets.sh
 [ -d deploy/secrets/pki ] || ./scripts/generate-pki.sh
+# No real host is approved until an operator adds one. The file must exist, or Docker would mount a directory there.
+[ -f deploy/approved-hosts.txt ] || cp deploy/approved-hosts.example deploy/approved-hosts.txt
 
 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 ./mvnw -B -q clean install -DskipTests
 docker compose --profile fixture build

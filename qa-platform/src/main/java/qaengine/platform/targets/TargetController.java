@@ -391,5 +391,46 @@ public class TargetController {
                 .params(p.organizationId(), environmentId).update();
         audit.record(p.organizationId(), projectId, p.email(), "ENVIRONMENT_AUTHORIZATION_REVOKED", environmentId.toString(),
                 BaseUrl.origin(current.baseUrl()) + " " + current.described());
+        // A looser mode on a real target rested on the authorization: it goes with it.
+        int tightened = db.sql("UPDATE execution_policy SET mode = 'READ_ONLY' WHERE organization_id = ? AND environment_id = ? AND mode <> 'READ_ONLY'")
+                .params(p.organizationId(), environmentId).update();
+        if (tightened > 0) audit.record(p.organizationId(), projectId, p.email(), "ENVIRONMENT_MODE_CHANGED", environmentId.toString(), "-> READ_ONLY: authorization revoked");
+    }
+
+    // ---- execution mode: what a run may do on this environment. The gate in the worker enforces it.
+
+    public record SetMode(String mode) {}
+
+    /** The modes a person can choose. AUTHORIZED_MUTATION is not built, so it is never offered. */
+    static final Set<String> MODES = Set.of("READ_ONLY", "VALIDATION_ONLY");
+
+    /**
+     * Sets what runs on this environment may do. READ_ONLY reads; VALIDATION_ONLY may also type into fields to check
+     * their validation, and never submits. Organization Admin only, audited. Production stays READ_ONLY, and a real
+     * target may type only under a written authorization in date. Where a run can go is not changed by this: that stays
+     * with ExecutionLock and Eligibility.
+     */
+    @PutMapping("/environments/{environmentId}/execution-mode")
+    @Transactional
+    public EnvironmentView setMode(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID environmentId, @RequestBody SetMode body) {
+        access.require(p, projectId, Access.Level.PROJECT_ADMIN);
+        access.requireOrganizationAdmin(p);
+        EnvironmentView current = one(p, projectId, environmentId);
+        String mode = body == null || body.mode() == null ? "" : body.mode();
+        if (mode.equals("AUTHORIZED_MUTATION")) throw new ConflictException("Mutation runs are not available");
+        if (!MODES.contains(mode)) throw new ConflictException("Unknown execution mode");
+        boolean archived = db.sql("SELECT archived_at IS NOT NULL FROM environment WHERE organization_id = ? AND id = ?").params(p.organizationId(), environmentId)
+                .query(Boolean.class).single();
+        if (archived) throw new ConflictException("This environment is archived");
+        if (mode.equals(current.mode())) return current;
+        if (!mode.equals("READ_ONLY")) {
+            if (current.classification().equals("PRODUCTION")) throw new ConflictException("Production environments stay READ_ONLY");
+            if (!Eligibility.isFixture(current.baseUrl()) && !current.authorized()) {
+                throw new ConflictException("A real target types into fields only under a written authorization in date");
+            }
+        }
+        db.sql("UPDATE execution_policy SET mode = ? WHERE organization_id = ? AND environment_id = ?").params(mode, p.organizationId(), environmentId).update();
+        audit.record(p.organizationId(), projectId, p.email(), "ENVIRONMENT_MODE_CHANGED", environmentId.toString(), current.mode() + " -> " + mode);
+        return one(p, projectId, environmentId);
     }
 }

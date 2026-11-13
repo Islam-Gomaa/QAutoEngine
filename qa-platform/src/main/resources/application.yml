@@ -31,6 +31,8 @@ qa:
   master-key-file: ${QA_MASTER_KEY_FILE:}
   worker-key-file: ${QA_WORKER_KEY_FILE:}
   worker-key: ${QA_WORKER_KEY:}
+  # The deployment's approved real hosts (docs/guides/REAL_APPLICATION_ONBOARDING.md). Unset: the local fixture only.
+  approved-hosts-file: ${QA_APPROVED_HOSTS_FILE:}
   bootstrap:
     admin-email: ${QA_BOOTSTRAP_ADMIN_EMAIL:}
     admin-password-file: ${QA_BOOTSTRAP_ADMIN_PASSWORD_FILE:}

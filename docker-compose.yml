@@ -26,8 +26,10 @@ x-worker: &worker
     QA_TLS_DIR: /etc/qa-pki
     QA_EGRESS_PROXY: http://egress:3128
     QA_WORKER_KEY_FILE: /run/secrets/worker_key
+    QA_APPROVED_HOSTS_FILE: /etc/qa/approved-hosts.txt
   secrets: [worker_key]
-  volumes: [./deploy/secrets/pki/worker:/etc/qa-pki:ro]
+  # The deployment's approved real hosts: the same file the platform and the proxy read.
+  volumes: [./deploy/secrets/pki/worker:/etc/qa-pki:ro, "${QA_APPROVED_HOSTS:-./deploy/approved-hosts.txt}:/etc/qa/approved-hosts.txt:ro"]
   networks: [exec]
   depends_on: [gateway, egress]
 
@@ -66,11 +68,13 @@ services:
       QA_BOOTSTRAP_ADMIN_EMAIL: ${QA_ADMIN_EMAIL:-admin@qa.local}
       QA_BOOTSTRAP_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
       QA_COOKIE_SECURE: ${QA_COOKIE_SECURE:-true}
+      QA_APPROVED_HOSTS_FILE: /etc/qa/approved-hosts.txt
       SPRING_PROFILES_ACTIVE: tls
     secrets: [db_password, master_key, admin_password, worker_key]
     volumes:
       - evidence:/var/lib/qa-engine/evidence
       - ./deploy/secrets/pki/platform:/etc/qa-pki:ro
+      - ${QA_APPROVED_HOSTS:-./deploy/approved-hosts.txt}:/etc/qa/approved-hosts.txt:ro
     networks: [edge, core, workerapi]
     depends_on:
       postgres: { condition: service_healthy }
@@ -101,6 +105,7 @@ services:
       - ./deploy/egress/squid.conf:/etc/squid/squid.conf:ro
       - ./deploy/egress/allowed-hosts.txt:/etc/squid/allowed-hosts.txt:ro
       - ./deploy/egress/private-approved.txt:/etc/squid/private-approved.txt:ro
+      - ${QA_APPROVED_HOSTS:-./deploy/approved-hosts.txt}:/etc/qa/approved-hosts.txt:ro
     networks: [exec, egress]
 
   worker:

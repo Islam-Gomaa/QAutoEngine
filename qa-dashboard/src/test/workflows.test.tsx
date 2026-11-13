@@ -401,13 +401,43 @@ describe('execution', () => {
     expect(start).toBeDisabled();
     expect(screen.queryByTestId('no-runnable-environment')).toBeNull();
     await userEvent.click(screen.getByLabelText('Environment'));
-    expect(await screen.findByRole('option', { name: 'LPR system / Test (Web), locked' })).toHaveAttribute('aria-disabled', 'true');
+    expect(await screen.findByRole('option', { name: 'LPR system / Test (Web), locked: host not approved' })).toHaveAttribute('aria-disabled', 'true');
     await userEvent.click(screen.getByRole('option', { name: 'Clinic records / Local fixture (Web)' }));
     await userEvent.click(screen.getByLabelText('Scope'));
     await userEvent.click(await screen.findByRole('option', { name: 'Clinic smoke (9 automated)' }));
     expect(start).toBeEnabled();
     await userEvent.click(start);
     await waitFor(() => expect(calls.find((c) => c.method === 'POST')?.body).toMatchObject({ environmentId: 'c1', suiteId: 's1' }));
+  });
+  it('says what each locked environment is missing, as the backend decided it', async () => {
+    const host = env({ id: 'r1', targetName: 'Real app', name: 'Staging', executable: false, lockReason: 'HOST_NOT_APPROVED', baseUrl: 'https://staging.example/' });
+    const unauthorized = env({ id: 'r2', targetName: 'Real app', name: 'QA', executable: false, lockReason: 'NOT_AUTHORIZED', baseUrl: 'https://qa.example/' });
+    const expired = env({ id: 'r3', targetName: 'Real app', name: 'UAT', executable: false, lockReason: 'AUTHORIZATION_EXPIRED', baseUrl: 'https://uat.example/' });
+    server({ ...routes, 'GET /projects/p1/environments': [host, unauthorized, expired] });
+    mount(<App />, '/execution');
+    const reasons = await screen.findAllByTestId('lock-reason');
+    expect(reasons.map((r) => r.textContent)).toEqual([
+      expect.stringContaining('Real app / Staging: Host not approved. An operator approves the host in the deployment\'s approved-hosts file'),
+      expect.stringContaining('Real app / QA: No written authorization. An Organization Admin records the authorization reference'),
+      expect.stringContaining('Real app / UAT: Authorization expired. An Organization Admin records the renewed authorization'),
+    ]);
+    expect(screen.getByRole('button', { name: 'Start fixture run' })).toBeDisabled();
+  });
+  it('lets an organization admin record an authorization, and says it does not approve the host', async () => {
+    const real = env({ id: 'r2', targetName: 'Shop', name: 'QA', executable: false, lockReason: 'NOT_AUTHORIZED', baseUrl: 'https://qa.example/' });
+    const calls = server({ ...routes, 'GET /projects/p1/targets': [{ id: 't1', name: 'Shop', type: 'WEB', description: '', active: true, archivedAt: null }],
+      'GET /projects/p1/environments': [real], 'GET /projects/p1/environments/r2/authorization': { authorized: false, expired: false, reference: null, authorizedBy: null, authorizedAt: null, expiresAt: null },
+      'PUT /projects/p1/environments/r2/authorization': { authorized: true }, 'PUT /projects/p1/environments/r2/execution-mode': real });
+    mount(<App />, '/applications');
+    const row = await screen.findByTestId('environment-row');
+    expect(row).toHaveTextContent('Locked: no written authorization');
+    await userEvent.click(within(row).getByRole('button', { name: 'Authorization' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('Recording it does not approve the host: an operator does that in the deployment');
+    await userEvent.type(within(dialog).getByLabelText(/Authorization reference/), 'QA-AUTH-7');
+    await userEvent.type(within(dialog).getByLabelText(/Valid until/), '2027-01-31');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Record authorization' }));
+    await waitFor(() => expect(calls.find((c) => c.method === 'PUT' && c.path.endsWith('/authorization'))?.body).toEqual({ reference: 'QA-AUTH-7', expiresAt: '2027-01-31T23:59:59.000Z' }));
   });
   it('shows the server refusal', async () => {
     server({ ...routes, 'POST /projects/p1/runs': () => new Response(JSON.stringify({ detail: 'Real targets are locked' }), { status: 409 }) });
@@ -422,7 +452,7 @@ describe('execution', () => {
     mount(<App />, '/execution');
     const alert = await screen.findByTestId('no-runnable-environment');
     expect(alert).toHaveTextContent('No environment in this project can be run.');
-    expect(alert).toHaveTextContent('Real targets stay locked until the pre-pilot security gate passes');
+    expect(alert).toHaveTextContent('A real target runs only when its host is approved in the deployment and a written authorization in date is recorded');
     expect(alert).not.toHaveTextContent('Activate');
     expect(screen.getByRole('button', { name: 'Start fixture run' })).toBeDisabled();
     await userEvent.click(screen.getByLabelText('Environment'));

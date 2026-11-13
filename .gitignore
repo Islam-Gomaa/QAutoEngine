@@ -50,3 +50,6 @@ deploy/secrets/*
 qa-dashboard/node_modules/
 qa-dashboard/dist/
 backups/
+
+# The deployment's approved real hosts: operator-managed, specific to each deployment.
+deploy/approved-hosts.txt

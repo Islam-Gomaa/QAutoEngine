@@ -73,6 +73,10 @@ public final class WorkerMain {
         String key = Files.readString(Path.of(System.getenv("QA_WORKER_KEY_FILE"))).trim();
         String proxy = System.getenv("QA_EGRESS_PROXY");
         String workerId = InetAddress.getLocalHost().getHostName();
+        // The same approved-hosts file the platform and the proxy read. An invalid file stops the worker here.
+        String hostsFile = System.getenv("QA_APPROVED_HOSTS_FILE");
+        ExecutionLock.configure(qaengine.core.policy.ApprovedHosts.load(hostsFile == null || hostsFile.isBlank() ? null : Path.of(hostsFile)));
+        System.out.println("approved hosts " + ExecutionLock.approved().fingerprint() + " (" + ExecutionLock.approved().entries().size() + " real hosts)");
         PlatformClient platform = new PlatformClient(base, key, InternalTls.load(Path.of(System.getenv("QA_TLS_DIR"))));
 
         JobAssignment job = null;
@@ -94,6 +98,14 @@ public final class WorkerMain {
         AtomicBoolean lost = new AtomicBoolean();
         AtomicLong lastAck = new AtomicLong(System.currentTimeMillis());
         startHeartbeat(platform, cancelled, lost, lastAck);
+        // The platform decided this run may go. The worker decides again with what it holds itself, before anything
+        // is released or opened: its own approved hosts (checked again as the browser starts), and the authorization.
+        String refusal = refusal(job, java.time.Instant.now());
+        if (refusal != null) {
+            System.err.println("refusing the job: " + refusal);
+            platform.complete(new RunCompletion("FAILED", refusal, 0, java.util.Map.of()));
+            return;
+        }
         platform.start();
 
         LoginSecret secret = job.login() == null ? null : platform.login();
@@ -270,6 +282,20 @@ public final class WorkerMain {
      * site, as the gate's sign-in exception already treats the submit path. Appending them to the base URL's own path
      * sent an application at https://host/app/ to /app/app/login.
      */
+    /**
+     * Why this worker will not run the job, or null. A real target needs its host approved in this worker's own file
+     * and a written authorization still in date; the fixture needs neither. Never trusts the classification.
+     */
+    static String refusal(JobAssignment job, java.time.Instant now) {
+        if (ExecutionLock.isLocal(job.startUrl())) return null;
+        for (String origin : job.allowedOrigins()) if (!ExecutionLock.isApproved(origin)) return "HOST_NOT_APPROVED";
+        if (!ExecutionLock.isApproved(job.startUrl())) return "HOST_NOT_APPROVED";
+        if (job.authorizationExpiresAt() == null) return "NOT_AUTHORIZED";
+        if (!java.time.Instant.parse(job.authorizationExpiresAt()).isAfter(now)) return "AUTHORIZATION_EXPIRED";
+        if ("AUTHORIZED_MUTATION".equals(job.mode())) return "MUTATION_NOT_AVAILABLE";
+        return null;
+    }
+
     static String origin(String startUrl) {
         java.net.URI u = java.net.URI.create(startUrl);
         return u.getScheme() + "://" + u.getRawAuthority();

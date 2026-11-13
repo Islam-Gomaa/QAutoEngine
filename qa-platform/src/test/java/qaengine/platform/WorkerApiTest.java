@@ -263,6 +263,37 @@ class WorkerApiTest extends IntegrationTestBase {
         assertEquals(1L, db.sql("SELECT count(*) FROM audit_event WHERE action = 'CREDENTIAL_REFUSED'").query(Long.class).single());
     }
 
+    @Test void aRunWhoseEnvironmentCanNoLongerRunIsRefusedWhenClaimedAndHandsOutNothing() throws Exception {
+        // The run was queued while it could run. Since then its environment was deactivated: no job, no token.
+        db.sql("UPDATE environment SET active = false WHERE organization_id = ? AND id = ?").params(org, env).update();
+        mvc.perform(post("/internal/v1/jobs/claim").header("X-Worker-Key", KEY).contentType(MediaType.APPLICATION_JSON).content("{\"workerId\":\"w\"}"))
+                .andExpect(status().isNoContent());
+        assertEquals("FAILED", db.sql("SELECT state FROM run_job WHERE organization_id = ? AND id = ?").params(org, job).query(String.class).single());
+        assertEquals("FAILED This environment is inactive", db.sql("SELECT status || ' ' || stop_reason FROM test_run WHERE organization_id = ? AND id = ?").params(org, run).query(String.class).single());
+        assertEquals(1L, db.sql("SELECT count(*) FROM audit_event WHERE organization_id = ? AND action = 'RUN_REFUSED_AT_CLAIM'").param(org).query(Long.class).single());
+    }
+
+    @Test void aRunOnARealTargetThatReachedTheQueueIsRefusedWhenClaimed() throws Exception {
+        // Run creation refuses this, so it can only be here if something wrote it there. The claim refuses it anyway.
+        db.sql("UPDATE environment SET base_url = 'https://real.example/' WHERE organization_id = ? AND id = ?").params(org, env).update();
+        mvc.perform(post("/internal/v1/jobs/claim").header("X-Worker-Key", KEY).contentType(MediaType.APPLICATION_JSON).content("{\"workerId\":\"w\"}"))
+                .andExpect(status().isNoContent());
+        assertEquals("Real targets are locked until the pre-pilot security gate passes",
+                db.sql("SELECT stop_reason FROM test_run WHERE organization_id = ? AND id = ?").params(org, run).query(String.class).single());
+    }
+
+    @Test void noCredentialIsReleasedForAnEnvironmentThatCanNoLongerRunAfterTheClaim() throws Exception {
+        UUID cred = credentials.store(org, project, env, "acct", new qaengine.platform.credentials.CredentialService.Material("u", "canary-value-789", null, null, null, null));
+        signInWith(cred);
+        String token = claim();
+        db.sql("UPDATE environment SET active = false WHERE organization_id = ? AND id = ?").params(org, env).update();
+        String body = mvc.perform(post("/internal/v1/jobs/" + job + "/login").header("Authorization", "Bearer " + token)).andExpect(status().isForbidden()).andReturn().getResponse().getContentAsString();
+        assertFalse(body.contains("canary-value-789"));
+        // The audit log cannot be emptied between tests, so only this organization's entries count.
+        assertEquals(0L, db.sql("SELECT count(*) FROM audit_event WHERE organization_id = ? AND action = 'CREDENTIAL_RELEASED'").param(org).query(Long.class).single());
+        assertEquals(1L, db.sql("SELECT count(*) FROM audit_event WHERE organization_id = ? AND action = 'CREDENTIAL_REFUSED' AND detail LIKE '%inactive%'").param(org).query(Long.class).single());
+    }
+
     @Test void theAssignmentCarriesTheRunsOwnProfile() throws Exception {
         signInWith(credentials.store(org, project, env, "acct", new qaengine.platform.credentials.CredentialService.Material("u", "p", null, null, null, null)));
         String json = mvc.perform(post("/internal/v1/jobs/claim").header("X-Worker-Key", KEY).contentType(MediaType.APPLICATION_JSON).content("{}")).andReturn().getResponse().getContentAsString();

@@ -11,8 +11,8 @@ import qaengine.core.policy.ExecutionLock;
  * Whether an environment's target may be run, and if not, which key is missing. The one place the API
  * and run creation decide this, so they cannot disagree.
  *
- * <p>A real target needs every key: its host approved in {@link ExecutionLock} by a reviewed code change,
- * and a written authorization that is still in date. The fixture needs neither. The fixture is named here
+ * <p>A real target needs both keys: its host and port approved by an operator in the deployment's approved-hosts
+ * file, which {@link ExecutionLock} reads, and a written authorization still in date, recorded by an Organization Admin. The fixture needs neither. The fixture is named here
  * explicitly rather than taken from {@code ExecutionLock}: when a real host is one day approved there, it
  * must still need an authorization, not pass as the fixture.
  *
@@ -23,9 +23,9 @@ public final class Eligibility {
     public enum Reason {
         /** Loopback or the planted-defect fixture. Runs are allowed. */
         FIXTURE,
-        /** Every key is present. Unreachable until a real host is approved in ExecutionLock. */
+        /** Both keys are present: an approved host, and an authorization in date. */
         ELIGIBLE,
-        /** The host is not approved in ExecutionLock: the pre-pilot security gate. */
+        /** The host and port are not in the deployment's approved-hosts file. */
         HOST_NOT_APPROVED,
         /** No written authorization is recorded. */
         NOT_AUTHORIZED,
@@ -59,7 +59,7 @@ public final class Eligibility {
      * @param authorizationExpiresAt when the recorded authorization ends
      */
     public static Result of(String baseUrl, String authorizationReference, OffsetDateTime authorizationExpiresAt, Instant now) {
-        return of(baseUrl, authorizationReference, authorizationExpiresAt, now, ExecutionLock::isLocal);
+        return of(baseUrl, authorizationReference, authorizationExpiresAt, now, ExecutionLock::isApproved);
     }
 
     /** The same decision with host approval passed in, so tests can reach the branches no approved real host reaches yet. */

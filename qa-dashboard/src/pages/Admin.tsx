@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Alert, Box, Button, FormControlLabel, Stack, Switch, Table, TableBody, TableCell, TableHead, TableRow, TextField, Typography } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type AuthProfile, type Credential, type Environment, type LoginProfile, type User } from '../api';
-import { Async, Card, Confirm, DataTable, dateTime, Empty, Failure, FormDialog, KeyValue, PageHeader, Tag, words } from '../design/ui';
+import { Async, Card, Confirm, DataTable, dateTime, Empty, Failure, FormDialog, KeyValue, Mono, PageHeader, Tag, words } from '../design/ui';
 import { useWorkspace } from '../shell/context';
 import { Choice, NeedsProject, useForm } from './shared';
 import { blankMailbox, flowBody, flowDraft, flowProblems, LoginFlowFields, MailboxFields, mailboxBody, mailboxDraft, mailboxProblems, METHOD_LABELS, otpBody, TestResult, type FlowDraft, type MailboxDraft } from './signin';
@@ -261,6 +261,32 @@ function Profiles({ project }: { project: string }) {
 export const CredentialsPage = () => <NeedsProject>{(p) => <Credentials project={p} />}</NeedsProject>;
 export const LoginProfilesPage = () => <NeedsProject>{(p) => <Profiles project={p} />}</NeedsProject>;
 
+interface ApprovedHostsView { fingerprint: string; hosts: { host: string; port: number; approvedBy: string; change: string; reason: string }[];
+  history: { host: string; port: number; event: string; approvedBy: string; change: string; reason: string; recordedAt: string }[] }
+
+/**
+ * Where runs may go. Real hosts are approved by an operator in the deployment's file, never here; this only shows
+ * what the deployment enforces, so an Organization Admin can see it before recording an authorization.
+ */
+function ExecutionSafety({ organizationAdmin }: { organizationAdmin: boolean }) {
+  const q = useQuery({ queryKey: ['approved-hosts'], queryFn: () => api<ApprovedHostsView>('/approved-hosts'), enabled: organizationAdmin });
+  const rules: [string, string][] = [['Local fixture', 'Always available'], ['Real targets', 'Need both keys: the host approved by an operator in the deployment, and a written authorization in date recorded here'],
+    ['Run modes', 'Read-only, or validation only (types into fields, never submits). Mutation is disabled']];
+  return (
+    <Card title="Execution safety" testId="execution-safety">
+      <KeyValue items={rules} />
+      {organizationAdmin && <Async q={q}>{(v) => (
+        <Box sx={{ mt: 1.5 }}>
+          <Typography variant="body2" sx={{ fontWeight: 560 }}>Real hosts approved in this deployment</Typography>
+          {v.hosts.length === 0
+            ? <Typography variant="body2" color="text.secondary">None. An operator approves a host in the deployment's approved-hosts file; see docs/guides/REAL_APPLICATION_ONBOARDING.md.</Typography>
+            : v.hosts.map((h) => <Typography key={`${h.host}:${h.port}`} variant="body2"><Mono>{h.host}:{h.port}</Mono> approved by {h.approvedBy} under {h.change}{h.reason ? `: ${h.reason}` : ''}</Typography>)}
+          <Typography variant="caption">Policy version <Mono>{v.fingerprint.slice(0, 12)}</Mono></Typography>
+        </Box>)}</Async>}
+    </Card>
+  );
+}
+
 export function SettingsPage() {
   const { me } = useWorkspace();
   const client = useQueryClient();
@@ -299,9 +325,7 @@ export function SettingsPage() {
             {totp.isError && <Failure error={totp.error} />}
             {seed ? <Alert severity="warning">Add this seed to your app now. It is not shown again: <Box component="code" sx={{ overflowWrap: 'anywhere' }}>{seed}</Box></Alert> : <Button variant="outlined" onClick={() => totp.mutate()}>Set up authenticator</Button>}
           </Card>
-          <Card title="Execution safety">
-            <KeyValue items={[['Targets', 'Local fixture only'], ['Real targets', 'Locked until the pre-pilot security gate passes'], ['Run mode', 'Read-only. Mutation is disabled'], ['Theme', 'Light']]} />
-          </Card>
+          <ExecutionSafety organizationAdmin={me.organizationAdmin} />
         </Stack>
       </Box>
     </>

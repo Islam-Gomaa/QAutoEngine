@@ -18,7 +18,7 @@ Decisions made during execution. Architecture-level decisions live in
 | 2026-11-06 | 3 | Fresh page per navigation, one context per run | Reusing a page raced with aborted navigations |
 | 2026-11-06 | 3 | WebSockets blocked in `READ_ONLY` unless an exception exists | Their traffic cannot be inspected per message |
 | 2026-11-06 | 3 | Static assets skip only the one-time token check | Exempting them fully let `new Image()` reach destructive GETs |
-| 2026-11-06 | 5 | `ExecutionLock` has no configuration switch | Lifting the real-target lock must be a reviewed code change |
+| 2026-11-06 | 5 | `ExecutionLock` has no configuration switch | Lifting the real-target lock must be a reviewed code change. **Superseded 2026-11-14** by the two-key host approval below |
 | 2026-11-06 | 5 | A failure must repeat before it is reported | False-positive control from the roadmap |
 | 2026-11-06 | 6 | ADR-005 amended: `JdbcClient` with explicit SQL instead of JPA | Tenant predicates stay visible in every query and are easier to audit |
 | 2026-11-06 | 6 | Worker API on the same app, separate port | Keeps one deployable while workers stay out of the public surface |
@@ -64,3 +64,8 @@ Decisions made during execution. Architecture-level decisions live in
 | 2026-11-09 | Accessibility | axe injected through the DevTools protocol, not a script tag, and CSP not bypassed | The journey also checks that hostile content cannot run, which relies on the CSP staying in force |
 | 2026-11-09 | Accessibility | Boxes with their own scrollbar take focus and have a name (`ScrollRegion`) | A keyboard user cannot otherwise scroll a box that holds nothing focusable. Found only by the real-browser pass |
 | 2026-11-09 | Accessibility | The notifications button's name repeats the badge text, `9+` included | Voice control users say what they see. Found only by the real-browser pass, with more than nine unread |
+| 2026-11-14 | Real targets | Two keys, approved by the Product Owner: an operator approves exact hosts and ports in the deployment's `approved-hosts.txt`, and an Organization Admin records each environment's written authorization with its expiry | Real applications must be testable without a code change per host, while no single person or component can open a real target alone. Supersedes decision 5 |
+| 2026-11-14 | Real targets | The platform, the worker and the egress proxy read the same mounted file; a fingerprint shows they agree, and the platform hands no job to a worker with a different one | Three enforcers must never disagree about where a run may go |
+| 2026-11-14 | Real targets | The approved-hosts file is never written from the product, and is not committed | Host approval stays a deployment operation: a compromised admin account or database cannot open egress |
+| 2026-11-14 | Real targets | Eligibility is decided again when a job is claimed, before a credential is released, and on every heartbeat | Revocation and expiry must stop queued and running work, not only new runs |
+| 2026-11-14 | Real targets | Classification is never a key; the fixture is recognised by its own host list | A real address called LOCAL, or a real host added to the list, must still need its authorization |

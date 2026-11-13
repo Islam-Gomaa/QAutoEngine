@@ -13,7 +13,10 @@ public final class WorkerContracts {
     public record JobAssignment(UUID jobId, UUID runId, int attempt, String jobToken, String startUrl, long seed, String mode,
                                 String environmentClass, List<String> allowedOrigins, List<String> includePaths,
                                 List<String> excludePaths, RunLimits limits, List<String> maskSelectors, LoginProfile login,
-                                String channel, ApiProfile api, RunScope scope, String kind, List<ScriptJob> scripts) {}
+                                String channel, ApiProfile api, RunScope scope, String kind, List<ScriptJob> scripts,
+                                String authorizationExpiresAt) {}
+    // authorizationExpiresAt: when the environment's written authorization ends, as an ISO instant, or null when none is
+    // recorded. The worker refuses a real target without one in date, whatever the platform decided.
 
     /**
      * One approved, executable test case for the worker to run, as stored on its version. The worker validates the

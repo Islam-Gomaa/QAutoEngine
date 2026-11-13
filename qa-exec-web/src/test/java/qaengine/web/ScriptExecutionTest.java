@@ -269,6 +269,27 @@ class ScriptExecutionTest {
         }
     }
 
+    /** No sign-in, and nothing on any page until a script has drawn it from JSON: discovered, planned and run the same way. */
+    @Test void aClientRenderedApplicationWithoutSignInIsTestedTheSameWay() {
+        var gate = gate(new App("/desk/none", "/desk/none", "/desk/", "/desk/", null), ExecutionMode.READ_ONLY);
+        try (var b = new PlaywrightBrowser(gate)) {
+            fixture.clear(); // the log is shared with the other tests in this class, and their sign-ins are POSTs
+            var d = discover(new App(null, null, null, "/desk/", null), gate, b);
+            for (String p : List.of("/desk/", "/desk/tickets", "/desk/kb", "/desk/new", "/desk/kb/passwords")) {
+                assertTrue(d.pages().containsKey(fixture.url(p)), "discovered " + p + " in " + d.pages().keySet());
+            }
+            assertTrue(d.pages().keySet().stream().anyMatch(u -> u.matches(".*/desk/tickets/\\d+")), "a ticket, reached from the grid");
+            assertTrue(d.result().observations().stream().anyMatch(o -> o.finding().url().endsWith("/desk/kb/retired")), "the planted broken link is found");
+            assertFalse(fixture.reached("/desk/requests"), "the request form is never sent");
+            Map<String, Script> scripts = plan(d.pages());
+            assertTrue(scripts.size() >= 10, "planned " + scripts.size() + ": " + scripts.keySet());
+            var run = execute(gate, b, null, scripts);
+            assertEquals("", failures(run.results()), "planned from the drawn pages, judged on them");
+            assertTrue(fixture.requests().stream().allMatch(q -> q.method().equals("GET")), "nothing but reads: " + fixture.requests().stream().filter(q -> !q.method().equals("GET")).toList());
+            assertTrue(fixture.requests().stream().allMatch(q -> q.path().startsWith("/desk")), "nothing outside the application");
+        }
+    }
+
     @Test void theSamePlannerWorksOnAnApplicationWithNothingInCommon() {
         var gate = gate(STOREFRONT_CONSOLE, ExecutionMode.READ_ONLY);
         try (var b = new PlaywrightBrowser(gate)) {

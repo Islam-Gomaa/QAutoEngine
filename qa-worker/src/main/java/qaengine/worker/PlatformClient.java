@@ -47,9 +47,11 @@ final class PlatformClient {
     Optional<JobAssignment> claim(String workerId) throws IOException, InterruptedException {
         var request = HttpRequest.newBuilder(URI.create(base + "/internal/v1/jobs/claim")).timeout(TIMEOUT)
                 .header("X-Worker-Key", workerKey).header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(Map.of("workerId", workerId)))).build();
+                .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(Map.of("workerId", workerId,
+                        "approvedHosts", qaengine.core.policy.ExecutionLock.approved().fingerprint())))).build();
         var response = http.send(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() == 204) return Optional.empty();
+        if (response.statusCode() == 412) throw new IOException("this worker's approved-hosts file differs from the platform's: restart them together");
         if (response.statusCode() != 200) throw new IOException("claim failed: " + response.statusCode());
         JobAssignment job = gson.fromJson(response.body(), JobAssignment.class);
         jobId = job.jobId();

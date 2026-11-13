@@ -39,6 +39,7 @@ const routes = {
   'GET /auth/me': admin,
   'GET /projects': [{ ...project(), testCases: 2, runs: 3, openDefects: 2 }],
   'GET /notifications': { items: [{ kind: 'RUN', id: 'r1aaaaaa', projectId: 'p1', title: 'Run finished', detail: 'Fixture', at, unread: true }], unread: 1 },
+  'GET /approved-hosts': { fingerprint: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', hosts: [], history: [] },
   'GET /dashboard': {
     stats: { projects: 1, applications: 1, testCases: 2, runs: 3, passRate: 81, failed: 3, blocked: 1, openDefects: 2 },
     trend: trend.map((t) => ({ day: t.day, runs: t.runs, passed: t.passed, failed: t.failed, blocked: 0, inconclusive: 0 })),

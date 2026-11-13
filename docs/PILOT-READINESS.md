@@ -1,6 +1,6 @@
 # Pre-Pilot Security Gate
 
-Status: **NOT PASSED**. Real targets remain locked in code by `ExecutionLock`.
+Status: **NOT PASSED** for the requirements below. Since 2026-11-14 a real host is unlocked by **two keys**, not by a code change: an operator approves the host in the deployment's `approved-hosts.txt`, and an Organization Admin records the written authorization with its expiry (`docs/guides/REAL_APPLICATION_ONBOARDING.md`). No host is approved in any committed file. The Product Owner decides when the open items below are sufficient to approve a first host.
 
 | Requirement | Status | Evidence |
 |---|---|---|
@@ -17,7 +17,7 @@ Status: **NOT PASSED**. Real targets remain locked in code by `ExecutionLock`.
 
 ## To lift the lock
 
-Lifting `ExecutionLock` is a reviewed code change, made only after the three open items above are closed. The first pilot must be `READ_ONLY`, with a dedicated test account and operator sign-off.
+Approving a first real host is a deployment change by an operator, recorded with who approved it and under which change, after the Product Owner accepts the state of the open items above. The first pilot must be `READ_ONLY`, with a dedicated test account and operator sign-off. Written target authorization is recorded per environment in the product, with its reference and expiry.
 
 ## Residual risks
 

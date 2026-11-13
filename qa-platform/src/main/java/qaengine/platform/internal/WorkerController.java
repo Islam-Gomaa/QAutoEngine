@@ -104,9 +104,22 @@ public class WorkerController {
     @PostMapping("/claim")
     public ResponseEntity<JobAssignment> claim(@RequestHeader(value = "X-Worker-Key", required = false) String key, @RequestBody Map<String, String> body) {
         if (!tokens.workerKeyMatches(key)) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        // The worker reads the same approved-hosts file. Different versions would disagree about where a run may go,
+        // so no job is handed to a worker that has not loaded the platform's version: restart them together.
+        String expected = qaengine.core.policy.ExecutionLock.approved().fingerprint();
+        String theirs = body.getOrDefault("approvedHosts", qaengine.core.policy.ApprovedHosts.none().fingerprint());
+        if (!expected.equals(theirs)) return ResponseEntity.status(HttpStatus.PRECONDITION_FAILED).build();
         var claim = queue.claim(body.getOrDefault("workerId", "unknown"));
         if (claim.isEmpty()) return ResponseEntity.noContent().build();
         JobQueue.Claim c = claim.get();
+        // Eligibility was decided when the run was created; it is decided again now, as the job leaves the platform.
+        // A run queued before its authorization was revoked or expired, or its environment deactivated, never starts.
+        String refusal = refusal(c.organizationId(), c.runId());
+        if (refusal != null) {
+            queue.complete(c.organizationId(), c.jobId(), c.attempt(), JobQueue.Terminal.FAILED, "NOT_ELIGIBLE", refusal);
+            audit.record(c.organizationId(), "worker", "RUN_REFUSED_AT_CLAIM", c.runId().toString(), refusal);
+            return ResponseEntity.noContent().build();
+        }
         String token = tokens.issue(new JobTokens.Scope(c.organizationId(), c.jobId(), c.attempt()));
         return ResponseEntity.ok(db.sql("""
                 SELECT e.base_url, r.seed, ep.mode, e.classification, ep.include_paths, ep.exclude_paths, ep.mask_selectors,
@@ -115,7 +128,8 @@ public class WorkerController {
                        (SELECT array_agg(origin) FROM allowed_host h WHERE h.organization_id = e.organization_id AND h.environment_id = e.id),
                        e.channel, e.api_spec_path, e.api_slow_ms, e.api_seed_paths, r.suite_id, r.max_pages,
                        ap.otp_locators::text, ap.otp_submit_path, ap.otp_resend_path, ap.otp_max_resends,
-                       (SELECT m.timeout_seconds FROM otp_mailbox m WHERE m.organization_id = ap.organization_id AND m.auth_profile_id = ap.id)
+                       (SELECT m.timeout_seconds FROM otp_mailbox m WHERE m.organization_id = ap.organization_id AND m.auth_profile_id = ap.id),
+                       CASE WHEN e.authorization_reference IS NULL THEN NULL ELSE e.authorization_expires_at END
                 FROM test_run r
                 JOIN environment e ON e.organization_id = r.organization_id AND e.id = r.environment_id
                 JOIN execution_policy ep ON ep.organization_id = e.organization_id AND ep.environment_id = e.id
@@ -127,7 +141,8 @@ public class WorkerController {
                 rs.getString(12) == null ? null : login(rs.getString(12), rs.getString(13), rs.getString(14), rs.getString(15), rs.getString(16), rs.getInt(17),
                         rs.getString(26), rs.getString(27), rs.getString(28), rs.getInt(29), (Integer) rs.getObject(30)),
                 rs.getString(20), new ApiProfile(rs.getString(21), rs.getLong(22), array(rs, 23)), scope(c.organizationId(), rs.getObject(24, UUID.class), rs.getString(1)),
-                rs.getString(18), scripts(c.organizationId(), rs.getObject(24, UUID.class)))).single());
+                rs.getString(18), scripts(c.organizationId(), rs.getObject(24, UUID.class)),
+                rs.getObject(31) == null ? null : rs.getObject(31, java.time.OffsetDateTime.class).toInstant().toString())).single());
     }
 
     /** The profile as the worker needs it. The locators were validated when they were saved. */
@@ -160,6 +175,29 @@ public class WorkerController {
                 """).params(org, suite).query((rs, n) -> new Target(rs.getString(1), rs.getString(2))).list();
         return new RunScope(targets.stream().map(Target::url).filter(java.util.Objects::nonNull).distinct().toList(),
                 targets.stream().map(Target::label).filter(java.util.Objects::nonNull).distinct().toList());
+    }
+
+    /**
+     * Why this run's environment may not run now, or null when it may: the same decision as run creation, taken again
+     * with the environment as it is at this moment. Used before a job is handed out and before a credential is released.
+     */
+    private String refusal(UUID org, UUID run) {
+        record Now(String baseUrl, String reference, java.time.OffsetDateTime expiresAt, boolean archived, boolean active, boolean applicationActive, String mode) {}
+        Now now = db.sql("""
+                SELECT e.base_url, e.authorization_reference, e.authorization_expires_at, e.archived_at IS NOT NULL, e.active, t.active, ep.mode
+                FROM test_run r JOIN environment e ON e.organization_id = r.organization_id AND e.id = r.environment_id
+                JOIN target t ON t.organization_id = e.organization_id AND t.id = e.target_id
+                JOIN execution_policy ep ON ep.organization_id = e.organization_id AND ep.environment_id = e.id
+                WHERE r.organization_id = ? AND r.id = ?
+                """).params(org, run).query((rs, n) -> new Now(rs.getString(1), rs.getString(2), rs.getObject(3, java.time.OffsetDateTime.class), rs.getBoolean(4),
+                rs.getBoolean(5), rs.getBoolean(6), rs.getString(7))).optional().orElse(null);
+        if (now == null) return "The environment no longer exists";
+        if (now.archived()) return "This environment is archived";
+        if (!now.applicationActive()) return "This application is inactive";
+        if (!now.active()) return "This environment is inactive";
+        if ("AUTHORIZED_MUTATION".equals(now.mode())) return "Mutation runs are not available";
+        var eligibility = qaengine.platform.targets.Eligibility.of(now.baseUrl(), now.reference(), now.expiresAt(), java.time.Instant.now());
+        return eligibility.executable() ? null : qaengine.platform.targets.Eligibility.refusal(eligibility.reason());
     }
 
     /** The approved, executable cases of the suite: the latest version of each, as a person approved it. Validated before they leave. */
@@ -217,6 +255,12 @@ public class WorkerController {
                 """).params(s.organizationId(), jobId, s.attempt()).update();
         if (claimed != 1) return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         UUID run = runOf(s);
+        // No secret leaves for an environment that may not run now, whatever happened since the job was claimed.
+        String refusal = refusal(s.organizationId(), run);
+        if (refusal != null) {
+            audit.record(s.organizationId(), "worker", "CREDENTIAL_REFUSED", run.toString(), "run " + run + " attempt " + s.attempt() + ": " + refusal);
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
         // The run's own profile, fixed when it was created. A profile or credential disabled since then is not released.
         record Login(UUID credential, boolean usable) {}
         Login login = db.sql("""
@@ -341,9 +385,16 @@ public class WorkerController {
     @PostMapping("/{jobId}/heartbeat")
     public ResponseEntity<HeartbeatResponse> heartbeat(@RequestHeader(value = "Authorization", required = false) String auth, @PathVariable UUID jobId) {
         JobTokens.Scope s = scope(auth, jobId);
-        return queue.heartbeat(s.organizationId(), jobId, s.attempt())
-                .map(cancel -> ResponseEntity.ok(new HeartbeatResponse(cancel, tokens.issue(s))))
-                .orElse(ResponseEntity.status(HttpStatus.CONFLICT).build());
+        var alive = queue.heartbeat(s.organizationId(), jobId, s.attempt());
+        if (alive.isEmpty()) return ResponseEntity.status(HttpStatus.CONFLICT).build();
+        // Revocation, expiry or deactivation since the job started stops it at its next heartbeat: within one interval.
+        UUID run = runOf(s);
+        String refusal = refusal(s.organizationId(), run);
+        if (refusal != null && !alive.get()) {
+            queue.requestCancel(s.organizationId(), run, "policy");
+            audit.record(s.organizationId(), "worker", "RUN_STOPPED_NOT_ELIGIBLE", run.toString(), refusal);
+        }
+        return ResponseEntity.ok(new HeartbeatResponse(alive.get() || refusal != null, tokens.issue(s)));
     }
 
     private UUID runOf(JobTokens.Scope s) {

@@ -1,0 +1,9 @@
+{
+  "project": "Helpdesk (fixture)",
+  "description": "The fixture's helpdesk: no sign-in, every page drawn in the browser from JSON",
+  "application": { "name": "Helpdesk", "type": "WEB", "description": "Tickets and a knowledge base, served by the local fixture under /desk" },
+  "environment": { "name": "Local fixture", "classification": "LOCAL", "baseUrl": "http://fixture.qa.internal:8090/desk/", "includePaths": ["/desk"], "executionMode": "VALIDATION_ONLY" },
+  "discovery": { "expectPaths": ["/desk/", "/desk/tickets", "/desk/kb", "/desk/new", "/desk/tickets/"] },
+  "suite": "Helpdesk smoke",
+  "approve": ["READ_ONLY", "VALIDATION_ONLY"]
+}

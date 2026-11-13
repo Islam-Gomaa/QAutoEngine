@@ -8,7 +8,7 @@ import { SegmentBar } from '../design/charts';
 import { Async, Card, Confirm, DataTable, dateTime, duration, Empty, Failure, KeyValue, Mono, PageHeader, ScrollRegion, Stat, StatusChip, Tag, words } from '../design/ui';
 import { useWorkspace } from '../shell/context';
 import { EvidenceViewer } from './EvidenceViewer';
-import { Choice, NeedsProject } from './shared';
+import { Choice, LOCK_REASONS, NeedsProject } from './shared';
 import { DiscoveryPanel } from './Discovery';
 import { FAILURE_LABELS, TestResult, testOutcome } from './signin';
 
@@ -40,14 +40,19 @@ function Starter({ project }: { project: string }) {
       {blocked && (
         <Alert severity="info" data-testid="no-runnable-environment" action={<Button component={RouterLink} to="/applications" color="inherit" size="small">Applications</Button>}>
           No environment in this project can be run.
-          {locked ? ' Real targets stay locked until the pre-pilot security gate passes, so only a local fixture environment can be run.' : ''}
+          {locked ? ' A real target runs only when its host is approved in the deployment and a written authorization in date is recorded.' : ''}
           {envs.data!.some((e) => e.executable && (!e.active || !e.applicationActive)) ? ' Activate an inactive fixture environment, or its application, to run it.' : ''}
+          {envs.data!.filter((e) => !e.executable && e.lockReason).map((e) => (
+            <Box key={e.id} component="span" sx={{ display: 'block', mt: 0.5 }} data-testid="lock-reason">
+              {e.targetName} / {e.name}: {LOCK_REASONS[e.lockReason!]?.label ?? e.lockReason}. {LOCK_REASONS[e.lockReason!]?.fix ?? ''}
+            </Box>
+          ))}
         </Alert>
       )}
       {start.isError && <Failure error={start.error} />}
       <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} alignItems={{ md: 'center' }}>
         <TextField select label="Environment" value={environmentId} onChange={(e) => { setEnvironment(e.target.value); setSuite(''); }} sx={{ minWidth: 300 }}>
-          {envs.data?.map((e) => { const inactive = !e.active || !e.applicationActive; return <MenuItem key={e.id} value={e.id} disabled={!e.executable || inactive}>{e.targetName} / {e.name} ({e.channel === 'WEB' ? 'Web' : 'API'}){e.executable ? '' : ', locked'}{inactive ? ', inactive' : ''}</MenuItem>; })}
+          {envs.data?.map((e) => { const inactive = !e.active || !e.applicationActive; return <MenuItem key={e.id} value={e.id} disabled={!e.executable || inactive}>{e.targetName} / {e.name} ({e.channel === 'WEB' ? 'Web' : 'API'}){e.executable ? '' : `, locked${e.lockReason && LOCK_REASONS[e.lockReason] ? `: ${LOCK_REASONS[e.lockReason].label.toLowerCase()}` : ''}`}{inactive ? ', inactive' : ''}</MenuItem>; })}
         </TextField>
         <TextField select label="Scope" value={suiteId} onChange={(e) => setSuite(e.target.value)} sx={{ minWidth: 240 }}>
           <MenuItem value="">{env?.channel === 'API' ? 'Full API contract' : 'Full exploration'}</MenuItem>
@@ -57,7 +62,7 @@ function Starter({ project }: { project: string }) {
         {env?.channel !== 'API' && <TextField label="Page limit (optional)" type="number" value={maxPages} onChange={(e) => setMaxPages(e.target.value)} sx={{ width: 170 }} slotProps={{ htmlInput: { min: 1 } }} />}
         <Button variant="contained" disabled={!environmentId || start.isPending} onClick={() => start.mutate()} sx={{ flexShrink: 0 }}>Start fixture run</Button>
       </Stack>
-      <Typography variant="caption">Runs are read-only, and queued for a worker. Only the local fixture is available until the pre-pilot security gate passes.</Typography>
+      <Typography variant="caption">Runs are queued for a worker. A real target needs an approved host and an authorization in date.</Typography>
     </Stack>
   );
 }

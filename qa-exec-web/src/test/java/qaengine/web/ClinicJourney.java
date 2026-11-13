@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.regex.Pattern;
 
 /**
- * The Dashboard, in a real browser, against the running stack after scripts/e2e-clinic.py registered the clinic:
+ * The Dashboard, in a real browser, against the running stack after `scripts/onboard.py scripts/manifests/clinic.json` registered the clinic:
  * the real target's project offers nothing that can run, the clinic's fixture environment and its suite can be
  * chosen, and a run started from the page reaches its end with scripted steps, verdicts and screenshots.
  *
@@ -83,10 +83,10 @@ public final class ClinicJourney {
         project(page, "Jeddah LPR");
         execution(page);
         page.getByTestId("no-runnable-environment").waitFor();
-        check("Jeddah LPR says why nothing can run", page.getByTestId("no-runnable-environment").innerText().contains("pre-pilot security gate"));
+        check("Jeddah LPR says why nothing can run", page.getByTestId("no-runnable-environment").innerText().contains("Host not approved"));
         check("Start fixture run is disabled for Jeddah LPR", page.getByRole(AriaRole.BUTTON, named("Start fixture run")).isDisabled());
         page.getByLabel("Environment", new Page.GetByLabelOptions().setExact(true)).click();
-        Locator lpr = page.getByRole(AriaRole.OPTION, named("LPR system / Test (Web), locked"));
+        Locator lpr = page.getByRole(AriaRole.OPTION, named("LPR system / Test (Web), locked: host not approved"));
         check("the LPR environment is listed, locked", lpr.count() == 1 && "true".equals(lpr.getAttribute("aria-disabled")));
         shot(page, "clinic-01-lpr-locked");
         page.keyboard().press("Escape");
@@ -126,7 +126,15 @@ public final class ClinicJourney {
         Locator cards = page.getByText(Pattern.compile("^Screenshot, step \\d+$"));
         cards.first().waitFor();
         page.locator("main img").first().waitFor();
-        boolean loaded = Boolean.TRUE.equals(page.locator("main img").first().evaluate("img => img.complete && img.naturalWidth > 0"));
+        // The tab loads every screenshot at once: give the first time to arrive before judging that it did.
+        boolean loaded;
+        try {
+            page.waitForFunction("() => { const i = document.querySelector('main img'); return !!i && i.complete && i.naturalWidth > 0; }", null,
+                    new Page.WaitForFunctionOptions().setTimeout(20000));
+            loaded = true;
+        } catch (com.microsoft.playwright.TimeoutError e) {
+            loaded = false;
+        }
         check("the run's screenshots are shown: " + cards.count() + " on the tab, the first one loaded", cards.count() > 0 && loaded);
         shot(page, "clinic-04-run-evidence");
     }

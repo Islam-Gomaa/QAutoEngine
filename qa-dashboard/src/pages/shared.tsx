@@ -35,6 +35,19 @@ export function useForm<T>(run: (values: T) => Promise<unknown>, refresh: string
 export const levelOptions: [string, string][] = [['LOW', 'Low'], ['MEDIUM', 'Medium'], ['HIGH', 'High'], ['CRITICAL', 'Critical']];
 export const ROLES: [string, string][] = [['VIEWER', 'Viewer'], ['TESTER', 'Tester'], ['QA_LEAD', 'QA Lead'], ['PROJECT_ADMIN', 'Project Admin']];
 
+/**
+ * Why the backend says an environment cannot run, and what resolves it. The backend decides; this only says it.
+ * HOST_NOT_APPROVED is the pre-pilot gate, which the product cannot complete: lifting it is a reviewed change.
+ */
+export const LOCK_REASONS: Record<string, { label: string; detail: string; fix: string }> = {
+  HOST_NOT_APPROVED: { label: 'Host not approved', detail: 'This host and port are not approved in this deployment, so runs on it are refused.',
+    fix: 'An operator approves the host in the deployment\'s approved-hosts file and applies it; it cannot be done from the product. See docs/guides/REAL_APPLICATION_ONBOARDING.md.' },
+  NOT_AUTHORIZED: { label: 'No written authorization', detail: 'No written authorization to test this environment is recorded.',
+    fix: 'An Organization Admin records the authorization reference and its expiry, under Authorization.' },
+  AUTHORIZATION_EXPIRED: { label: 'Authorization expired', detail: 'The written authorization for this environment has expired.',
+    fix: 'An Organization Admin records the renewed authorization and its new expiry, under Authorization.' },
+};
+
 /** The local fixture, the only place a run can go until the pre-pilot security gate passes. */
 export const FIXTURE_URL = 'http://fixture.qa.internal:8090/';
 /** Production is not offered in the product: it is READ_ONLY, needs explicit include paths, and stays locked. */
