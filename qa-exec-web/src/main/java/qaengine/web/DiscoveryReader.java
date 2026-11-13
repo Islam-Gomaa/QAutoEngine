@@ -41,7 +41,7 @@ final class DiscoveryReader {
                          required: i.required || i.getAttribute('aria-required') === 'true', labelled: !!label };
               }) };
           });
-          const tables = [...document.querySelectorAll('table, [role=table], [role=grid]')].map(t => {
+          const tables = [...document.querySelectorAll('table, [role=table], [role=grid]')].filter(visible).map(t => {
             const cap = t.querySelector('caption');
             return { caption: clean(cap ? cap.innerText : (t.getAttribute('aria-label') || '')),
                      headers: [...t.querySelectorAll('th, [role=columnheader]')].map(h => clean(h.innerText)),

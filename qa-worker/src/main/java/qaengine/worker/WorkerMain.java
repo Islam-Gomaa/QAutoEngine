@@ -165,7 +165,12 @@ public final class WorkerMain {
                     if (screenshots[0]++ < DISCOVERY_SCREENSHOTS) evidence.binary(qaengine.core.evidence.EvidenceType.SCREENSHOT, step, browser.screenshot(masks));
                 });
             }
+            // A suite runs its recorded cases by revisiting them, then its approved scripts, each judged by its own expectations.
             RunResult result = job.scope() == null ? engine.explore(job.startUrl()) : engine.visitOnly(job.scope().urls());
+            if (job.scripts() != null && !job.scripts().isEmpty() && !lost.get()) {
+                int first = result.steps().stream().mapToInt(qaengine.core.engine.StepRecord::sequence).max().orElse(0) + 1;
+                runScripts(platform, job, gate, browser, evidence, sanitizer, first, cancelled, lost);
+            }
             if (discovery && !lost.get()) {
                 var edges = result.transitions().stream().filter(t -> !t.from().isEmpty())
                         .map(t -> new WorkerContracts.DiscoveredEdge(t.from(), t.to(), redactor.redact(t.via()))).toList();
@@ -189,7 +194,37 @@ public final class WorkerMain {
         }
     }
 
-    /** No browser here: requests go straight through the egress proxy, after the same gate. */
+    /**
+     * Runs each approved script in the signed-in browser, under the run's gate. A script that is not valid, which the
+     * platform has already checked twice, is reported INCONCLUSIVE rather than run.
+     */
+    private static void runScripts(PlatformClient platform, JobAssignment job, ActionGate gate, PlaywrightBrowser browser, EvidenceCollector evidence,
+                                   Sanitizer sanitizer, int firstSequence, AtomicBoolean cancelled, AtomicBoolean lost) {
+        java.util.concurrent.atomic.AtomicInteger sequence = new java.util.concurrent.atomic.AtomicInteger(firstSequence);
+        List<String> masks = new java.util.ArrayList<>(List.of("input[type=password]", "input[autocomplete=one-time-code]"));
+        masks.addAll(job.maskSelectors());
+        String loginPath = job.login() == null ? null : job.login().loginPath();
+        com.google.gson.Gson gson = new com.google.gson.Gson();
+        for (WorkerContracts.ScriptJob s : job.scripts()) {
+            if (cancelled.get() || lost.get()) return;
+            qaengine.core.script.Script script;
+            try {
+                script = new qaengine.core.script.Script(java.util.Arrays.asList(gson.fromJson(s.scriptJson(), qaengine.core.script.ScriptStep[].class))).validated();
+            } catch (RuntimeException e) {
+                call(() -> platform.scriptResult(new WorkerContracts.ScriptResult(s.caseVersionId(), "INCONCLUSIVE", "AUTOMATION_FAILURE", "the script is not valid")));
+                continue;
+            }
+            var runner = new qaengine.core.script.ScriptRunner(gate, browser, job.startUrl(), loginPath, java.time.Duration.ofSeconds(5), evidence, masks,
+                    sequence::getAndIncrement, Clock.systemUTC())
+                    .stopWhen(() -> cancelled.get() || lost.get())
+                    .onStep(r -> call(() -> platform.steps(List.of(sanitizer.scriptStep(r, s.title(), browser.currentUrl())))));
+            var result = runner.run(script);
+            call(() -> platform.scriptResult(new WorkerContracts.ScriptResult(s.caseVersionId(), result.verdict().name(),
+                    result.failure() == null ? null : result.failure().name(), sanitizer.text(result.summary()))));
+        }
+    }
+
+        /** No browser here: requests go straight through the egress proxy, after the same gate. */
     private static void runApi(PlatformClient platform, JobAssignment job, ActionGate gate, Sanitizer sanitizer, EvidenceCollector evidence,
                                LoginSecret secret, String proxy, AtomicBoolean cancelled, AtomicBoolean lost) throws Exception {
         try {

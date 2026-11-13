@@ -39,15 +39,23 @@ public class TestCaseController {
     public record ManualStep(@NotBlank String action, String expected, String basis) {}
     public record CreateCase(@NotBlank @Size(max = 240) String title, String description, UUID suiteId, String priority, String status, List<String> tags, String module, List<ManualStep> steps) {}
     public record UpdateCase(@NotBlank @Size(max = 240) String title, String description, UUID suiteId, String priority, String status, List<String> tags, String module) {}
+    /** @param executable the latest version carries a script a worker can run, once the case is READY */
     public record CaseView(UUID id, String title, String description, UUID suiteId, String suiteName, String source, String priority, String status, List<String> tags, String module,
-                           int latestVersion, String lastVerdict, OffsetDateTime archivedAt) {}
+                           int latestVersion, String lastVerdict, OffsetDateTime archivedAt, boolean executable) {}
     public record CasePage(List<CaseView> items, long total) {}
     public record VersionView(int version, String steps, String contentHash) {}
     public record HistoryRow(String kind, String verdict, OffsetDateTime at, UUID runId, String notes, String by) {}
     public record LinkedDefect(UUID id, long number, String title, String severity, String status) {}
     /** How a generated case came about, and who reviewed it. Null for other cases. */
     public record Review(JsonNode provenance, UUID generatedFromRun, String reviewedBy, OffsetDateTime reviewedAt, String note) {}
-    public record CaseDetail(CaseView testCase, String steps, List<VersionView> versions, List<HistoryRow> history, List<LinkedDefect> defects, Review review) {}
+    /**
+     * @param script the latest version's executable steps as JSON, or null when the case is for a person
+     * @param executionMode READ_ONLY or VALIDATION_ONLY with a script
+     */
+    public record CaseDetail(CaseView testCase, String steps, List<VersionView> versions, List<HistoryRow> history, List<LinkedDefect> defects, Review review,
+                             String script, String executionMode) {}
+    /** @param steps null removes the script; the case is then for a person again */
+    public record SaveScript(List<qaengine.core.script.ScriptStep> steps, String executionMode) {}
     public record ReviewDecision(@Size(max = 1000) String note) {}
     public record RecordResult(String verdict, String notes) {}
     public record LinkDefect(UUID defectId) {}
@@ -66,7 +74,8 @@ public class TestCaseController {
                              JOIN test_run tr ON tr.organization_id = r.organization_id AND tr.id = r.run_id
                              WHERE rv.organization_id = c.organization_id AND rv.test_case_id = c.id ORDER BY tr.created_at DESC LIMIT 1),
                             (SELECT m.verdict FROM manual_result m WHERE m.organization_id = c.organization_id AND m.test_case_id = c.id ORDER BY m.recorded_at DESC LIMIT 1)),
-                   c.archived_at
+                   c.archived_at,
+                   coalesce((SELECT v.script IS NOT NULL FROM test_case_version v WHERE v.organization_id = c.organization_id AND v.test_case_id = c.id ORDER BY v.version DESC LIMIT 1), false)
             FROM test_case c
             LEFT JOIN test_suite s ON s.organization_id = c.organization_id AND s.id = c.suite_id
             """;
@@ -87,7 +96,7 @@ public class TestCaseController {
 
     private static CaseView map(java.sql.ResultSet rs) throws java.sql.SQLException {
         return new CaseView(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3), rs.getObject(4, UUID.class), rs.getString(5), rs.getString(6), rs.getString(7), rs.getString(8),
-                Arrays.asList((String[]) rs.getArray(9).getArray()), rs.getString(10), rs.getInt(11), rs.getString(12), rs.getObject(13, OffsetDateTime.class));
+                Arrays.asList((String[]) rs.getArray(9).getArray()), rs.getString(10), rs.getInt(11), rs.getString(12), rs.getObject(13, OffsetDateTime.class), rs.getBoolean(14));
     }
 
     @GetMapping
@@ -124,7 +133,7 @@ public class TestCaseController {
         CaseView c = view(p, projectId, caseId);
         List<VersionView> versions = versions(p, projectId, caseId);
         List<HistoryRow> history = db.sql("""
-                SELECT 'AUTOMATED', r.verdict, tr.created_at, r.run_id, '', '' FROM test_result r
+                SELECT 'AUTOMATED', r.verdict, tr.created_at, r.run_id, coalesce(r.failure_class || ': ', '') || r.summary, '' FROM test_result r
                 JOIN test_case_version v ON v.organization_id = r.organization_id AND v.id = r.test_case_version_id
                 JOIN test_run tr ON tr.organization_id = r.organization_id AND tr.id = r.run_id
                 WHERE v.organization_id = :org AND v.test_case_id = :id
@@ -143,7 +152,37 @@ public class TestCaseController {
                 WHERE c.organization_id = ? AND c.id = ?
                 """).params(p.organizationId(), caseId).query((rs, n) -> new Review(json.readTree(rs.getString(1)), rs.getObject(2, UUID.class), rs.getString(3),
                 rs.getObject(4, OffsetDateTime.class), rs.getString(5))).single();
-        return new CaseDetail(c, versions.isEmpty() ? "[]" : versions.getFirst().steps(), versions, history, defects, review);
+        record Latest(String script, String mode) {}
+        Latest latest = db.sql("SELECT script::text, execution_mode FROM test_case_version WHERE organization_id = ? AND test_case_id = ? ORDER BY version DESC LIMIT 1")
+                .params(p.organizationId(), caseId).query((rs, n) -> new Latest(rs.getString(1), rs.getString(2))).optional().orElse(new Latest(null, null));
+        return new CaseDetail(c, versions.isEmpty() ? "[]" : versions.getFirst().steps(), versions, history, defects, review, latest.script(), latest.mode());
+    }
+
+    /**
+     * Writes, replaces or removes the case's executable script, as a new version. It is validated here and again before
+     * every run. A generated case that was approved goes back to review, so nobody runs steps no one has looked at.
+     */
+    @PutMapping("/{caseId}/script")
+    @Transactional
+    public CaseDetail saveScript(@AuthenticationPrincipal Principal p, @PathVariable UUID projectId, @PathVariable UUID caseId, @RequestBody SaveScript body) {
+        access.require(p, projectId, Access.Level.TESTER);
+        CaseView c = view(p, projectId, caseId);
+        if (c.source().equals("AUTOMATED")) throw new ConflictException("Automated steps come from runs");
+        if (c.archivedAt() != null) throw new ConflictException("This test case is archived");
+        String steps = db.sql("SELECT steps::text FROM test_case_version WHERE organization_id = ? AND test_case_id = ? ORDER BY version DESC LIMIT 1")
+                .params(p.organizationId(), caseId).query(String.class).optional().orElse("[]");
+        String script = null, mode = null;
+        if (body != null && body.steps() != null) {
+            var valid = ScriptJson.validated(body.steps());
+            mode = ScriptJson.modeFor(valid, body.executionMode());
+            script = ScriptJson.write(json, valid);
+        }
+        var saved = service.version(p.organizationId(), caseId, steps, script, mode);
+        if (c.source().equals("GENERATED") && c.status().equals("READY")) {
+            db.sql("UPDATE test_case SET status = 'PENDING_REVIEW', reviewed_by = NULL, reviewed_at = NULL WHERE organization_id = ? AND id = ?").params(p.organizationId(), caseId).update();
+        }
+        audit.record(p.organizationId(), projectId, p.email(), script == null ? "TEST_CASE_SCRIPT_REMOVED" : "TEST_CASE_SCRIPT_UPDATED", caseId.toString(), saved.versionId().toString());
+        return get(p, projectId, caseId);
     }
 
     private void checkSuite(Principal p, UUID projectId, UUID suiteId) {
@@ -206,8 +245,11 @@ public class TestCaseController {
         for (ManualStep s : steps) {
             if (s.basis() != null && !BASES.contains(s.basis())) throw new ConflictException("Unknown basis");
         }
-        String key = db.sql("SELECT natural_key FROM test_case WHERE organization_id = ? AND id = ?").params(p.organizationId(), caseId).query(String.class).single();
-        service.save(p.organizationId(), projectId, key, c.title(), json.writeValueAsString(steps));
+        // The executable script, if there is one, carries over to the new version: editing what a person reads keeps what a worker runs.
+        record Script(String script, String mode) {}
+        Script kept = db.sql("SELECT script::text, execution_mode FROM test_case_version WHERE organization_id = ? AND test_case_id = ? ORDER BY version DESC LIMIT 1")
+                .params(p.organizationId(), caseId).query((rs, n) -> new Script(rs.getString(1), rs.getString(2))).optional().orElse(new Script(null, null));
+        service.version(p.organizationId(), caseId, json.writeValueAsString(steps), kept.script(), kept.mode());
         audit.record(p.organizationId(), projectId, p.email(), "TEST_CASE_STEPS_UPDATED", caseId.toString(), "");
         return get(p, projectId, caseId);
     }
@@ -229,6 +271,10 @@ public class TestCaseController {
         for (JsonNode step : json.readTree(steps)) {
             if ("UNKNOWN".equals(step.path("basis").asString(""))) throw new ConflictException("State the expected result of every step marked unknown before approving");
         }
+        // A script is checked once more as it is approved: approval is what makes it runnable.
+        db.sql("SELECT script::text FROM test_case_version WHERE organization_id = ? AND test_case_id = ? ORDER BY version DESC LIMIT 1")
+                .params(p.organizationId(), caseId).query((rs, n) -> java.util.Optional.ofNullable(rs.getString(1))).optional().flatMap(x -> x)
+                .ifPresent(script -> ScriptJson.parse(json, script));
         db.sql("UPDATE test_case SET status = 'READY', reviewed_by = ?, reviewed_at = now(), review_note = ? WHERE organization_id = ? AND id = ?")
                 .params(p.userId(), body == null ? "" : text(body.note()), p.organizationId(), caseId).update();
         audit.record(p.organizationId(), projectId, p.email(), "TEST_CASE_APPROVED", caseId.toString(), "");

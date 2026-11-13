@@ -91,6 +91,8 @@ function Suggest({ project, run, finished }: { project: string; run: string; fin
           <Alert severity="success" sx={{ alignSelf: 'stretch' }} data-testid="generated">
             {r.created === 0 ? 'No new test cases: ' : `${r.created} new test case${r.created === 1 ? '' : 's'} waiting for review. `}
             {r.alreadyKnown > 0 && `${r.alreadyKnown} had been suggested before and were left as reviewed. `}
+            {(r.executable ?? 0) > 0 && `${r.executable} can run once approved. `}
+            {r.ai && (r.ai.startsWith('DISABLED') ? 'Suggested by fixed rules; no AI is configured. ' : r.ai.startsWith('OK') ? `A model added cases: ${r.ai.slice(2).trim() || 'all kept'}. ` : `The model was not used (${r.ai}); fixed rules only. `)}
             <Link component={RouterLink} to="/cases?source=GENERATED&status=PENDING_REVIEW">Open the review queue</Link>
           </Alert>
         )}

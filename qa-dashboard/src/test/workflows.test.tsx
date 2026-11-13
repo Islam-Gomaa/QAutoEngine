@@ -1025,6 +1025,44 @@ describe('generated test cases', () => {
     expect(screen.getByTestId('case-review')).not.toHaveTextContent('not executed until');
   });
 
+  it('show their executable steps, and say plainly that approving lets a suite run them', async () => {
+    const script = [{ op: 'OPEN', path: '/clinic/patients' }, { op: 'ACTIVATE', target: { strategy: 'ROLE', value: 'link', name: 'Next page' } },
+      { op: 'EXPECT_URL', value: '/clinic/patients?page=2' }, { op: 'FILL', target: { strategy: 'LABEL', value: 'Email' }, value: '' }];
+    const observed = [{ action: 'Go to /clinic/patients', expected: 'The page "Patients" opens', basis: 'OBSERVED' }];
+    const scripted = { ...detail({ executable: true }, observed), script: JSON.stringify(script), executionMode: 'VALIDATION_ONLY',
+      review: { ...review, provenance: { ...review.provenance, generator: 'ai:anthropic/claude-opus-5-5', rule: 'AI_PAGINATION', risk: 'LOW', confidence: 'MEDIUM', executable: true } } };
+    server({ ...base, 'GET /projects/p1/test-cases/g1': scripted });
+    mount(<App />, '/cases/g1');
+    const steps = await screen.findByTestId('case-script');
+    expect(steps).toHaveTextContent('Validation only: also types into fields, never submits');
+    expect(steps).toHaveTextContent('Open /clinic/patients');
+    expect(steps).toHaveTextContent('Use link "Next page"');
+    expect(steps).toHaveTextContent('Expect to be at /clinic/patients?page=2');
+    expect(steps).toHaveTextContent('Type nothing (empty the field) into field "Email"');
+    const card = screen.getByTestId('case-review');
+    expect(card).toHaveTextContent('Suggested from discovery by a model (ai:anthropic/claude-opus-5-5). Check every expected result.');
+    expect(card).toHaveTextContent('RiskLOW');
+    expect(card).toHaveTextContent('ConfidenceMEDIUM');
+    await userEvent.click(within(card).getByRole('button', { name: 'Approve' }));
+    expect(within(screen.getByRole('dialog')).getByText(/Its executable steps then run in any suite it belongs to/)).toBeInTheDocument();
+  });
+
+  it('say how many suggestions can run and whether a model was used', async () => {
+    const run = { id: 'r8', kind: 'DISCOVERY', environmentId: 'e1', environmentName: 'Fixture', applicationName: 'Shop', channel: 'WEB', suiteId: null, suiteName: null, status: 'SUCCEEDED',
+      createdAt: '2026-11-01T00:00:00Z', finishedAt: '2026-11-01T00:02:00Z', stopReason: 'EXHAUSTED', startedBy: 'admin@qa.local', passed: 1, failed: 0, inconclusive: 0, blocked: 0 };
+    const counts = { READ_ONLY: 1, REVERSIBLE: 0, SENSITIVE: 0, DESTRUCTIVE: 0 };
+    server({ ...base, 'GET /projects/p1/runs/r8/progress': { run, attempt: 1, jobState: 'SUCCEEDED', currentOperation: '', steps: 1, defects: 0, durationSeconds: 5 },
+      'GET /projects/p1/runs/r8/steps': [], 'GET /projects/p1/runs/r8/findings': [], 'GET /projects/p1/runs/r8/auth': [],
+      'GET /projects/p1/runs/r8/discovery': { attempt: 1, pages: 1, forms: 0, fields: 0, requiredFields: 0, unlabelledFields: 0, tables: 0, dialogs: 0, actions: counts, links: 0,
+        pageRows: [{ id: 'p1', url: 'http://fixture.qa.internal:8090/clinic/', title: 'Dashboard', depth: 0, forms: 0, fields: 0, requiredFields: 0, unlabelledFields: 0, tables: 0, dialogs: 0, actions: counts }] },
+      'POST /projects/p1/runs/r8/discovery/test-cases': { generator: 'rules', suggested: 9, created: 9, alreadyKnown: 0, executable: 6, ai: 'DISABLED: No AI provider is configured.' } });
+    mount(<App />, '/execution/r8');
+    await userEvent.click(await screen.findByRole('button', { name: 'Suggest test cases' }));
+    const done = await screen.findByTestId('generated');
+    expect(done).toHaveTextContent('6 can run once approved.');
+    expect(done).toHaveTextContent('Suggested by fixed rules; no AI is configured.');
+  });
+
   it('keep their review status when edited: only approving or rejecting changes it', async () => {
     const calls = server({ ...base, 'GET /projects/p1/test-cases/g1': detail(), 'PATCH /projects/p1/test-cases/g1': generated });
     mount(<App />, '/cases/g1');

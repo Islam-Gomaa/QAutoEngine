@@ -124,9 +124,9 @@ public class RunController {
         if (body.maxPages() != null && (body.maxPages() < 1 || body.maxPages() > policy.maxPages())) throw new ConflictException("Page limit is outside the policy");
         if (body.suiteId() != null) {
             var suite = db.sql("""
-                    SELECT s.channel, (SELECT count(*) FROM test_case c WHERE c.organization_id = s.organization_id AND c.suite_id = s.id AND c.source = 'AUTOMATED' AND c.archived_at IS NULL)
+                    SELECT s.channel, (SELECT count(*) FROM test_case c WHERE c.organization_id = s.organization_id AND c.suite_id = s.id AND %s)
                     FROM test_suite s WHERE s.organization_id = ? AND s.project_id = ? AND s.id = ? AND s.archived_at IS NULL
-                    """).params(p.organizationId(), projectId, body.suiteId()).query((rs, n) -> new Object[] {rs.getString(1), rs.getLong(2)}).optional()
+                    """.formatted(qaengine.platform.testcases.TestCaseService.RUNNABLE)).params(p.organizationId(), projectId, body.suiteId()).query((rs, n) -> new Object[] {rs.getString(1), rs.getLong(2)}).optional()
                     .orElseThrow(() -> new NotFoundException("Suite"));
             if (!suite[0].equals(policy.channel())) throw new ConflictException("This suite is for a different channel");
             if ((Long) suite[1] == 0) throw new ConflictException("This suite has no automated test cases to run");

@@ -31,7 +31,8 @@ public class TestDesignController {
         access.require(p, projectId, Access.Level.TESTER);
         var result = service.generate(p.organizationId(), projectId, runId);
         audit.record(p.organizationId(), projectId, p.email(), "TEST_CASES_GENERATED", runId.toString(),
-                result.created() + " new, " + result.alreadyKnown() + " already known, by " + result.generator());
+                result.created() + " new (" + result.executable() + " executable), " + result.alreadyKnown() + " already known, by " + result.generator()
+                        + "; ai " + (result.ai().length() > 200 ? result.ai().substring(0, 200) : result.ai()));
         return result;
     }
 }

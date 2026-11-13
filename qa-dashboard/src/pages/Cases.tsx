@@ -3,7 +3,7 @@ import { Alert, Box, Button, IconButton, Link, MenuItem, Stack, Tab, Tabs, TextF
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link as RouterLink, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import Delete from '@mui/icons-material/DeleteOutlined';
-import { api, query, type Basis, type CaseDetail, type CaseReview, type Defect, type Page, type Suite, type TestCase } from '../api';
+import { api, query, type Basis, type CaseDetail, type CaseReview, type Defect, type Page, type ScriptStep, type Suite, type TestCase } from '../api';
 import { Async, Card, Confirm, DataTable, dateTime, Empty, FormDialog, KeyValue, Mono, PageHeader, StatusChip, Tag } from '../design/ui';
 import { useWorkspace } from '../shell/context';
 import { Choice, levelOptions, NeedsProject, useForm } from './shared';
@@ -131,7 +131,53 @@ function Facts({ title, items, none }: { title: string; items: string[]; none: s
 }
 
 /** Where a generated case came from, what it rests on, and the review decision. */
-function ReviewCard({ project, id, status, review, unknownSteps, canReview }: { project: string; id: string; status: string; review: CaseReview; unknownSteps: number; canReview: boolean }) {
+/** How an element is found, in words. Never what is typed. */
+function locator(t: ScriptStep['target']) {
+  if (!t) return 'the page';
+  if (t.strategy === 'ROLE') return `${t.value}${t.name ? ` "${t.name}"` : ''}`;
+  return `${t.strategy === 'LABEL' ? 'field' : t.strategy.toLowerCase().replace('_', ' ')} "${t.value}"`;
+}
+
+export function describeStep(s: ScriptStep): string {
+  switch (s.op) {
+    case 'OPEN': return `Open ${s.path}`;
+    case 'ACTIVATE': return `Use ${locator(s.target)}`;
+    case 'FILL': return `Type ${s.value === '' ? 'nothing (empty the field)' : `"${s.value}"`} into ${locator(s.target)}`;
+    case 'EXPECT_URL': return `Expect to be at ${s.value}`;
+    case 'EXPECT_TITLE': return `Expect the title to contain "${s.value}"`;
+    case 'EXPECT_VISIBLE': return `Expect ${locator(s.target)} to be visible`;
+    case 'EXPECT_TEXT': return `Expect ${locator(s.target)} to contain "${s.value}"`;
+    case 'EXPECT_MIN_COUNT': return `Expect at least ${s.count} ${locator(s.target)}`;
+    case 'EXPECT_INVALID': return `Expect ${locator(s.target)} to refuse its value`;
+    case 'EXPECT_STATE': return `Expect ${locator(s.target)} to be ${s.value}`;
+    default: return s.op;
+  }
+}
+
+function parseScript(script: string | null | undefined): ScriptStep[] {
+  try {
+    return script ? (JSON.parse(script) as ScriptStep[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+const MODES: Record<string, string> = { READ_ONLY: 'Read-only: opens pages and reads them', VALIDATION_ONLY: 'Validation only: also types into fields, never submits' };
+
+function ScriptCard({ script, mode }: { script: ScriptStep[]; mode: string | null | undefined }) {
+  return (
+    <Card pad={false} title="Executable steps" testId="case-script">
+      <Box sx={{ px: 2, pt: 1 }}><Typography variant="body2">{mode ? MODES[mode] ?? mode : ''}. Every action goes through the environment's safety gate; each expectation is checked, and a case passes only if all of them hold.</Typography></Box>
+      <DataTable label="Executable steps" rows={script.map((s, i) => ({ s, i }))} rowKey={(r) => String(r.i)} columns={[
+        { key: 'i', label: '#', width: 40, render: (r) => r.i + 1 },
+        { key: 'k', label: 'Kind', width: 120, render: (r) => <Tag>{r.s.op.startsWith('EXPECT_') ? 'Check' : 'Action'}</Tag> },
+        { key: 'd', label: 'Step', render: (r) => describeStep(r.s) },
+      ]} />
+    </Card>
+  );
+}
+
+function ReviewCard({ project, id, status, review, unknownSteps, canReview, executable }: { project: string; id: string; status: string; review: CaseReview; unknownSteps: number; canReview: boolean; executable: boolean }) {
   const [note, setNote] = useState('');
   const keys = [['case', id], ['cases', project]];
   const approve = useForm<void>(() => api(`/projects/${project}/test-cases/${id}/approve`, 'POST', { note }), keys);
@@ -140,8 +186,10 @@ function ReviewCard({ project, id, status, review, unknownSteps, canReview }: { 
   return (
     <Card title="Review" testId="case-review">
       <Stack spacing={1.5}>
-        {status === 'PENDING_REVIEW' && <Alert severity="warning">Suggested from discovery by fixed rules. It is not executed until a person approves it.</Alert>}
+        {status === 'PENDING_REVIEW' && <Alert severity="warning">{pv.generator === 'rules' ? 'Suggested from discovery by fixed rules.' : `Suggested from discovery by a model (${pv.generator}). Check every expected result.`} It is not executed until a person approves it.</Alert>}
         <KeyValue items={[['Suggested by', pv.generator === 'rules' ? 'Fixed rules (no AI)' : pv.generator], ['Rule', RULES[pv.rule] ?? pv.rule],
+          ...(pv.risk ? [['Risk', pv.risk] as [string, string]] : []), ...(pv.confidence ? [['Confidence', pv.confidence] as [string, string]] : []),
+          ['Executable', executable ? 'Yes, once approved' : 'No: performed by a person'],
           ['From run', review.generatedFromRun ? <Link key="r" component={RouterLink} to={`/execution/${review.generatedFromRun}`}>Open the discovery run</Link> : 'Unknown'],
           ...(review.reviewedAt ? [['Reviewed by', `${review.reviewedBy ?? 'Unknown'}, ${dateTime(review.reviewedAt)}`] as [string, string]] : []),
           ...(review.note ? [['Review note', review.note] as [string, string]] : [])]} />
@@ -159,7 +207,9 @@ function ReviewCard({ project, id, status, review, unknownSteps, canReview }: { 
         )}
       </Stack>
       <FormDialog open={approve.open} title="Approve test case" submit="Approve" busy={approve.busy} error={approve.error} onClose={approve.close} onSubmit={() => approve.submit()}>
-        <Typography variant="body2">The case becomes ready, to be performed by a person who records the result. It is never run by a suite.</Typography>
+        <Typography variant="body2">{executable
+          ? 'The case becomes ready. Its executable steps then run in any suite it belongs to, through the environment\'s safety gate. Read them before approving.'
+          : 'The case becomes ready, to be performed by a person who records the result. It has no executable steps, so no suite runs it.'}</Typography>
         <TextField label="Note (optional)" multiline minRows={2} value={note} onChange={(e) => setNote(e.target.value)} />
       </FormDialog>
       <FormDialog open={reject.open} title="Reject test case" submit="Reject" busy={reject.busy} error={reject.error} onClose={reject.close} onSubmit={() => reject.submit()}>
@@ -195,6 +245,7 @@ function Detail({ project, id }: { project: string; id: string }) {
       const editable = manual || generated;
       const shown = parseSteps(d.steps);
       const unknownSteps = shown.filter((s) => s.basis === 'UNKNOWN').length;
+      const script = parseScript(d.script);
       return (
         <>
           <PageHeader title={c.title} description={c.description || undefined} actions={tester && <>
@@ -215,6 +266,7 @@ function Detail({ project, id }: { project: string; id: string }) {
                   ]} />}
                 </Card>
               )}
+              {tab === 'steps' && script.length > 0 && <Box sx={{ mt: 2 }}><ScriptCard script={script} mode={d.executionMode} /></Box>}
               {tab === 'history' && <Card pad={false}>{d.history.length === 0 ? <Empty title="Not executed yet" /> : (
                 <DataTable label="History" rows={d.history.map((h, i) => ({ ...h, i }))} rowKey={(h) => String(h.i)} columns={[
                   { key: 'v', label: 'Result', render: (h) => <StatusChip value={h.verdict} /> }, { key: 'k', label: 'Kind', render: (h) => (h.kind === 'MANUAL' ? 'Manual' : 'Automated') },
@@ -234,8 +286,8 @@ function Detail({ project, id }: { project: string; id: string }) {
               ]} /></Card>}
             </Box>
             <Stack spacing={2}>
-            {d.review && <ReviewCard project={project} id={id} status={c.status} review={d.review} unknownSteps={unknownSteps} canReview={tester} />}
-            <Card title="Details"><KeyValue items={[['Source', SOURCES[c.source] ?? c.source], ['Status', <StatusChip key="s" value={c.status} />], ['Priority', <StatusChip key="p" value={c.priority} />], ['Suite', c.suiteName ?? 'None'], ['Module', c.module || 'None'], ['Tags', c.tags.join(', ') || 'None'], ['Version', c.latestVersion], ['Last result', <StatusChip key="l" value={c.lastVerdict} />]]} /></Card>
+            {d.review && <ReviewCard project={project} id={id} status={c.status} review={d.review} unknownSteps={unknownSteps} canReview={tester} executable={script.length > 0} />}
+            <Card title="Details"><KeyValue items={[['Source', SOURCES[c.source] ?? c.source], ['Status', <StatusChip key="s" value={c.status} />], ['Priority', <StatusChip key="p" value={c.priority} />], ['Suite', c.suiteName ?? 'None'], ['Module', c.module || 'None'], ['Tags', c.tags.join(', ') || 'None'], ['Version', c.latestVersion], ['Executable', script.length > 0 ? (d.executionMode === 'VALIDATION_ONLY' ? 'Yes, validation only' : 'Yes, read-only') : 'No'], ['Last result', <StatusChip key="l" value={c.lastVerdict} />]]} /></Card>
             </Stack>
           </Box>
           {editing && <CaseForm project={project} suites={suites.data ?? []} current={c} onClose={() => setEditing(false)} />}

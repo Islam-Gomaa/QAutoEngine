@@ -64,6 +64,8 @@ export interface Suite { id: string; name: string; description: string; module: 
 export interface TestCase {
   id: string; title: string; description: string; suiteId: string | null; suiteName: string | null; source: 'AUTOMATED' | 'MANUAL' | 'GENERATED'; priority: string; status: string; tags: string[]; module: string;
   latestVersion: number; lastVerdict: string | null; archivedAt: string | null;
+  /** The latest version carries a script a worker runs once the case is approved. */
+  executable?: boolean;
 }
 export interface CaseDetail {
   testCase: TestCase; steps: string; versions: { version: number; steps: string; contentHash: string }[];
@@ -71,13 +73,22 @@ export interface CaseDetail {
   defects: { id: string; number: number; title: string; severity: string; status: string }[];
   /** Only for generated cases: where the case came from, and who reviewed it. */
   review: CaseReview | null;
+  /** The executable steps, as JSON, or null when the case is for a person. */
+  script?: string | null;
+  executionMode?: 'READ_ONLY' | 'VALIDATION_ONLY' | null;
 }
+export interface ScriptStep {
+  op: string; path?: string | null; value?: string | null; count?: number | null;
+  target?: { strategy: string; value: string; name?: string | null } | null;
+}
+export interface AiStatus { enabled: boolean; provider: string | null; model: string | null; reason: string }
 export type Basis = 'OBSERVED' | 'INFERRED' | 'UNKNOWN' | 'CONFIRMED';
 export interface CaseReview {
-  provenance: { generator: string; rule: string; runId: string; attempt: number; observed: string[]; inferred: string[]; unknown: string[] };
+  provenance: { generator: string; rule: string; runId: string; attempt: number; observed: string[]; inferred: string[]; unknown: string[];
+    risk?: string; confidence?: string; executable?: boolean; executionMode?: string };
   generatedFromRun: string | null; reviewedBy: string | null; reviewedAt: string | null; note: string;
 }
-export interface GeneratedCases { generator: string; suggested: number; created: number; alreadyKnown: number }
+export interface GeneratedCases { generator: string; suggested: number; created: number; alreadyKnown: number; executable?: number; ai?: string }
 export interface Run {
   id: string; kind?: 'EXPLORATION' | 'AUTH_TEST' | 'DISCOVERY'; environmentId: string; environmentName: string; applicationName: string; channel: 'WEB' | 'API'; suiteId: string | null; suiteName: string | null; status: string;
   createdAt: string; finishedAt: string | null; stopReason: string | null; startedBy: string; passed: number; failed: number; inconclusive: number; blocked: number;

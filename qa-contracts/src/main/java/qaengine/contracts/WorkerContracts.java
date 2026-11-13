@@ -13,7 +13,19 @@ public final class WorkerContracts {
     public record JobAssignment(UUID jobId, UUID runId, int attempt, String jobToken, String startUrl, long seed, String mode,
                                 String environmentClass, List<String> allowedOrigins, List<String> includePaths,
                                 List<String> excludePaths, RunLimits limits, List<String> maskSelectors, LoginProfile login,
-                                String channel, ApiProfile api, RunScope scope, String kind) {}
+                                String channel, ApiProfile api, RunScope scope, String kind, List<ScriptJob> scripts) {}
+
+    /**
+     * One approved, executable test case for the worker to run, as stored on its version. The worker validates the
+     * script again before running it, and every action still goes through the run's gate.
+     *
+     * @param scriptJson the steps, as JSON
+     * @param executionMode the least permissive mode the script needs; the environment's own policy still decides
+     */
+    public record ScriptJob(UUID caseVersionId, String title, String executionMode, String scriptJson) {}
+
+    /** How one scripted case ended. @param failureClass null when it passed */
+    public record ScriptResult(UUID caseVersionId, String verdict, String failureClass, String summary) {}
 
     /** EXPLORATION signs in when a profile is set, then explores. AUTH_TEST signs in, or only connects, and stops. */
     public static final String AUTH_TEST = "AUTH_TEST";

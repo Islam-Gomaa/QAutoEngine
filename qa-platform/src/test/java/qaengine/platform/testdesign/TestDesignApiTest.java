@@ -164,9 +164,15 @@ class TestDesignApiTest extends IntegrationTestBase {
         UUID suite = UUID.randomUUID();
         db.sql("INSERT INTO test_suite (organization_id, id, project_id, name) VALUES (?,?,?, 'Console')").params(org, suite, project).update();
         call(patch(cases("/" + pending)), admin, "{\"title\":\"Open the Users page\",\"suiteId\":\"" + suite + "\"}").andExpect(status().isOk());
+        UUID unscripted = caseWithRule("VALID_SUBMISSION");
+        call(patch(cases("/" + unscripted)), admin, "{\"title\":\"Send the invitation\",\"suiteId\":\"" + suite + "\"}").andExpect(status().isOk());
+        String waiting = call(get("/api/v1/projects/" + project + "/suites"), admin, null).andReturn().getResponse().getContentAsString();
+        assertEquals(0, json.readTree(waiting).get(0).get("automatedCases").asInt(), "a suite never runs a generated case waiting for review, script or not");
         call(post(cases("/" + pending + "/approve")), admin, null).andExpect(status().isOk());
         String suites = call(get("/api/v1/projects/" + project + "/suites"), admin, null).andReturn().getResponse().getContentAsString();
-        assertEquals(0, json.readTree(suites).get(0).get("automatedCases").asInt(), "a suite never runs generated cases, approved or not");
+        // Approved and carrying a validated script: the one kind of generated case a suite runs. A case with an
+        // UNKNOWN expected result has no script, so even approved it stays for a person to perform.
+        assertEquals(1, json.readTree(suites).get(0).get("automatedCases").asInt(), "only the approved case with a script runs");
         call(post(cases("/" + pending + "/results")), admin, "{\"verdict\":\"PASS\"}").andExpect(status().isCreated());
     }
 

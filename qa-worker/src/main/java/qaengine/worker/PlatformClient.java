@@ -108,7 +108,11 @@ final class PlatformClient {
         postJson("/steps", steps);
     }
 
-    void finding(FindingReport finding) throws IOException, InterruptedException {
+    void scriptResult(qaengine.contracts.WorkerContracts.ScriptResult result) throws IOException, InterruptedException {
+        postJson("/scripts", result);
+    }
+
+        void finding(FindingReport finding) throws IOException, InterruptedException {
         postJson("/findings", finding);
     }
 

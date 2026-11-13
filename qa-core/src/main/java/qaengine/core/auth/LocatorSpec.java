@@ -16,9 +16,14 @@ public record LocatorSpec(Strategy strategy, String value, String name) {
 
     public enum Strategy { ROLE, LABEL, PLACEHOLDER, TEST_ID, CSS }
 
-    /** Roles that a login form, a success marker or an error message can sensibly have. */
+    /**
+     * Roles an element can be found by: those a login form, a success marker or an error message can have, and those
+     * an executable test case reads, such as tables, rows and tab panels. A role selects; it never permits an action.
+     */
     static final Set<String> ROLES = Set.of("alert", "banner", "button", "checkbox", "combobox", "dialog", "heading", "img", "link", "main",
-            "menu", "menuitem", "navigation", "region", "status", "tab", "textbox");
+            "menu", "menuitem", "navigation", "region", "status", "tab", "textbox",
+            "article", "cell", "columnheader", "contentinfo", "form", "grid", "gridcell", "list", "listitem", "option", "row", "rowheader",
+            "searchbox", "table", "tablist", "tabpanel");
     private static final Pattern CONTROL = Pattern.compile("\\p{Cntrl}");
 
     public LocatorSpec {

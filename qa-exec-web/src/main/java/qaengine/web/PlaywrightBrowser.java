@@ -286,6 +286,96 @@ public final class PlaywrightBrowser implements BrowserPort {
         }
     }
 
+    // ---- executable test cases. Names match exactly here, so "Patients" never finds "New patients".
+
+    private com.microsoft.playwright.Locator exact(LocatorSpec s) {
+        if (s.strategy() == LocatorSpec.Strategy.ROLE && s.name() != null) {
+            return page.getByRole(com.microsoft.playwright.options.AriaRole.valueOf(s.value().toUpperCase(java.util.Locale.ROOT)),
+                    new Page.GetByRoleOptions().setName(s.name()).setExact(true));
+        }
+        if (s.strategy() == LocatorSpec.Strategy.LABEL) return page.getByLabel(s.value(), new Page.GetByLabelOptions().setExact(true));
+        return allOf(s);
+    }
+
+    @Override
+    public boolean waitVisible(LocatorSpec element, java.time.Duration timeout) {
+        try {
+            exact(element).first().waitFor(new com.microsoft.playwright.Locator.WaitForOptions()
+                    .setState(com.microsoft.playwright.options.WaitForSelectorState.VISIBLE).setTimeout(timeout.toMillis()));
+            return true;
+        } catch (PlaywrightException e) {
+            return false;
+        }
+    }
+
+    /** Reads what the element is, in the page, without dispatching anything to it. */
+    private static final String INSPECT = """
+            el => {
+              const a = { tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || '' };
+              for (const n of el.getAttributeNames()) {
+                if (n.startsWith('aria-') || ['id', 'name', 'data-testid', 'type', 'title', 'required'].includes(n)) a[n] = el.getAttribute(n);
+              }
+              if (a.tag === 'a' && el.href) a.href = el.href;
+              if (a.tag === 'summary' && el.parentElement && el.parentElement.tagName === 'DETAILS') a.open = String(el.parentElement.open);
+              if (a.tag === 'details') a.open = String(el.open);
+              a.text = (el.innerText || el.value || '').trim().slice(0, 200);
+              a.inForm = String(!!el.closest('form'));
+              return a;
+            }""";
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public Map<String, String> inspect(LocatorSpec element) {
+        try {
+            var target = exact(element).first();
+            if (target.count() == 0) return Map.of();
+            Map<String, Object> raw = (Map<String, Object>) target.evaluate(INSPECT);
+            Map<String, String> out = new java.util.LinkedHashMap<>();
+            raw.forEach((k, v) -> { if (v != null) out.put(k, String.valueOf(v)); });
+            return out;
+        } catch (PlaywrightException e) {
+            return Map.of();
+        }
+    }
+
+    @Override
+    public void click(LocatorSpec element) {
+        exact(element).first().click(new com.microsoft.playwright.Locator.ClickOptions().setTimeout(3000));
+        settle();
+        waitForDomQuiet();
+    }
+
+    @Override
+    public int count(LocatorSpec element) {
+        try {
+            return exact(element).count();
+        } catch (PlaywrightException e) {
+            return 0;
+        }
+    }
+
+    @Override
+    public String textOf(LocatorSpec element) {
+        try {
+            var target = element == null ? page.locator("body") : exact(element).first();
+            return target.innerText(new com.microsoft.playwright.Locator.InnerTextOptions().setTimeout(3000));
+        } catch (PlaywrightException e) {
+            return null;
+        }
+    }
+
+    @Override
+    public String title() {
+        return page.title();
+    }
+
+    @Override
+    public boolean isInvalid(LocatorSpec field) {
+        // validity is read, not checked: checkValidity() would fire an "invalid" event at the page.
+        Object invalid = exact(field).first().evaluate("el => !!(el.validity && !el.validity.valid)");
+        return Boolean.TRUE.equals(invalid);
+    }
+
     @Override
     public void fill(LocatorSpec field, String value) {
         resolve(field).fill(value == null ? "" : value, new com.microsoft.playwright.Locator.FillOptions().setTimeout(5000));

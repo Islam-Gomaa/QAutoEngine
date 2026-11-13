@@ -31,7 +31,7 @@ import qaengine.platform.shared.Principal;
 public class SuiteController {
 
     public record SaveSuite(@NotBlank @Size(max = 120) String name, String description, String module, String channel) {}
-    /** @param automatedCases cases a run can execute; manual ones are recorded by a person */
+    /** @param automatedCases cases a run can execute: recorded ones, and approved cases with a script; the rest are performed by a person */
     public record SuiteView(UUID id, String name, String description, String module, String channel, OffsetDateTime archivedAt, long cases, long automatedCases) {}
 
     private final JdbcClient db;
@@ -47,9 +47,9 @@ public class SuiteController {
     private static final String SELECT = """
             SELECT s.id, s.name, s.description, s.module, s.channel, s.archived_at,
                    (SELECT count(*) FROM test_case c WHERE c.organization_id = s.organization_id AND c.suite_id = s.id AND c.archived_at IS NULL),
-                   (SELECT count(*) FROM test_case c WHERE c.organization_id = s.organization_id AND c.suite_id = s.id AND c.archived_at IS NULL AND c.source = 'AUTOMATED')
+                   (SELECT count(*) FROM test_case c WHERE c.organization_id = s.organization_id AND c.suite_id = s.id AND %s)
             FROM test_suite s
-            """;
+            """.formatted(TestCaseService.RUNNABLE);
 
     private static SuiteView map(java.sql.ResultSet rs) throws java.sql.SQLException {
         return new SuiteView(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5), rs.getObject(6, OffsetDateTime.class), rs.getLong(7), rs.getLong(8));

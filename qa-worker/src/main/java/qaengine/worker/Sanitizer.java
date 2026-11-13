@@ -37,6 +37,19 @@ final class Sanitizer {
                 s.locators().stream().map(redactor::redact).toList(), s.verdict().name(), s.status(), s.state(), redactor.redact(s.note()), s.durationMs());
     }
 
+    /** Free text that may quote the target, such as a scripted case's summary. */
+    String text(String s) {
+        return redactor.redact(s);
+    }
+
+        /** A scripted case's step. Its description and note may quote the target's own words, so they are redacted. */
+    StepReport scriptStep(qaengine.core.script.ScriptRunner.StepResult r, String caseTitle, String url) {
+        String label = redactor.redact(caseTitle) + ": " + redactor.redact(r.step().describe());
+        String note = (r.failure() == null ? "" : r.failure().name() + ": ") + redactor.redact(r.note());
+        List<String> locators = r.step().target() == null ? List.of() : List.of(redactor.redact(r.step().target().describe()));
+        return new StepReport(r.sequence(), 0, "SCRIPT_" + r.step().op().name(), redactor.redact(url), label, locators, r.verdict().name(), 0, "", note, r.durationMs());
+    }
+
     /** Detail and suggested locators come from the target's page, so they are redacted like everything else. */
     AuthReport auth(AuthenticationResult r, boolean connectionOnly, int signIn) {
         String status = connectionOnly && r.failure() == null ? "CONNECTED" : r.status().name();

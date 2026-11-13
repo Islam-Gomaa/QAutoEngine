@@ -6,8 +6,11 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.springframework.stereotype.Component;
+import qaengine.core.script.Script;
+import qaengine.core.script.ScriptPlanner;
 
 /**
  * Suggests test cases from discovery by fixed rules, with no model and no network. An expected result is stated only
@@ -20,6 +23,8 @@ public class RuleBasedAdvisor implements TestDesignAdvisor {
 
     /** Enough for a large application's first review; a later run adds what is left, since known keys are skipped. */
     static final int MAX_CANDIDATES = 400;
+    static final String READ_ONLY = "READ_ONLY";
+    static final String VALIDATION_ONLY = "VALIDATION_ONLY";
 
     private static final Map<String, String> FORMATS = Map.of("email", "an email address", "url", "a web address", "number", "a number", "tel", "a phone number",
             "date", "a date", "time", "a time", "datetime-local", "a date and time", "month", "a month", "week", "a week");
@@ -105,11 +110,23 @@ public class RuleBasedAdvisor implements TestDesignAdvisor {
 
         void add(String key, String rule, String title, String description, Page p, String priority, List<String> tags, List<Step> steps,
                  List<String> observed, List<String> inferred, List<String> unknown) {
+            add(key, rule, title, description, p, priority, tags, steps, observed, inferred, unknown, Optional.empty(), null, "LOW");
+        }
+
+        /**
+         * @param script only from the state a page opens in, since a script starts by opening it. The planner builds
+         *               it from the same facts the steps above state, and nothing else
+         */
+        void add(String key, String rule, String title, String description, Page p, String priority, List<String> tags, List<Step> steps,
+                 List<String> observed, List<String> inferred, List<String> unknown, Optional<Script> script, String mode, String risk) {
             if (out.size() >= MAX_CANDIDATES || out.containsKey(key)) return;
             Set<String> allTags = new LinkedHashSet<>(List.of("generated"));
             allTags.addAll(tags);
+            Script executable = p.onLoad() ? script.orElse(null) : null;
+            if (executable != null) allTags.add("executable");
             out.put(key, new Candidate(key, rule, cap(title, 240), description, module(p.path()), priority, List.copyOf(allTags), List.copyOf(steps),
-                    List.copyOf(observed), List.copyOf(inferred), List.copyOf(unknown)));
+                    List.copyOf(observed), List.copyOf(inferred), List.copyOf(unknown), executable, executable == null ? null : mode, risk,
+                    TestDesignAdvisor.confidenceOf(steps)));
         }
     }
 
@@ -139,7 +156,7 @@ public class RuleBasedAdvisor implements TestDesignAdvisor {
             observed.add("Headings seen: " + String.join(", ", p.headings()));
         }
         b.add("page:" + p.path(), "PAGE_OPENS", "Open " + pageName(p) + (b.signedIn ? " while signed in" : ""), "Checks that the page still opens and shows what discovery saw.",
-                p, "MEDIUM", List.of("smoke"), steps, observed, List.of(), List.of());
+                p, "MEDIUM", List.of("smoke"), steps, observed, List.of(), List.of(), ScriptPlanner.pageOpens(p.path(), p.title(), p.headings()), READ_ONLY, "LOW");
     }
 
     private void requiredFields(Builder b, Page p, Form f) {
@@ -157,7 +174,9 @@ public class RuleBasedAdvisor implements TestDesignAdvisor {
                     List.of("negative", "validation"), steps,
                     List.of(quote(fieldName(field)) + " is marked required in the page"),
                     List.of("An empty required field stops the form from being sent"),
-                    List.of("The exact wording of the message is not known"));
+                    List.of("The exact wording of the message is not known"),
+                    // Checks the field refuses to be empty, which is what stops the form. Typing, and nothing is sent.
+                    field.labelled() ? ScriptPlanner.requiredRefusesEmpty(p.path(), field.label()) : Optional.empty(), VALIDATION_ONLY, "MEDIUM");
         }
     }
 
@@ -172,7 +191,9 @@ public class RuleBasedAdvisor implements TestDesignAdvisor {
                     "The form is not sent, and " + quote(fieldName(field)) + " is reported as not " + format, Basis.INFERRED));
             b.add("format:" + p.path() + ":" + formName(f, p) + ":" + fieldName(field), "FIELD_FORMAT", fieldName(field) + " in " + formName(f, p) + " refuses a value that is not " + format,
                     "Negative case. " + safetyNote(submit), p, priority(submit, "MEDIUM"), List.of("negative", "validation"), steps,
-                    List.of(quote(fieldName(field)) + " is a field of type " + field.type()), List.of("A value that is not " + format + " is refused"), List.of());
+                    List.of(quote(fieldName(field)) + " is a field of type " + field.type()), List.of("A value that is not " + format + " is refused"), List.of(),
+                    field.labelled() ? ScriptPlanner.fieldFormat(p.path(), field.label(), BAD_VALUES.get(field.type()).replace("\"", "")) : Optional.empty(),
+                    VALIDATION_ONLY, "MEDIUM");
         }
     }
 
@@ -234,7 +255,9 @@ public class RuleBasedAdvisor implements TestDesignAdvisor {
                     (destructive ? "Destructive" : "Sensitive") + " action: run it only where it is authorized, with data that may be changed.", p, destructive ? "CRITICAL" : "HIGH",
                     List.of(destructive ? "destructive" : "sensitive", "requires-authorization", "needs-expected-result"), steps,
                     List.of(quote(a.name()) + " is on the page" + (a.href() == null ? "" : " and leads to " + a.href())),
-                    List.of(), List.of("What " + quote(a.name()) + " does, and whether it can be undone"));
+                    List.of(), List.of("What " + quote(a.name()) + " does, and whether it can be undone"),
+                    // Never executable: no policy the engine runs under allows using it.
+                    Optional.empty(), null, "HIGH");
         }
     }
 
@@ -245,7 +268,8 @@ public class RuleBasedAdvisor implements TestDesignAdvisor {
             List<Step> steps = b.open(p);
             steps.add(new Step("Look at " + name, "It has the columns " + String.join(", ", t.headers().stream().map(RuleBasedAdvisor::quote).toList()), Basis.OBSERVED));
             b.add("table:" + p.path() + ":" + name, "TABLE_COLUMNS", name + " shows its columns", "Checks that the table keeps the columns discovery saw.", p, "LOW", List.of("content"), steps,
-                    List.of("Columns seen: " + String.join(", ", t.headers()), t.rows() + " rows when discovered"), List.of(), List.of("Which rows should appear for the testing account"));
+                    List.of("Columns seen: " + String.join(", ", t.headers()), t.rows() + " rows when discovered"), List.of(), List.of("Which rows should appear for the testing account"),
+                    ScriptPlanner.tableColumns(p.path(), t.headers(), t.rows()), READ_ONLY, "LOW");
         }
     }
 
@@ -256,7 +280,8 @@ public class RuleBasedAdvisor implements TestDesignAdvisor {
             String to = l.toTitle() == null || l.toTitle().isBlank() ? l.toPath() : l.toTitle();
             steps.add(new Step("Use " + quote(l.via()), "The page " + quote(to) + " opens at " + l.toPath(), Basis.OBSERVED));
             b.add("nav:" + p.path() + "->" + l.toPath(), "NAVIGATION", "From " + pageName(p) + " to " + to + " by " + quote(l.via()), "Checks a way through the application that discovery took.",
-                    p, "LOW", List.of("navigation"), steps, List.of(quote(l.via()) + " led from " + p.path() + " to " + l.toPath()), List.of(), List.of());
+                    p, "LOW", List.of("navigation"), steps, List.of(quote(l.via()) + " led from " + p.path() + " to " + l.toPath()), List.of(), List.of(),
+                    ScriptPlanner.navigation(p.path(), l.via(), l.toPath(), null), READ_ONLY, "LOW");
         }
     }
 }

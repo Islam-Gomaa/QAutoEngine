@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import qaengine.contracts.WorkerContracts;
 import qaengine.contracts.WorkerContracts.ApiProfile;
 import qaengine.contracts.WorkerContracts.AuthReport;
 import qaengine.contracts.WorkerContracts.Locator;
@@ -126,7 +127,7 @@ public class WorkerController {
                 rs.getString(12) == null ? null : login(rs.getString(12), rs.getString(13), rs.getString(14), rs.getString(15), rs.getString(16), rs.getInt(17),
                         rs.getString(26), rs.getString(27), rs.getString(28), rs.getInt(29), (Integer) rs.getObject(30)),
                 rs.getString(20), new ApiProfile(rs.getString(21), rs.getLong(22), array(rs, 23)), scope(c.organizationId(), rs.getObject(24, UUID.class), rs.getString(1)),
-                rs.getString(18))).single());
+                rs.getString(18), scripts(c.organizationId(), rs.getObject(24, UUID.class)))).single());
     }
 
     /** The profile as the worker needs it. The locators were validated when they were saved. */
@@ -160,6 +161,45 @@ public class WorkerController {
         return new RunScope(targets.stream().map(Target::url).filter(java.util.Objects::nonNull).distinct().toList(),
                 targets.stream().map(Target::label).filter(java.util.Objects::nonNull).distinct().toList());
     }
+
+    /** The approved, executable cases of the suite: the latest version of each, as a person approved it. Validated before they leave. */
+    private List<WorkerContracts.ScriptJob> scripts(UUID org, UUID suite) {
+        if (suite == null) return List.of();
+        return db.sql("""
+                SELECT DISTINCT ON (c.id) v.id, c.title, v.execution_mode, v.script::text
+                FROM test_case c JOIN test_case_version v ON v.organization_id = c.organization_id AND v.test_case_id = c.id
+                WHERE c.organization_id = ? AND c.suite_id = ? AND c.source <> 'AUTOMATED' AND %s
+                ORDER BY c.id, v.version DESC
+                """.formatted(TestCaseService.RUNNABLE)).params(org, suite)
+                .query((rs, n) -> new WorkerContracts.ScriptJob(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3), rs.getString(4))).list().stream()
+                .filter(j -> j.scriptJson() != null)
+                .peek(j -> qaengine.platform.testcases.ScriptJson.parse(json, j.scriptJson()))
+                .toList();
+    }
+
+    /** One scripted case's verdict, for a version that belongs to this run's suite and nothing else. */
+    @PostMapping("/{jobId}/scripts")
+    @Transactional
+    public ResponseEntity<Void> scriptResult(@RequestHeader(value = "Authorization", required = false) String auth, @PathVariable UUID jobId,
+                                             @RequestBody WorkerContracts.ScriptResult r) {
+        JobTokens.Scope s = scope(auth, jobId);
+        UUID run = runOf(s);
+        boolean ours = db.sql("""
+                SELECT count(*) FROM test_case_version v JOIN test_case c ON c.organization_id = v.organization_id AND c.id = v.test_case_id
+                JOIN test_run r ON r.organization_id = c.organization_id AND r.suite_id = c.suite_id
+                WHERE v.organization_id = ? AND v.id = ? AND r.id = ? AND v.script IS NOT NULL
+                """).params(s.organizationId(), r.caseVersionId(), run).query(Long.class).single() == 1;
+        if (!ours) return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        if (!java.util.Set.of("PASS", "FAIL", "INCONCLUSIVE", "BLOCKED").contains(r.verdict())) return ResponseEntity.badRequest().build();
+        if (r.failureClass() != null && !FAILURE_CLASSES.contains(r.failureClass())) return ResponseEntity.badRequest().build();
+        if (r.verdict().equals("PASS") != (r.failureClass() == null)) return ResponseEntity.badRequest().build();
+        String summary = r.summary() == null ? "" : r.summary().length() > 1000 ? r.summary().substring(0, 1000) : r.summary();
+        testCases.recordResult(s.organizationId(), run, r.caseVersionId(), r.verdict(), r.failureClass(), summary);
+        return ResponseEntity.noContent().build();
+    }
+
+    private static final java.util.Set<String> FAILURE_CLASSES = java.util.Arrays.stream(qaengine.core.script.FailureClass.values()).map(Enum::name)
+            .collect(java.util.stream.Collectors.toUnmodifiableSet());
 
     private static List<String> array(java.sql.ResultSet rs, int column) throws java.sql.SQLException {
         var a = rs.getArray(column);

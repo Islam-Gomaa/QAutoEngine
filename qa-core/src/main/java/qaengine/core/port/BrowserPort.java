@@ -76,6 +76,49 @@ public interface BrowserPort extends AutoCloseable {
         return null;
     }
 
+    // Executable test cases. Reading never changes the page; clicking is only ever done after the gate allowed it.
+
+    /**
+     * What the first matching element is, read without touching it: "tag", "role", "type", "href" (absolute),
+     * "text", "inForm", and any aria-*, id, name, data-testid attributes. Empty when nothing matches.
+     */
+    default Map<String, String> inspect(LocatorSpec element) {
+        throw new UnsupportedOperationException("inspect");
+    }
+
+    /**
+     * Waits up to the timeout for the element to become visible. Unlike {@link #appears}, a role's name must match
+     * exactly, as every test-case method below does: "Patients" never finds "New patients".
+     */
+    default boolean waitVisible(LocatorSpec element, Duration timeout) {
+        return appears(element, timeout);
+    }
+
+    /** Clicks the element in place and waits for the page to settle. The caller has already passed it through the gate. */
+    default void click(LocatorSpec element) {
+        throw new UnsupportedOperationException("click");
+    }
+
+    /** How many elements match, now. */
+    default int count(LocatorSpec element) {
+        throw new UnsupportedOperationException("count");
+    }
+
+    /** The visible text of the first matching element, or of the whole page when the element is null. Null when nothing matches. */
+    default String textOf(LocatorSpec element) {
+        throw new UnsupportedOperationException("textOf");
+    }
+
+    /** The document title. */
+    default String title() {
+        throw new UnsupportedOperationException("title");
+    }
+
+    /** Whether the field's own constraint validation refuses its current value. Never submits anything. */
+    default boolean isInvalid(LocatorSpec field) {
+        throw new UnsupportedOperationException("isInvalid");
+    }
+
     /** A screenshot with these elements masked as well as the selectors. */
     default byte[] screenshot(List<String> maskSelectors, List<LocatorSpec> maskElements) {
         return screenshot(maskSelectors);

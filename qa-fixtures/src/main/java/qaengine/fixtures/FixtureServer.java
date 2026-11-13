@@ -32,6 +32,8 @@ public final class FixtureServer implements AutoCloseable {
     private final HttpServer server;
     private final ExecutorService pool;
     private final List<Recorded> log = new CopyOnWriteArrayList<>();
+    /** A second application on the same server, with nothing in common with the storefront. */
+    private final ClinicApp clinic = new ClinicApp();
     boolean exposeLog;
 
     private FixtureServer(HttpServer server, ExecutorService pool) {
@@ -92,6 +94,7 @@ public final class FixtureServer implements AutoCloseable {
     }
 
     private void route(HttpExchange x, String path, String body) throws IOException {
+        if (clinic.handles(path)) { clinic.route(x, path, body); return; }
         if (ApiRoutes.handles(path)) { ApiRoutes.route(x, path); return; }
         if (path.startsWith("/app/")) { app(x, path, body); return; }
         if (path.equals("/crash") || path.equals("/api/fail")) { send(x, 500, "text/html", "<h1>Server error</h1>"); return; }
